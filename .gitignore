@@ -1,0 +1,16 @@
+*.un
+*~
+
+.cache/
+build/
+
+external/glfw-shared-linux/docs/
+external/glfw-shared-linux/examples/
+external/glfw-shared-linux/tests/
+external/glfw-shared-linux/build/examples/
+external/glfw-shared-linux/build/tests/
+external/glfw-win64-bin/docs/
+external/glfw-win64-bin/examples/
+external/glfw-win64-bin/tests/
+external/glfw-win64-bin/build/examples/
+external/glfw-win64-bin/build/tests/
