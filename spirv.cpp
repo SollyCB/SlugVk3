@@ -25,7 +25,7 @@
 
 //     ** DO NOT BIND A DESCRIPTOR TO A NON CONTIGUOUS BINDING **
 // This function relies on bindings being incremented the same way as descriptor sets
-Create_Vk_Descriptor_Set_Layout_Info* group_spirv(int count, Parsed_Spirv *parsed_spirv, int *returned_set_count) {
+gpu::Descriptor_Set_Layout_Info* group_spirv(int count, Parsed_Spirv *parsed_spirv, int *returned_set_count) {
     // Find total number of descriptor sets
     u64 set_mask = 0x0; // Assume fewer than 64 sets
     for(int i = 0; i < count; ++i) {
@@ -46,7 +46,7 @@ Create_Vk_Descriptor_Set_Layout_Info* group_spirv(int count, Parsed_Spirv *parse
 
     // Allocate memory to each bindings array (this could be done as one allocation, and then bind offsets into it,
     // but since this is a linear allocator the difference would be negligible...)
-    Create_Vk_Descriptor_Set_Layout_Info *sets = (Create_Vk_Descriptor_Set_Layout_Info*)malloc_t(sizeof(Create_Vk_Descriptor_Set_Layout_Info) * set_count, 8);
+    gpu::Descriptor_Set_Layout_Info *sets = (gpu::Descriptor_Set_Layout_Info*)malloc_t(sizeof(gpu::Descriptor_Set_Layout_Info) * set_count, 8);
     int total_binding_count = 0;
     for(int i = 0; i < set_count; ++i) {
         sets[i].count = pop_count64(binding_masks[i]);
@@ -419,7 +419,7 @@ void test_grouper() {
 
     Parsed_Spirv parsed[] = {vert_spirv, frag_spirv};
     int set_count;
-    Create_Vk_Descriptor_Set_Layout_Info *sets = group_spirv(2, parsed, &set_count);
+    gpu::Descriptor_Set_Layout_Info *sets = group_spirv(2, parsed, &set_count);
 
     TEST_EQ("set_count", set_count, 4, false);
     TEST_EQ("sets[0].count", sets[0].count, 3, false);

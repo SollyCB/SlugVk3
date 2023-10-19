@@ -1,6 +1,8 @@
 #include "glfw.hpp"
 #include "camera.hpp"
 
+namespace glfw {
+
 static Glfw *s_Glfw;
 Glfw* get_glfw_instance() { 
     return s_Glfw;
@@ -55,7 +57,7 @@ enum InputValues {
     INPUT_JUMP          = GLFW_KEY_SPACE,
 };
 
-void window_poll_and_get_input(Glfw *glfw) {
+void poll_and_get_input(Glfw *glfw) {
     glfwPollEvents();
 
     int right = 0;
@@ -75,3 +77,5 @@ void window_poll_and_get_input(Glfw *glfw) {
 
     camera_move(get_camera_instance(), forward, right);
 }
+
+} // namespace Glfw
