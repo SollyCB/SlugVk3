@@ -10,6 +10,17 @@
 // A string compiled in debug mode will be bigger than one compiled in release mode...
 // (Idk if this is a dumb optimisation and will just cause more problems than it is worth...)
 
+struct String {
+    u32 len;
+    const char *str;
+};
+inline static String get_string(const char *cstr) {
+    String string;
+    string.str = cstr;
+    string.len = strlen(cstr);
+    return string;
+}
+
 struct Heap_String_Buffer {
     u32 len;
     char *data;

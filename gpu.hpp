@@ -12,6 +12,9 @@
 
 #include "basic.h"
 #include "glfw.hpp"
+#include "spirv.hpp"
+#include "string.hpp"
+#include "hash_map.hpp"
 
 namespace gpu {
 
@@ -102,65 +105,58 @@ inline static VkRect2D gpu_get_complete_screen_area()
     return rect;
 }
 
-// Descriptors
-VkDescriptorPool create_descriptor_pool(VkDevice device, int max_set_count, int counts[11]);
-VkResult reset_descriptor_pool(VkDevice device, VkDescriptorPool pool);
-void destroy_descriptor_pool(VkDevice device, VkDescriptorPool pool);
-
-struct Descriptor_Allocator {
-    u16 sets_queued;
-    u16 sets_allocated;
-    u16 set_cap;
-
-    VkDescriptorSetLayout *layouts;
-    VkDescriptorSet       *sets;
-
-    VkDescriptorPool pool;
-
-    #if DEBUG
-    u16 cap[11];
-    u16 counts[11]; // tracks individual descriptor allocations
-    #endif
+// Shaders
+struct Shader {
+    VkShaderStageFlagBits stage;
+    VkShaderModule module;
 };
-// 'count' arg corresponds to the number of descriptors for each of the first 11 descriptor types
-Descriptor_Allocator create_descriptor_allocator(VkDevice device, int max_sets, int counts[11]);
-void destroy_descriptor_allocator(VkDevice device, Descriptor_Allocator *allocator);
-void reset_descriptor_allocator(VkDevice device, Descriptor_Allocator *allocator);
-
-struct Queue_Descriptor_Set_Allocation_Info {
-    int layout_count;
-    VkDescriptorSetLayout *layouts;
-    int *descriptor_counts; // array of len 11
+struct Shader_Info {
+    u32 count;
+    Shader *shaders;
+    Parsed_Spirv *spirv;
 };
-VkDescriptorSet* queue_descriptor_set_allocation(
-    Descriptor_Allocator *allocator, Queue_Descriptor_Set_Allocation_Info *info, VkResult *result);
+Shader_Info create_shaders(u32 count, String *file_names);
+void destroy_shaders(u32 count, Shader *shaders);
 
-void allocate_descriptor_sets(VkDevice device, Descriptor_Allocator *allocator);
-
-struct Descriptor_Set_Layout_Info {
-    int count;
+struct Set_Layout_Info {
+    u32 count;
     VkDescriptorSetLayoutBinding *bindings;
 };
-VkDescriptorSetLayout* create_descriptor_set_layouts(
-    VkDevice device, int count, Descriptor_Set_Layout_Info *infos);
-void destroy_descriptor_set_layouts(VkDevice device, int count, VkDescriptorSetLayout *layouts);
+Set_Layout_Info* group_spirv(u32 count, Parsed_Spirv *parsed_spirv, u32 *returned_set_count);
+void count_descriptors(u32 count, Set_Layout_Info *infos, u32 descriptor_counts[11]);
 
-struct Descriptor_List {
-    int counts[11]; // count per descriptor type
+struct Shader_Set {
+    u32 shader_count; // might not even need the counts as these will be retrieved by name
+    u32 set_count;
+
+    Shader *shaders;
+    VkDescriptorSet *sets;
+
+    VkPipelineLayout pl_layout;
 };
-Descriptor_List gpu_make_descriptor_list(int count, Descriptor_Set_Layout_Info *infos);
-
-
-// Pipeline Setup
-// `ShaderStages
-struct Create_Shader_Stage_Info {
-    u64 code_size;
-    const u32 *shader_code;
-    VkShaderStageFlagBits stage;
-    VkSpecializationInfo *spec_info = NULL;
+struct Shader_Map {
+    HashMap<u64, Shader_Set> map;
 };
-VkPipelineShaderStageCreateInfo* create_shader_stages(VkDevice device, u32 count, Create_Shader_Stage_Info *infos);
-void destroy_shader_stages(VkDevice device, u32 count, VkPipelineShaderStageCreateInfo *stages);
+struct Set_Allocate_Info {
+    u32 count;
+    Set_Layout_Info *infos; // for counting descriptor pool requirements
+    VkDescriptorSetLayout *layouts;
+    VkDescriptorSet *sets;
+};
+Shader_Map create_shader_map(u32 size);
+void destroy_shader_map(Shader_Map *map);
+Set_Allocate_Info insert_shader_set(const char *set_name, u32 count, String *files, Shader_Map *map);
+Shader_Set* get_shader_set(const char *set_name, Shader_Map *map);
+
+
+// Descriptors
+
+VkDescriptorSetLayout* create_set_layouts(u32 count, Set_Layout_Info *info);
+void destroy_set_layouts(u32 count, VkDescriptorSetLayout *layouts);
+
+//
+// @Todo Add function to count pool size required for some set of models
+//
 
 // `PipelineLayout
 struct Pl_Layout_Info {
@@ -172,6 +168,8 @@ struct Pl_Layout_Info {
 VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info);
 void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout);
 
+// Pipeline
+VkPipelineShaderStageCreateInfo* create_pl_shaders(u32 count, Shader *shaders);
 
 #if DEBUG
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
@@ -229,5 +227,5 @@ inline VkDebugUtilsMessengerCreateInfoEXT fill_vk_debug_messenger_info(Create_De
 
 #endif // DEBUG (debug messenger setup)
 
-} // namespace Gpu
+} // namespace gpu
 #endif // include guard

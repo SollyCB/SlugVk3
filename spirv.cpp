@@ -23,62 +23,6 @@
 #include "file.hpp"
 #endif
 
-//     ** DO NOT BIND A DESCRIPTOR TO A NON CONTIGUOUS BINDING **
-// This function relies on bindings being incremented the same way as descriptor sets
-gpu::Descriptor_Set_Layout_Info* group_spirv(int count, Parsed_Spirv *parsed_spirv, int *returned_set_count) {
-    // Find total number of descriptor sets
-    u64 set_mask = 0x0; // Assume fewer than 64 sets
-    for(int i = 0; i < count; ++i) {
-        for(int j = 0; j < parsed_spirv[i].binding_count; ++j)
-            set_mask |= 1 << parsed_spirv[i].bindings[j].set;
-    }
-    int set_count = pop_count64(set_mask);
-
-    // Find unique bindings per mask
-    u64 *binding_mask;
-    u64 *binding_masks = (u64*)malloc_t(sizeof(u64) * set_count, 8);
-    memset(binding_masks, 0, sizeof(u64) * set_count);
-
-    for(int i = 0; i < count; ++i) {
-        for(int j = 0; j < parsed_spirv[i].binding_count; ++j)
-            binding_masks[parsed_spirv[i].bindings[j].set] |= 1 << parsed_spirv[i].bindings[j].binding;
-    }
-
-    // Allocate memory to each bindings array (this could be done as one allocation, and then bind offsets into it,
-    // but since this is a linear allocator the difference would be negligible...)
-    gpu::Descriptor_Set_Layout_Info *sets = (gpu::Descriptor_Set_Layout_Info*)malloc_t(sizeof(gpu::Descriptor_Set_Layout_Info) * set_count, 8);
-    int total_binding_count = 0;
-    for(int i = 0; i < set_count; ++i) {
-        sets[i].count = pop_count64(binding_masks[i]);
-        total_binding_count += sets[i].count;
-
-        sets[i].bindings =
-            (VkDescriptorSetLayoutBinding*)malloc_t(
-                sizeof(VkDescriptorSetLayoutBinding) * sets[i].count, 8);
-    }
-    memset(sets->bindings, 0x0, sizeof(VkDescriptorSetLayoutBinding) * total_binding_count);
-
-    Parsed_Spirv *spirv;
-    Spirv_Descriptor *descriptor;
-    VkDescriptorSetLayoutBinding *binding;
-
-    // merge parsed spirv
-    for(int i = 0; i < count; ++i) {
-         spirv = &parsed_spirv[i];
-         for(int j = 0; j < spirv->binding_count; ++j) {
-            descriptor                 = &spirv->bindings[j];
-            binding                    = &sets[descriptor->set].bindings[descriptor->binding];
-            binding->binding           = descriptor->binding;
-            binding->descriptorCount   = descriptor->count;
-            binding->descriptorType    = descriptor->type;
-            binding->stageFlags       |= spirv->stage;
-         }
-    }
-
-    *returned_set_count = set_count;
-    return sets;
-}
-
 // u32s to prevent compiler warnings when assigning values by derefing spirv
 struct Spirv_Type {
     u32 id;
@@ -138,7 +82,7 @@ void spirv_sort_bindings(Spirv_Descriptor *array, int start, int end) {
     }
 }
 
-Parsed_Spirv parse_spirv(u64 byte_count, const u32 *spirv, int *set_count) {
+Parsed_Spirv parse_spirv(u64 byte_count, const u32 *spirv) {
 
     Parsed_Spirv ret = {};
 
@@ -346,7 +290,6 @@ Parsed_Spirv parse_spirv(u64 byte_count, const u32 *spirv, int *set_count) {
     // sort bindings array to make linking bindings to their respective sets easier.
     spirv_sort_bindings(ret.bindings, 0, descriptor_count - 1);
 
-    *set_count = pop_count64(descriptor_mask);
     return ret;
 }
 
@@ -365,10 +308,8 @@ void test_parser() {
     u64 byte_count;
     const u32 *spirv_blob = (const u32*)file_read_bin_temp("test/test.spv", &byte_count);
 
-    int set_count;
-    Parsed_Spirv spirv = parse_spirv(byte_count, spirv_blob, &set_count);
+    Parsed_Spirv spirv = parse_spirv(byte_count, spirv_blob);
 
-    TEST_EQ("set_count", set_count, 5, false);
     TEST_EQ("binding_count", spirv.binding_count, 6, false);
     TEST_EQ("bindings[0].set"    , spirv.bindings[0].set    , 0, false);
     TEST_EQ("bindings[0].count"  , spirv.bindings[0].count  , 2, false);
@@ -412,14 +353,12 @@ void test_grouper() {
     //const u32 *spirv_blob = (const u32*)file_read_bin_temp("shaders/test_grouper_2.vert.spv", &byte_counts[2]);
     //const u32 *spirv_blob = (const u32*)file_read_bin_temp("shaders/test_grouper_2.frag.spv", &byte_counts[3]);
 
-    int vert_set_count;
-    Parsed_Spirv vert_spirv = parse_spirv(byte_counts[0], spirv_blob_vert_1, &vert_set_count);
-    int frag_set_count;
-    Parsed_Spirv frag_spirv = parse_spirv(byte_counts[1], spirv_blob_frag_1, &frag_set_count);
+    Parsed_Spirv vert_spirv = parse_spirv(byte_counts[0], spirv_blob_vert_1);
+    Parsed_Spirv frag_spirv = parse_spirv(byte_counts[1], spirv_blob_frag_1);
 
     Parsed_Spirv parsed[] = {vert_spirv, frag_spirv};
-    int set_count;
-    gpu::Descriptor_Set_Layout_Info *sets = group_spirv(2, parsed, &set_count);
+    u32 set_count;
+    gpu::Set_Layout_Info *sets = gpu::group_spirv(2, parsed, &set_count);
 
     TEST_EQ("set_count", set_count, 4, false);
     TEST_EQ("sets[0].count", sets[0].count, 3, false);

@@ -44,10 +44,10 @@ add_executable(Slug
     main.cpp
     allocator.cpp
     vulkan_errors.cpp
-    gpu.cpp
     glfw.cpp
     file.cpp
     spirv.cpp
+    gpu.cpp
     gltf.cpp
     string.cpp
 
