@@ -154,6 +154,12 @@ Shader_Set* get_shader_set(const char *set_name, Shader_Map *map);
 VkDescriptorSetLayout* create_set_layouts(u32 count, Set_Layout_Info *info);
 void destroy_set_layouts(u32 count, VkDescriptorSetLayout *layouts);
 
+struct Descriptor_Allocation {
+    VkDescriptorPool pool;
+};
+Descriptor_Allocation create_descriptor_sets(u32 count, Set_Allocate_Info *infos);
+void destroy_descriptor_sets(Descriptor_Allocation *allocation);
+
 //
 // @Todo Add function to count pool size required for some set of models
 //

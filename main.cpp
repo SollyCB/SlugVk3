@@ -31,19 +31,19 @@ int main() {
 
     gpu::Shader_Map shader_map = gpu::create_shader_map(128);
 
+    // Load shaders
     String basic_shader_files[] = {
         get_string("shaders/basic.vert.spv"),
         get_string("shaders/basic.frag.spv"),
     };
-    gpu::Set_Allocate_Info shader_allocate_info = insert_shader_set("basic", 2, basic_shader_files, &shader_map);
-    // count_descriptors(info);
-
-    // Create DescriptorSets
+    gpu::Set_Allocate_Info set_allocate_info = insert_shader_set("basic", 2, basic_shader_files, &shader_map);
+    gpu::Descriptor_Allocation basic_set_allocation = gpu::create_descriptor_sets(1, &set_allocate_info);
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);
     }
           
+    gpu::destroy_descriptor_sets(&basic_set_allocation);
     gpu::destroy_shader_map(&shader_map);
     gpu::kill_window(gpu, window);
     gpu::kill_gpu(gpu);

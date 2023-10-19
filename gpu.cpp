@@ -676,6 +676,8 @@ Set_Layout_Info* group_spirv(u32 count, Parsed_Spirv *parsed_spirv, u32 *returne
     return sets;
 }
 
+// Descriptors
+
 void count_descriptors(u32 count, Set_Layout_Info *infos, u32 descriptor_counts[11]) {
     u32 index;
     for(int i = 0; i < count; ++i)
@@ -700,6 +702,54 @@ void destroy_set_layouts(u32 count, VkDescriptorSetLayout *layouts) {
     VkDevice device = get_gpu_instance()->device;
     for(u32 i = 0; i < count; ++i)
         vkDestroyDescriptorSetLayout(device, layouts[i], ALLOCATION_CALLBACKS);
+}
+
+Descriptor_Allocation create_descriptor_sets(u32 count, Set_Allocate_Info *infos) {
+    u32 max_sets = 0;
+    u32 counts[11];
+    memset(counts, 0, sizeof(u32) * 11);
+    for(u32 i = 0; i < count; ++i) {
+        max_sets += infos[i].count;
+        count_descriptors(infos[i].count, infos[i].infos, counts);
+    }
+
+    VkDescriptorPoolSize *pool_sizes = (VkDescriptorPoolSize*)malloc_t(sizeof(VkDescriptorPoolSize) * 11, 8);
+    u32 pos = 0;
+    for(u32 i = 0; i < 11; ++i) {
+        if (counts[i] == 0)
+            continue;
+        pool_sizes[pos].type = (VkDescriptorType)i;
+        pool_sizes[pos].descriptorCount = counts[i];
+        pos++;
+    }
+
+    VkResult check;
+    VkDescriptorPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = max_sets;
+    pool_info.poolSizeCount = pos;
+    pool_info.pPoolSizes = pool_sizes;
+    VkDevice device = get_gpu_instance()->device;
+    Descriptor_Allocation ret;
+    check = vkCreateDescriptorPool(device, &pool_info, ALLOCATION_CALLBACKS, &ret.pool);
+    DEBUG_OBJ_CREATION(vkCreateDescriptorPool, check);
+
+    VkDescriptorSetAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    alloc_info.descriptorPool = ret.pool;
+    for(u32 i = 0; i < count; ++i) {
+        alloc_info.descriptorSetCount = infos[i].count;
+        alloc_info.pSetLayouts = infos[i].layouts;
+        vkAllocateDescriptorSets(device, &alloc_info, infos[i].sets);
+        DEBUG_OBJ_CREATION(vkAllocateDescriptorSets, check);
+
+        for(u32 j = 0; j < infos[i].count; ++j)
+            vkDestroyDescriptorSetLayout(device, infos[i].layouts[j], ALLOCATION_CALLBACKS);
+    }
+
+    return ret;
+}
+void destroy_descriptor_sets(Descriptor_Allocation *allocation) {
+    VkDevice device = get_gpu_instance()->device;
+    vkDestroyDescriptorPool(device, allocation->pool, ALLOCATION_CALLBACKS);
 }
 
 // `PipelineLayout
