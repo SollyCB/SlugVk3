@@ -41,7 +41,7 @@ int main() {
 
     // Model vertex setup
     String model_files[] = {get_string("models/cube-static/Cube.gltf")};
-    Model_Map model_map = gpu::create_model_map(1, model_files);
+    //Model_Map model_map = gpu::create_model_map(1, model_files);
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);

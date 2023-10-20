@@ -5,6 +5,7 @@
 #include "spirv.hpp"
 #include "file.hpp"
 #include "builtin_wrappers.h"
+#include "gltf.hpp"
 
 namespace gpu {
 
@@ -1034,8 +1035,8 @@ struct Mesh {
     Pl_Prim_Info *pl_infos;
 };
 struct Material {
-    VkImage texture;
-    VkBuffer tex_stage;
+    u32 base_tex;
+    u32 pbr_metal;
 };
 struct Model_Allocation;
 // @Note Static vs animated models should be differentiated. This would reduce memory footprint, 
@@ -1066,8 +1067,8 @@ enum class Model_Allocation_State : u32 {
     DRAWN = 4,
 };
 struct Model_Allocation {
-    u64 vertex_offset;
-    u64 vertex_size;
+    u64 offset;
+    u64 size;
     Model_Allocation_State state;
 };
 struct Model_Allocator {
@@ -1087,34 +1088,48 @@ struct Model_Allocator_Group {
 namespace {
 enum class Type : u8 {
     INDEX,
-    VERT,
-    UNIF,
+    VERTEX,
+    UNIFORM,
 };
 struct Accessor {
     u64 offset;
 };
 struct Buffer_View {
     Type type;
+    u64 offset;
 };
 }
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
+
 Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_files) {
     Model *models = (Model*)malloc_h(sizeof(Model) * count, 8);
-    for(u32 i = 0; i < count; ++i) {
-        models[i].index = allocators->index;
-        models[i].vert = allocators->vert;
-        models[i].unif = allocators->unif;
-    }
+
     Gltf gltf;
-    Gltf_Mesh mesh;
-    Gltf_Mesh_Primitive primitive;
+    Gltf_Mesh *mesh;
+    Gltf_Mesh_Primitive *primitive;
     Gltf_Accessor *accessor;
+    Gltf_Buffer_View *buffer_view;
+    Gltf_Material *material;
+
     Accessor *accessors;
+    Buffer_View *buffer_views;
+
+    u64 mark;
+
     u32 mesh_count;
     u32 material_count;
     u32 accessor_count;
     u32 buffer_view_count;
     u32 prim_track;
+
+    u64 vertex_allocation_size = 0;
+    u64 index_allocation_size = 0;
+    u64 uniform_allocation_size = 0;
+
+    u8 *buffer_contents;
+    u64 buffer_size;
+    void *ptr;
+
     for(u32 i = 0; i < count; ++i) {
         mark = get_mark_temp();
 
@@ -1132,7 +1147,7 @@ Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_f
         models[i].meshes[0].pl_infos = (Pl_Prim_Info*)malloc_h(sizeof(Pl_Prim_Info) * gltf.total_primitive_count, 8);
 
         // For matching primitives to allocation offsets
-        accessors = (Accessor*)malloc_t(sizeof(Accessors) * accessor_count, 8);
+        accessors = (Accessor*)malloc_t(sizeof(Accessor) * accessor_count, 8);
         buffer_views = (Buffer_View*)malloc_t(sizeof(Buffer_View) * buffer_view_count, 8);
 
         // Find buffer view types
@@ -1179,9 +1194,8 @@ Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_f
                     models[i].meshes[j].pl_infos[k].pos_stride = get_accessor_byte_stride(accessor->format);
 
                     // Setup allocation information return
-                    accessors[primitive->position].offset =
-                        gltf_accessor_by_index(&gltf, primitive->position)->byte_offset;
-                    buffer_views[accessors[primitive->position].buffer_view].type = Type::VERTEX;
+                    accessors[primitive->position].offset = accessor->byte_offset;
+                    buffer_views[accessor->buffer_view].type = Type::VERTEX;
                 }
                 if (primitive->normal != -1) {
                     // Pl Vertex Input State
@@ -1189,9 +1203,9 @@ Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_f
                     models[i].meshes[j].pl_infos[k].norm_format = (VkFormat)accessor->format;
                     models[i].meshes[j].pl_infos[k].norm_stride = get_accessor_byte_stride(accessor->format);
 
-                    accessors[primitive->normal].offset =
-                        gltf_accessor_by_index(&gltf, primitive->normal)->byte_offset;
-                    buffer_views[accessors[primitive->normal].buffer_view].type = Type::VERTEX;
+                    // Setup allocation information return
+                    accessors[primitive->normal].offset = accessor->byte_offset;
+                    buffer_views[accessor->buffer_view].type = Type::VERTEX;
                 }
                 if (primitive->tangent != -1) {
                     // Pl Vertex Input State
@@ -1199,9 +1213,9 @@ Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_f
                     models[i].meshes[j].pl_infos[k].tang_format = (VkFormat)accessor->format;
                     models[i].meshes[j].pl_infos[k].tang_stride = get_accessor_byte_stride(accessor->format);
 
-                    accessors[primitive->tangent].offset =
-                        gltf_accessor_by_index(&gltf, primitive->tangent)->byte_offset;
-                    buffer_views[accessors[primitive->tangent].buffer_view].type = Type::VERTEX;
+                    // Setup allocation information return
+                    accessors[primitive->tangent].offset = accessor->byte_offset;
+                    buffer_views[accessor->buffer_view].type = Type::VERTEX;
                 }
                 if (primitive->tex_coord_0 != -1) {
                     // Pl Vertex Input State
@@ -1209,9 +1223,9 @@ Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_f
                     models[i].meshes[j].pl_infos[k].tex_stride = get_accessor_byte_stride(accessor->format);
                     models[i].meshes[j].pl_infos[k].tex_format = (VkFormat)accessor->format;
 
-                    accessors[primitive->tex_coord_0].offset =
-                        gltf_accessor_by_index(&gltf, primitive->tex_coord_0)->byte_offset;
-                    buffer_views[accessors[primitive->tex_coord_0].buffer_view].type = Type::VERTEX;
+                    // Setup allocation information return
+                    accessors[primitive->tex_coord_0].offset = accessor->byte_offset;
+                    buffer_views[accessor->buffer_view].type = Type::VERTEX;
                 }
 
                 primitive = (Gltf_Mesh_Primitive*)((u8*)primitive + primitive->stride);
@@ -1219,6 +1233,18 @@ Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_f
 
             mesh = (Gltf_Mesh*)((u8*)mesh + mesh->stride);
         }
+
+        // @TODO CURRENT TASK!! Allocate the vertex stuff.
+        // This should be one allocation into each buffer. Function sig example:
+        //     void  model_queue_allocation(Allocator *alloc, u64 size);
+        //     void* model_allocate(Allocator *alloc, Model_Allocation *allocation);
+        // Call the first function for each buffer view. When all bufferviews are done,
+        // call the second function which returns your total allocation.
+
+        // Allocate the material stuff.
+        // Need a different type of allocator for the texture stuff. Stage all the textures,
+        // track in the allocator where each texture is within the larger allocation.
+        // When a model needs its textures, it can find them in the list of images in the allocator.
 
         reset_to_mark_temp(mark);
     }
