@@ -627,6 +627,8 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
     VkMemoryAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     allocate_info.pNext = &priority_info;
 
+                                    /* Attachments */
+
     VkImageCreateInfo attachment_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     attachment_info.imageType = VK_IMAGE_TYPE_2D;
     attachment_info.extent = {.width = 1920, .height = 1080, .depth = 1};
@@ -677,6 +679,9 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
 
         vkBindImageMemory(device, gpu->memory.depth_attachments[i], gpu->memory.depth_mem[i], 0);
     }
+
+                                    /* Vertex Attributes */
+
 }
 void allocate_memory() {
     Gpu *gpu = get_gpu_instance();
@@ -986,8 +991,240 @@ void destroy_descriptor_sets(Descriptor_Allocation *allocation) {
     vkDestroyDescriptorPool(device, allocation->pool, ALLOCATION_CALLBACKS);
 }
 
-// `Vertex Input
+// `Model Loading
+#if 1
+struct Mesh;
+struct Node {
+    u32 child_count;
+    Mesh *mesh;
+    Node *children;
+    float rotation[4];
+    float scale[3];
+    float translation[3];
+};
+struct Primitive {
+    u32 mat_index;
+    u32 draw_count;
+    VkIndexType index_type;
 
+    VkBuffer vertex_buffer;
+    VkBuffer index_buffer;
+
+    // Offsets
+    u64 pos;
+    u64 tangent;
+    u64 normal;
+    u64 tex_coords;
+};
+struct Pl_Prim_Info {
+    VkPrimitiveTopology topology;
+
+    u32 pos_stride;
+    VkFormat pos_format;
+    u32 norm_stride;
+    VkFormat norm_format;
+    u32 tang_stride;
+    VkFormat tang_format;
+    u32 tex_stride;
+    VkFormat tex_format;
+};
+struct Mesh {
+    u32 primitive_count;
+    Primitive *primitives;
+    Pl_Prim_Info *pl_infos;
+};
+struct Material {
+    VkImage texture;
+    VkBuffer tex_stage;
+};
+struct Model_Allocation;
+// @Note Static vs animated models should be differentiated. This would reduce memory footprint, 
+// as static models need less data (cache may also benefit).
+// But for now I do not want to increase complexity too much.
+struct Model {
+    u32 mesh_count;
+    u32 mat_count;
+    u32 node_count;
+    Mesh *meshes;
+    Material *mats;
+    Node *nodes; // @Unused Waiting for animation
+
+    Model_Allocation *index_alloc;
+    Model_Allocation *vert_alloc;
+    Model_Allocation *tex_alloc;
+    Model_Allocation *unif_alloc; // @Unused Waiting for animation
+};
+struct Model_Map {
+    HashMap<u64, Model> map;
+};
+
+enum class Model_Allocation_State : u32 {
+    NONE = 0,
+    STAGED = 1,
+    NEEDS_UPLOAD = 2,
+    UPLOADED = 3,
+    DRAWN = 4,
+};
+struct Model_Allocation {
+    u64 vertex_offset;
+    u64 vertex_size;
+    Model_Allocation_State state;
+};
+struct Model_Allocator {
+    u64 bytes_allocated;
+    u64 byte_cap;
+    u32 allocation_cap;
+    u32 allocation_count;
+    Model_Allocation *allocations;
+    VkBuffer stage;
+    VkBuffer upload;
+};
+struct Model_Allocator_Group {
+    Model_Allocator *index;
+    Model_Allocator *vert;
+    Model_Allocator *unif;
+};
+namespace {
+enum class Type : u8 {
+    INDEX,
+    VERT,
+    UNIF,
+};
+struct Accessor {
+    u64 offset;
+};
+struct Buffer_View {
+    Type type;
+};
+}
+u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
+Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_files) {
+    Model *models = (Model*)malloc_h(sizeof(Model) * count, 8);
+    for(u32 i = 0; i < count; ++i) {
+        models[i].index = allocators->index;
+        models[i].vert = allocators->vert;
+        models[i].unif = allocators->unif;
+    }
+    Gltf gltf;
+    Gltf_Mesh mesh;
+    Gltf_Mesh_Primitive primitive;
+    Gltf_Accessor *accessor;
+    Accessor *accessors;
+    u32 mesh_count;
+    u32 material_count;
+    u32 accessor_count;
+    u32 buffer_view_count;
+    u32 prim_track;
+    for(u32 i = 0; i < count; ++i) {
+        mark = get_mark_temp();
+
+        gltf = parse_gltf(model_files[i].str);
+        mesh_count = gltf_mesh_get_count(&gltf);
+        material_count = gltf_material_get_count(&gltf);
+        accessor_count = gltf_accessor_get_count(&gltf);
+        buffer_view_count = gltf_buffer_view_get_count(&gltf);
+
+        // Allocate CPU model memory
+        models[i].meshes = (Mesh*)malloc_h(sizeof(Mesh) * mesh_count, 8);
+        models[i].mats = (Material*)malloc_h(sizeof(Material) * material_count, 8);
+
+        models[i].meshes[0].primitives = (Primitive*)malloc_h(sizeof(Primitive) * gltf.total_primitive_count, 8);
+        models[i].meshes[0].pl_infos = (Pl_Prim_Info*)malloc_h(sizeof(Pl_Prim_Info) * gltf.total_primitive_count, 8);
+
+        // For matching primitives to allocation offsets
+        accessors = (Accessor*)malloc_t(sizeof(Accessors) * accessor_count, 8);
+        buffer_views = (Buffer_View*)malloc_t(sizeof(Buffer_View) * buffer_view_count, 8);
+
+        // Find buffer view types
+        mesh = gltf.meshes;
+        for(u32 j = 0; j < mesh_count; ++j) {
+
+            models[i].meshes[j].primitive_count = mesh->primitive_count;
+            models[i].meshes[j].primitives = models[i].meshes[0].primitives + prim_track;
+            models[i].meshes[j].pl_infos = models[i].meshes[0].pl_infos + prim_track;
+
+            prim_track += mesh->primitive_count;
+
+            primitive = mesh->primitives;
+            for(u32 k = 0; k < mesh->primitive_count; ++k) {
+                
+                accessor = gltf_accessor_by_index(&gltf, primitive->indices);
+
+                // Draw Info
+                models[i].meshes[j].primitives[k].mat_index = primitive->material;
+                models[i].meshes[j].primitives[k].draw_count = accessor->count;
+
+                switch(accessor->format) {
+                case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
+                    models[i].meshes[j].primitives[k].index_type = VK_INDEX_TYPE_UINT16;
+                    break;
+                case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
+                    models[i].meshes[j].primitives[k].index_type = VK_INDEX_TYPE_UINT32;
+                    break;
+                default:
+                    ASSERT(false, "Invalid Index Type");
+                }
+                
+                // Pl Vertex Assembly State
+                models[i].meshes[j].pl_infos[k].topology = (VkPrimitiveTopology)primitive->topology;
+
+                // Setup allocation information return
+                accessors[primitive->indices].offset = accessor->byte_offset;
+                buffer_views[accessor->buffer_view].type = Type::INDEX;
+
+                if (primitive->position != -1) {
+                    // Pl Vertex Input State
+                    accessor = gltf_accessor_by_index(&gltf, primitive->position);
+                    models[i].meshes[j].pl_infos[k].pos_format = (VkFormat)accessor->format;
+                    models[i].meshes[j].pl_infos[k].pos_stride = get_accessor_byte_stride(accessor->format);
+
+                    // Setup allocation information return
+                    accessors[primitive->position].offset =
+                        gltf_accessor_by_index(&gltf, primitive->position)->byte_offset;
+                    buffer_views[accessors[primitive->position].buffer_view].type = Type::VERTEX;
+                }
+                if (primitive->normal != -1) {
+                    // Pl Vertex Input State
+                    accessor = gltf_accessor_by_index(&gltf, primitive->normal);
+                    models[i].meshes[j].pl_infos[k].norm_format = (VkFormat)accessor->format;
+                    models[i].meshes[j].pl_infos[k].norm_stride = get_accessor_byte_stride(accessor->format);
+
+                    accessors[primitive->normal].offset =
+                        gltf_accessor_by_index(&gltf, primitive->normal)->byte_offset;
+                    buffer_views[accessors[primitive->normal].buffer_view].type = Type::VERTEX;
+                }
+                if (primitive->tangent != -1) {
+                    // Pl Vertex Input State
+                    accessor = gltf_accessor_by_index(&gltf, primitive->tangent);
+                    models[i].meshes[j].pl_infos[k].tang_format = (VkFormat)accessor->format;
+                    models[i].meshes[j].pl_infos[k].tang_stride = get_accessor_byte_stride(accessor->format);
+
+                    accessors[primitive->tangent].offset =
+                        gltf_accessor_by_index(&gltf, primitive->tangent)->byte_offset;
+                    buffer_views[accessors[primitive->tangent].buffer_view].type = Type::VERTEX;
+                }
+                if (primitive->tex_coord_0 != -1) {
+                    // Pl Vertex Input State
+                    accessor = gltf_accessor_by_index(&gltf, primitive->tex_coord_0);
+                    models[i].meshes[j].pl_infos[k].tex_stride = get_accessor_byte_stride(accessor->format);
+                    models[i].meshes[j].pl_infos[k].tex_format = (VkFormat)accessor->format;
+
+                    accessors[primitive->tex_coord_0].offset =
+                        gltf_accessor_by_index(&gltf, primitive->tex_coord_0)->byte_offset;
+                    buffer_views[accessors[primitive->tex_coord_0].buffer_view].type = Type::VERTEX;
+                }
+
+                primitive = (Gltf_Mesh_Primitive*)((u8*)primitive + primitive->stride);
+            }
+
+            mesh = (Gltf_Mesh*)((u8*)mesh + mesh->stride);
+        }
+
+        reset_to_mark_temp(mark);
+    }
+}
+
+#endif
 
 // `PipelineLayout
 VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info) {
@@ -1020,6 +1257,112 @@ VkPipelineShaderStageCreateInfo* create_pl_shaders(u32 count, Shader *shaders) {
     return ret;
 }
 
+// functions like this are such a waste of time to write...
+u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
+        switch(accessor_format) {
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U8:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S8:
+                return 1;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S8:
+                return 2;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S8:
+                return 3;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S8:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S16:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT16:
+                return 2;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT16:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT16:
+                return 6;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT16:
+                 return 8;
+
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S32:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT32:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT32:
+                return 8;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT32:
+                return 12;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT32:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S8:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S8:
+                return 9;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S8:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT16:
+                return 8;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT16:
+                return 18;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT16:
+                return 32;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT32:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT32:
+                return 36;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT32:
+                return 64;
+
+            default:
+                ASSERT(false, "Invalid Accessor Format");
+                return Max_u32;
+        }
+}
 #if DEBUG
 VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info) {
     VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info = fill_vk_debug_messenger_info(info);
