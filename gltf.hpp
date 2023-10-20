@@ -373,6 +373,8 @@ struct Gltf {
     // All strides can be calculated from the other info in the struct, but some of these algorithms 
     // are weird and incur unclear overhead. So for consistency's sake they will just be included, 
     // regardless of the ease with which the strides can be calculated. 
+    u32 total_primitive_count;
+
     int scene;
     int *accessor_count;
     int *animation_count;

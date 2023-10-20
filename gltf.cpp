@@ -33,7 +33,7 @@ Gltf_Image* gltf_parse_images(const char *data, u64 *offset, int *image_count);
 Gltf_Material* gltf_parse_materials(const char *data, u64 *offset, int *material_count);
 void gltf_parse_texture_info(const char *data, u64 *offset, int *index, int *tex_coord, float *scale, float *strength);
 
-Gltf_Mesh* gltf_parse_meshes(const char *data, u64 *offset, int *mesh_count);
+Gltf_Mesh* gltf_parse_meshes(const char *data, u64 *offset, int *mesh_count, u32 *total_primitive_count);
 Gltf_Mesh_Primitive* gltf_parse_mesh_primitives(const char *data, u64 *offset, int *primitive_count);
 Gltf_Mesh_Attribute* gltf_parse_mesh_attributes(const char *data, u64 *offset, int *attribute_count, bool targets, int *position, int *tangent, int *normal, int *tex_coord_0);
 
@@ -115,7 +115,7 @@ Gltf parse_gltf(const char *filename) {
     //
     u64 size;
     const char *data = (const char*)file_read_char_temp_padded(filename, &size, 16);
-    Gltf gltf;
+    Gltf gltf = {};
     char buf[16];
     u64 offset = 0;
 
@@ -157,7 +157,7 @@ Gltf parse_gltf(const char *filename) {
             gltf.materials = gltf_parse_materials(data + offset, &offset, &material_count);
             continue;
         } else if (simd_strcmp_short(data + offset, "meshesxxxxxxxxxx", 10) == 0) {
-            gltf.meshes = gltf_parse_meshes(data + offset, &offset, &mesh_count);
+            gltf.meshes = gltf_parse_meshes(data + offset, &offset, &mesh_count, &gltf.total_primitive_count);
             continue;
         } else if (simd_strcmp_short(data + offset, "nodesxxxxxxxxxxx", 11) == 0) {
             gltf.nodes = gltf_parse_nodes(data + offset, &offset, &node_count);
@@ -1431,7 +1431,7 @@ void gltf_parse_texture_info(const char *data, u64 *offset, int *index, int *tex
 }
 
 // `Meshes
-Gltf_Mesh* gltf_parse_meshes(const char *data, u64 *offset, int *mesh_count) {
+Gltf_Mesh* gltf_parse_meshes(const char *data, u64 *offset, int *mesh_count, u32 *total_primitive_count) {
     Gltf_Mesh *meshes = (Gltf_Mesh*)malloc_t(0, 8);
     Gltf_Mesh *mesh;
 
@@ -1459,6 +1459,7 @@ Gltf_Mesh* gltf_parse_meshes(const char *data, u64 *offset, int *mesh_count) {
             }
         }
         mesh->stride = align(get_mark_temp() - mark, 8);
+        *total_primitive_count += mesh->primitive_count;
     }
     *offset += inc;
     *mesh_count = count;
@@ -1973,6 +1974,7 @@ static void test_textures(Gltf_Texture *textures);
 
 void test_gltf() {
     Gltf gltf = parse_gltf("test/test_gltf.gltf");
+    ASSERT(gltf.total_primitive_count == 5, "Incorrect Total Primitive Count");
 
     test_accessors(gltf.accessors);
     ASSERT(gltf.accessor_count[-1] == 3, "Incorrect Accessor Count");
