@@ -18,6 +18,28 @@
 
 namespace gpu {
 
+static constexpr u32 DEPTH_ATTACHMENT_COUNT = 1;
+static constexpr u32 COLOR_ATTACHMENT_COUNT = 1;
+static constexpr u32 VERTEX_STAGE_COUNT     = 1;
+static constexpr u32 INDEX_STAGE_COUNT      = 1;
+static constexpr u32 TEXTURE_STAGE_COUNT    = 1;
+static constexpr u32 UNIFORM_BUFFER_COUNT   = 1;
+struct Gpu_Memory {
+    VkDeviceMemory depth_mem[DEPTH_ATTACHMENT_COUNT];
+    VkDeviceMemory color_mem[COLOR_ATTACHMENT_COUNT];
+    VkImage depth_attachments[DEPTH_ATTACHMENT_COUNT];
+    VkImage color_attachments[COLOR_ATTACHMENT_COUNT];
+
+    VkDeviceMemory vertex_mem_stage[VERTEX_STAGE_COUNT];
+    VkDeviceMemory index_mem_stage [INDEX_STAGE_COUNT];
+    VkDeviceMemory vertex_mem_device;
+    VkDeviceMemory index_mem_device;
+
+    VkDeviceMemory texture_mem_stage[TEXTURE_STAGE_COUNT];
+    VkDeviceMemory texture_mem_device;
+
+    VkDeviceMemory uniform_mem[UNIFORM_BUFFER_COUNT];
+};
 struct Gpu_Info {
     VkPhysicalDeviceProperties props;
 };
@@ -27,6 +49,7 @@ struct Gpu {
     VkInstance instance;
     VkPhysicalDevice phys_device;
     VkDevice device;
+
     VkQueue graphics_queue;
     VkQueue present_queue;
     VkQueue transfer_queue;
@@ -34,6 +57,8 @@ struct Gpu {
     u32 graphics_queue_index;
     u32 present_queue_index;
     u32 transfer_queue_index;
+
+    Gpu_Memory memory;
 };
 Gpu* get_gpu_instance();
 
@@ -104,6 +129,10 @@ inline static VkRect2D gpu_get_complete_screen_area()
     };
     return rect;
 }
+
+// Memory
+void allocate_memory();
+void free_memory();
 
 // Shaders
 struct Shader {
