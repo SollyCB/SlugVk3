@@ -284,8 +284,7 @@ struct Gltf_Mesh_Primitive {
     int material;
     int topology = GLTF_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-    // @Todo add tex_coord_0 (spec says support at least two texture coords)
-    // @Todo add joints_0, weights_0
+    // This is a bit messy. Really everything should just be in the 'extra_attributes' array and renames 'attributes'
     int position = -1;
     int tangent = -1;
     int normal = -1;

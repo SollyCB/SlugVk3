@@ -994,262 +994,201 @@ void destroy_descriptor_sets(Descriptor_Allocation *allocation) {
 
 // `Model Loading
 #if 1
-struct Mesh;
-struct Node {
-    u32 child_count;
-    Mesh *mesh;
-    Node *children;
-    float rotation[4];
-    float scale[3];
-    float translation[3];
-};
-struct Primitive {
-    u32 mat_index;
-    u32 draw_count;
-    VkIndexType index_type;
+u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 
-    VkBuffer vertex_buffer;
-    VkBuffer index_buffer;
+/*
 
-    // Offsets
-    u64 pos;
-    u64 tangent;
-    u64 normal;
-    u64 tex_coords;
-};
-struct Pl_Prim_Info {
-    VkPrimitiveTopology topology;
+    Allocation System:
 
-    u32 pos_stride;
-    VkFormat pos_format;
-    u32 norm_stride;
-    VkFormat norm_format;
-    u32 tang_stride;
-    VkFormat tang_format;
-    u32 tex_stride;
-    VkFormat tex_format;
-};
-struct Mesh {
-    u32 primitive_count;
-    Primitive *primitives;
-    Pl_Prim_Info *pl_infos;
-};
-struct Material {
-    u32 base_tex;
-    u32 pbr_metal;
-};
-struct Model_Allocation;
-// @Note Static vs animated models should be differentiated. This would reduce memory footprint, 
-// as static models need less data (cache may also benefit).
-// But for now I do not want to increase complexity too much.
-struct Model {
-    u32 mesh_count;
-    u32 mat_count;
-    u32 node_count;
-    Mesh *meshes;
-    Material *mats;
-    Node *nodes; // @Unused Waiting for animation
+    Loading Models:
+        Call 'begin()' on an allocator to align the allocator.
+        Call 'queue()' to increase the size of the current allocation and get a ptr to
+        write to the queued size.
+        Call 'stage()' to get a pointer to the final total allocation.
 
-    Model_Allocation *index_alloc;
-    Model_Allocation *vert_alloc;
-    Model_Allocation *tex_alloc;
-    Model_Allocation *unif_alloc; // @Unused Waiting for animation
-};
-struct Model_Map {
-    HashMap<u64, Model> map;
-};
+    Uploading Models:
+        When a model wants to be drawn, its checks the state of its allocations. If they
+        are not uploaded, it calls 'upload()' with its allocation. The allocation's state
+        is updated indicated it needs to be uploaded. 
+        When the allocation is uploaded, its state is updated to reflect this. It also updates
+        its 'upload_offset' field with the offset of the allocation in the device buffer.
+        When an allocation's state demonstrates that it has been uploaded, the model can loop
+        its respective members in order to update their offsets relative to the allocation's
+        place in the device buffer.
 
-enum class Model_Allocation_State : u32 {
+    Evicting Models:
+        When memory is running low in the device buffer, allocations can be evicted. This
+        can only happen to allocations whose state == DRAWN. When an allocation is evicted,
+        its state will return to STAGED, and its 'prev_offset' field will be set to its
+        'upload_offset' field. This allocation can then be overwritten in the device buffer.
+        Eviction begins at the end of the buffer, so models which are expected to be persistent
+        should be allocated first.
+
+    Updating Offsets:
+        When a model is first loaded, its members' offsets should be relative to the beginning
+        of the allocation, as if the allocation's offset into the device buffer were zero.
+        When the allocation is later upload, the members' offsets will += the offset of the
+        allocation into the device buffer.
+        When a model is uploaded a subsequent time, its offset must be adjusted according the
+        'prev_offset' field of the allocation.
+
+*/
+
+enum class Allocation_State : u32 {
     NONE = 0,
     STAGED = 1,
-    NEEDS_UPLOAD = 2,
+    TO_UPLOAD = 2,
     UPLOADED = 3,
     DRAWN = 4,
 };
-struct Model_Allocation {
-    u64 offset;
+struct Allocation {
+    u64 stage_offset;
+    u64 upload_offset;
+    u64 prev_offset;
     u64 size;
-    Model_Allocation_State state;
+    Allocation_State state;
 };
-struct Model_Allocator {
-    u64 bytes_allocated;
-    u64 byte_cap;
-    u32 allocation_cap;
-    u32 allocation_count;
-    Model_Allocation *allocations;
+struct Allocator {
+    u32 alloc_cap;
+    u32 alloc_count;
+
+    u64 stage_cap;
+    u64 stage_count;
+    u64 upload_cap;
+    u64 upload_count;
+
     VkBuffer stage;
     VkBuffer upload;
-};
-struct Model_Allocator_Group {
-    Model_Allocator *index;
-    Model_Allocator *vert;
-    Model_Allocator *unif;
-};
-namespace {
-enum class Type : u8 {
-    INDEX,
-    VERTEX,
-    UNIFORM,
-};
-struct Accessor {
-    u64 offset;
-};
-struct Buffer_View {
-    Type type;
-    u64 offset;
-};
-}
-u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 
-Model* load_models(Model_Allocator_Group *allocators, u32 count, String *model_files) {
-    Model *models = (Model*)malloc_h(sizeof(Model) * count, 8);
+    Allocation *allocations;
+};
+struct Tex_Allocator {
+    u32 alloc_cap;
+    u32 alloc_count;
 
-    Gltf gltf;
-    Gltf_Mesh *mesh;
-    Gltf_Mesh_Primitive *primitive;
-    Gltf_Accessor *accessor;
-    Gltf_Buffer_View *buffer_view;
-    Gltf_Material *material;
+    u64 stage_cap;
+    u64 stage_count;
+    u64 upload_cap;
+    u64 upload_count;
 
-    Accessor *accessors;
-    Buffer_View *buffer_views;
+    VkBuffer stage;
+    VkImage *upload;
 
-    u64 mark;
+    Allocation *allocations;
+};
 
+// Align allocator
+void begin(Allocator *alloc) {}
+// Push size to queue; write to pushed size
+void* queue(Allocator *alloc, u64 size) {}
+// Signal queue complete; return size and offset of final total allocation
+Allocation* stage(Allocator *alloc) {}
+VkBuffer upload(Allocator *alloc, Allocation *allocation) {}
+VkImage* tex_upload(Allocator *alloc, u32 count, Allocation *allocations) {}
+
+struct Node;
+struct Skin {
+    u32 joint_count;
+    Node *joints;
+    Node *skeleton;
+    VkBuffer matrices;
+};
+struct Trs {
+    Vec3 trans;
+    Vec4 rot;
+    Vec3 scale;
+};
+struct Material {
+    VkImage base;
+    VkImage pbr;
+};
+struct Primitive {
+    VkBuffer indices;
+    VkBuffer vertices;
+
+    u64 index_offset;
+    u64 offset_pos;
+    u64 offset_norm;
+    u64 offset_tang;
+    u64 offset_tex;
+
+    Material *material;
+};
+struct Skinned_Primitive {
+    Primitive primitive;
+    u64 offset_joints;
+    u64 offset_weights;
+};
+struct Pl_Prim_Info {
+    u32 count;
+    u32 *bindings;
+    u32 *strides;
+    VkFormat *formats;
+};
+struct Mesh {
+    u32 count;
+    Primitive *primitives;
+    Pl_Prim_Info *pl_infos;
+};
+struct Skinned_Mesh {
+    u32 count;
+    Skinned_Primitive *primitives;
+    Pl_Prim_Info *pl_infos;
+};
+struct Node {
+union {
+    Trs trs;
+    Mat4 mat;
+};
+    u32 child_count;
+    Node *children;
+    Mesh *mesh;
+    Skin *skin;
+};
+struct Model {
+    u32 node_count;
     u32 mesh_count;
+    u32 skinned_mesh_count;
+    u32 skin_count;
     u32 material_count;
-    u32 accessor_count;
-    u32 buffer_view_count;
-    u32 prim_track;
 
-    u64 vertex_allocation_size = 0;
-    u64 index_allocation_size = 0;
-    u64 uniform_allocation_size = 0;
+    Node *nodes;
+    Mesh *meshes;
+    Skinned_Mesh *skinned_meshes;
+    Skin *skins;
+    Material *materials;
 
-    u8 *buffer_contents;
-    u64 buffer_size;
-    void *ptr;
+    Allocation *index_alloc;
+    Allocation *vertex_alloc;
+    Allocation *uniform_alloc;
+    Allocation *tex_allocations;
+};
+struct Static_Model {
+    u32 node_count;
+    u32 mesh_count;
 
-    for(u32 i = 0; i < count; ++i) {
-        mark = get_mark_temp();
+    Allocation *index_alloc;
+    Allocation *vertex_alloc;
+    Allocation *tex_alloc;
+};
+struct Model_Allocators {
+    Allocator *index;
+    Allocator *vertex;
+    Tex_Allocator *tex;
+};
+// @Todo load_skinned_models(); <- this will also need to load animations
+Model load_model(Model_Allocators *allocs, String *model_name) {
+    u64 mark = get_mark_temp();
 
-        gltf = parse_gltf(model_files[i].str);
-        mesh_count = gltf_mesh_get_count(&gltf);
-        material_count = gltf_material_get_count(&gltf);
-        accessor_count = gltf_accessor_get_count(&gltf);
-        buffer_view_count = gltf_buffer_view_get_count(&gltf);
+    Model ret = {};
 
-        // Allocate CPU model memory
-        models[i].meshes = (Mesh*)malloc_h(sizeof(Mesh) * mesh_count, 8);
-        models[i].mats = (Material*)malloc_h(sizeof(Material) * material_count, 8);
+    // Load Vertex Attribute Data
+    
 
-        models[i].meshes[0].primitives = (Primitive*)malloc_h(sizeof(Primitive) * gltf.total_primitive_count, 8);
-        models[i].meshes[0].pl_infos = (Pl_Prim_Info*)malloc_h(sizeof(Pl_Prim_Info) * gltf.total_primitive_count, 8);
+    // Load Material Data
 
-        // For matching primitives to allocation offsets
-        accessors = (Accessor*)malloc_t(sizeof(Accessor) * accessor_count, 8);
-        buffer_views = (Buffer_View*)malloc_t(sizeof(Buffer_View) * buffer_view_count, 8);
-
-        // Find buffer view types
-        mesh = gltf.meshes;
-        for(u32 j = 0; j < mesh_count; ++j) {
-
-            models[i].meshes[j].primitive_count = mesh->primitive_count;
-            models[i].meshes[j].primitives = models[i].meshes[0].primitives + prim_track;
-            models[i].meshes[j].pl_infos = models[i].meshes[0].pl_infos + prim_track;
-
-            prim_track += mesh->primitive_count;
-
-            primitive = mesh->primitives;
-            for(u32 k = 0; k < mesh->primitive_count; ++k) {
-                
-                accessor = gltf_accessor_by_index(&gltf, primitive->indices);
-
-                // Draw Info
-                models[i].meshes[j].primitives[k].mat_index = primitive->material;
-                models[i].meshes[j].primitives[k].draw_count = accessor->count;
-
-                switch(accessor->format) {
-                case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
-                    models[i].meshes[j].primitives[k].index_type = VK_INDEX_TYPE_UINT16;
-                    break;
-                case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
-                    models[i].meshes[j].primitives[k].index_type = VK_INDEX_TYPE_UINT32;
-                    break;
-                default:
-                    ASSERT(false, "Invalid Index Type");
-                }
-                
-                // Pl Vertex Assembly State
-                models[i].meshes[j].pl_infos[k].topology = (VkPrimitiveTopology)primitive->topology;
-
-                // Setup allocation information return
-                accessors[primitive->indices].offset = accessor->byte_offset;
-                buffer_views[accessor->buffer_view].type = Type::INDEX;
-
-                if (primitive->position != -1) {
-                    // Pl Vertex Input State
-                    accessor = gltf_accessor_by_index(&gltf, primitive->position);
-                    models[i].meshes[j].pl_infos[k].pos_format = (VkFormat)accessor->format;
-                    models[i].meshes[j].pl_infos[k].pos_stride = get_accessor_byte_stride(accessor->format);
-
-                    // Setup allocation information return
-                    accessors[primitive->position].offset = accessor->byte_offset;
-                    buffer_views[accessor->buffer_view].type = Type::VERTEX;
-                }
-                if (primitive->normal != -1) {
-                    // Pl Vertex Input State
-                    accessor = gltf_accessor_by_index(&gltf, primitive->normal);
-                    models[i].meshes[j].pl_infos[k].norm_format = (VkFormat)accessor->format;
-                    models[i].meshes[j].pl_infos[k].norm_stride = get_accessor_byte_stride(accessor->format);
-
-                    // Setup allocation information return
-                    accessors[primitive->normal].offset = accessor->byte_offset;
-                    buffer_views[accessor->buffer_view].type = Type::VERTEX;
-                }
-                if (primitive->tangent != -1) {
-                    // Pl Vertex Input State
-                    accessor = gltf_accessor_by_index(&gltf, primitive->tangent);
-                    models[i].meshes[j].pl_infos[k].tang_format = (VkFormat)accessor->format;
-                    models[i].meshes[j].pl_infos[k].tang_stride = get_accessor_byte_stride(accessor->format);
-
-                    // Setup allocation information return
-                    accessors[primitive->tangent].offset = accessor->byte_offset;
-                    buffer_views[accessor->buffer_view].type = Type::VERTEX;
-                }
-                if (primitive->tex_coord_0 != -1) {
-                    // Pl Vertex Input State
-                    accessor = gltf_accessor_by_index(&gltf, primitive->tex_coord_0);
-                    models[i].meshes[j].pl_infos[k].tex_stride = get_accessor_byte_stride(accessor->format);
-                    models[i].meshes[j].pl_infos[k].tex_format = (VkFormat)accessor->format;
-
-                    // Setup allocation information return
-                    accessors[primitive->tex_coord_0].offset = accessor->byte_offset;
-                    buffer_views[accessor->buffer_view].type = Type::VERTEX;
-                }
-
-                primitive = (Gltf_Mesh_Primitive*)((u8*)primitive + primitive->stride);
-            }
-
-            mesh = (Gltf_Mesh*)((u8*)mesh + mesh->stride);
-        }
-
-        // @TODO CURRENT TASK!! Allocate the vertex stuff.
-        // This should be one allocation into each buffer. Function sig example:
-        //     void  model_queue_allocation(Allocator *alloc, u64 size);
-        //     void* model_allocate(Allocator *alloc, Model_Allocation *allocation);
-        // Call the first function for each buffer view. When all bufferviews are done,
-        // call the second function which returns your total allocation.
-
-        // Allocate the material stuff.
-        // Need a different type of allocator for the texture stuff. Stage all the textures,
-        // track in the allocator where each texture is within the larger allocation.
-        // When a model needs its textures, it can find them in the list of images in the allocator.
-
-        reset_to_mark_temp(mark);
-    }
+    reset_to_mark_temp(mark);
 }
-
 #endif
 
 // `PipelineLayout
