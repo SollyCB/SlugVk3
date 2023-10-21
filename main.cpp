@@ -40,8 +40,11 @@ int main() {
     gpu::Descriptor_Allocation basic_set_allocation = gpu::create_descriptor_sets(1, &set_allocate_info);
 
     // Model vertex setup
+    String model_dir = get_string("models/cube-static/");
     String model_files[] = {get_string("models/cube-static/Cube.gltf")};
-    //Model_Map model_map = gpu::create_model_map(1, model_files);
+    gpu::model::Model_Allocators allocs = {};
+    gpu::model::Static_Model model = load_static_model(&allocs, &model_files[0], &model_dir);
+    free_static_model(&model);
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);

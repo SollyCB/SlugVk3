@@ -15,6 +15,7 @@
 #include "spirv.hpp"
 #include "string.hpp"
 #include "hash_map.hpp"
+#include "math.hpp"
 
 namespace gpu {
 
@@ -202,6 +203,196 @@ struct Pl_Layout_Info {
 };
 VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info);
 void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout);
+
+
+/* Model Loading */
+namespace model {
+enum class Allocation_State : u32 {
+    NONE = 0,
+    STAGED = 1,
+    TO_UPLOAD = 2,
+    UPLOADED = 3,
+    DRAWN = 4,
+};
+struct Allocation {
+    u64 stage_offset;
+    u64 upload_offset;
+    u64 prev_offset;
+    u64 size;
+    Allocation_State state;
+};
+struct Allocator {
+    u32 alloc_cap;
+
+    u32 staged; // end of staged field
+    u32 to_upload; // index of first to upload
+    u32 uploaded; // index of most recent upload
+
+    // Byte counts
+    u64 stage_cap;
+    u64 stage_count;
+    u64 upload_cap;
+    u64 upload_count;
+
+    VkBuffer stage;
+    VkBuffer upload;
+
+    Allocation *allocations;
+};
+struct Tex_Allocation {
+    u64 stage_offset;
+    u32 width;
+    u32 height;
+    VkImage image;
+    Allocation_State state;
+};
+struct Tex_Allocator {
+    u32 alloc_cap;
+
+    u32 staged; // end of staged field
+    u32 to_upload; // index of first to upload
+    u32 uploaded; // index of most recent upload
+
+    u64 queue_begin;
+    u64 queue_end;
+
+    // Byte counts
+    u64 stage_cap;
+    u64 stage_count;
+    u64 upload_cap;
+    u64 upload_count;
+
+    VkBuffer stage;
+    VkDeviceMemory upload;
+
+    Tex_Allocation *allocations;
+};
+/*
+    Buffer Allocation API:
+    Assumes that buffer uploads will consist of multiple smaller allocations which can
+    be grouped into a large allocation.
+    Assumes that texture uploads will consist of single allocations.
+*/
+void begin(Allocator *alloc);
+// Push size to queue; write to pushed size
+void* queue(Allocator *alloc, u64 size, u64 *offset);
+// Signal queue complete; return size and offset of final total allocation
+Allocation* stage(Allocator *alloc);
+// Mark data for gpu transfer
+VkBuffer upload(Allocator *alloc, Allocation *allocation);
+
+Tex_Allocation* tex_stage(Tex_Allocator *alloc, u32 width, u32 height, void **ptr);
+VkImage* tex_upload(Allocator *alloc, u32 count, Allocation *allocations);
+
+struct Node;
+struct Skin {
+    u32 joint_count;
+    Node *joints;
+    Node *skeleton;
+    VkBuffer matrices;
+};
+struct Trs {
+    Vec3 trans;
+    Vec4 rot;
+    Vec3 scale;
+};
+struct Material {
+    VkImage base;
+    VkImage pbr;
+};
+struct Primitive {
+    u32 count; // draw count (num indices)
+    VkIndexType index_type;
+
+    VkBuffer indices;
+    VkBuffer vertices;
+
+    u64 offset_index;
+    u64 offset_pos;
+    u64 offset_norm;
+    u64 offset_tang;
+    u64 offset_tex;
+
+    Material *material;
+};
+struct Skinned_Primitive {
+    Primitive prim;
+    u64 offset_joints;
+    u64 offset_weights;
+};
+struct Pl_Prim_Info {
+// Not sure how important these things are: I am already assuming bindings and location etc,
+// so also assuming the format and the stride of the data is not a stretch...
+    u32 strides[4];
+    VkFormat formats[4];
+};
+struct Pl_Prim_Info_Skinned {
+// Not sure how important these things are: I am already assuming bindings and location etc,
+// so also assuming the format and the stride of the data is not a stretch...
+    Pl_Prim_Info prim;
+    u32 strides[2];
+    VkFormat formats[2];
+};
+struct Mesh {
+    u32 count;
+    Primitive *primitives;
+    Pl_Prim_Info *pl_infos;
+};
+struct Skinned_Mesh {
+    u32 count;
+    Skinned_Primitive *primitives;
+    Pl_Prim_Info *pl_infos;
+};
+struct Node {
+union {
+    Trs trs;
+    Mat4 mat;
+};
+    u32 child_count;
+    Node *children;
+    Mesh *mesh;
+    Skin *skin;
+};
+struct Model {
+    u32 node_count;
+    u32 mesh_count;
+    u32 skinned_mesh_count;
+    u32 skin_count;
+    u32 material_count;
+
+    Node *nodes;
+    Mesh *meshes;
+    Skinned_Mesh *skinned_meshes;
+    Skin *skins;
+    Material *mats;
+
+    Allocation *index_alloc;
+    Allocation *vert_alloc;
+    Allocation *uniform_alloc;
+    Allocation *tex_allocations;
+};
+struct Static_Model {
+    u32 node_count;
+    u32 mesh_count;
+    u32 mat_count;
+
+    Node *nodes;
+    Mesh *meshes;
+    Material *mats;
+
+    Allocation *index_alloc;
+    Allocation *vert_alloc;
+    Allocation *tex_alloc;
+};
+struct Model_Allocators {
+    Allocator *index;
+    Allocator *vert;
+    Tex_Allocator *tex;
+};
+Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
+void free_static_model(Static_Model *model);
+
+} // namespace model
 
 // Pipeline
 VkPipelineShaderStageCreateInfo* create_pl_shaders(u32 count, Shader *shaders);

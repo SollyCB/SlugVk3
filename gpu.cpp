@@ -992,16 +992,57 @@ void destroy_descriptor_sets(Descriptor_Allocation *allocation) {
     vkDestroyDescriptorPool(device, allocation->pool, ALLOCATION_CALLBACKS);
 }
 
+// `PipelineLayout
+VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info) {
+    VkPipelineLayoutCreateInfo create_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    create_info.setLayoutCount         = info->layout_count;
+    create_info.pSetLayouts            = info->layouts;
+    create_info.pushConstantRangeCount = info->push_constant_count;
+    create_info.pPushConstantRanges    = info->push_constants;
+
+    VkPipelineLayout layout;
+    auto check = vkCreatePipelineLayout(device, &create_info, ALLOCATION_CALLBACKS, &layout);
+    DEBUG_OBJ_CREATION(vkCreatePipelineLayout, check);
+    return layout;
+}
+void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout) {
+    vkDestroyPipelineLayout(device, pl_layout, ALLOCATION_CALLBACKS);
+}
+
+// Pipeline
+VkPipelineShaderStageCreateInfo* create_pl_shaders(u32 count, Shader *shaders) {
+    VkPipelineShaderStageCreateInfo *ret =
+        (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo*) * count, 8);
+    for(int i = 0; i < count; ++i) {
+        ret[i] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        ret[i].stage = shaders[i].stage;
+        ret[i].module = shaders[i].module;
+        ret[i].pName = "main";
+        ret[i].pSpecializationInfo = NULL;
+    }
+    return ret;
+}
+
+
 // `Model Loading
+namespace model {
 #if 1
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
+
+void begin(Allocator *alloc) {}
+void* queue(Allocator *alloc, u64 size, u64 *offset) { *offset = 1; return (void*)malloc_t(size, 1); }
+Allocation* stage(Allocator *alloc) {}
+VkBuffer upload(Allocator *alloc, Allocation *allocation) {}
+
+Tex_Allocation* tex_stage(Tex_Allocator *alloc, u32 width, u32 height, void **ptr);
+VkImage* tex_upload(Allocator *alloc, u32 count, Allocation *allocations);
 
 /*
 
     Model Allocation System:
 
     Loading Models:
-        Call 'begin()' on an allocator to align the allocator.
+        Call 'begin()' on an allocator to prepare the allocator for queued allocations.
         Call 'queue()' to increase the size of the current allocation and get a ptr to
         write to the queued size.
         Call 'stage()' to get a pointer to the final total allocation.
@@ -1046,218 +1087,219 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
             position offset += (s64)upload - prev == 200 + (600 - 100) = 700
 
 */
-
-enum class Allocation_State : u32 {
+enum class Data_Type : u32 {
     NONE = 0,
-    STAGED = 1,
-    TO_UPLOAD = 2,
-    UPLOADED = 3,
-    DRAWN = 4,
+    VERTEX = 1,
+    INDEX = 2,
+    UNIFORM = 3,
 };
-struct Allocation {
-    u64 stage_offset;
-    u64 upload_offset;
-    u64 prev_offset;
-    u64 size;
-    Allocation_State state;
-};
-struct Allocator {
-    u32 alloc_cap;
-
-    u32 staged; // end of staged field
-    u32 to_upload; // index of first to upload
-    u32 uploaded; // index of most recent upload
-
-    // Byte counts
-    u64 stage_cap;
-    u64 stage_count;
-    u64 upload_cap;
-    u64 upload_count;
-
-    VkBuffer stage;
-    VkBuffer upload;
-
-    Allocation *allocations;
-};
-struct Tex_Allocation {
-    u64 stage_offset;
-    u32 width;
-    u32 height;
-    VkImage image;
-    Allocation_State state;
-};
-struct Tex_Allocator {
-    u32 alloc_cap;
-
-    u32 staged; // end of staged field
-    u32 to_upload; // index of first to upload
-    u32 uploaded; // index of most recent upload
-
-    // Byte counts
-    u64 stage_cap;
-    u64 stage_count;
-    u64 upload_cap;
-    u64 upload_count;
-
-    VkBuffer stage;
-    VkDeviceMem upload;
-
-    Tex_Allocation *allocations;
-};
-/*
-    Buffer Allocation API:
-    Assumes that buffer uploads will consist of multiple smaller allocations which can
-    be grouped into a large allocation.
-    Assumes that texture uploads will consist of single allocations.
-*/
-// Push size to queue; write to pushed size
-void* queue(Allocator *alloc, u64 size) {}
-// Signal queue complete; return size and offset of final total allocation
-Allocation* stage(Allocator *alloc) {}
-// Mark data for gpu transfer
-VkBuffer upload(Allocator *alloc, Allocation *allocation) {}
-
-Tex_Allocation* tex_stage(Tex_Allocator *alloc, u32 width, u32 height, void **ptr) {}
-VkImage* tex_upload(Allocator *alloc, u32 count, Allocation *allocations) {}
-
-struct Node;
-struct Skin {
-    u32 joint_count;
-    Node *joints;
-    Node *skeleton;
-    VkBuffer matrices;
-};
-struct Trs {
-    Vec3 trans;
-    Vec4 rot;
-    Vec3 scale;
-};
-struct Material {
-    VkImage base;
-    VkImage pbr;
-};
-struct Primitive {
-    VkBuffer indices;
-    VkBuffer vertices;
-
-    u64 index_offset;
-    u64 offset_pos;
-    u64 offset_norm;
-    u64 offset_tang;
-    u64 offset_tex;
-
-    Material *material;
-};
-struct Skinned_Primitive {
-    Primitive primitive;
-    u64 offset_joints;
-    u64 offset_weights;
-};
-struct Pl_Prim_Info {
-    u32 count;
-    u32 *bindings;
-    u32 *strides;
-    VkFormat *formats;
-};
-struct Mesh {
-    u32 count;
-    Primitive *primitives;
-    Pl_Prim_Info *pl_infos;
-};
-struct Skinned_Mesh {
-    u32 count;
-    Skinned_Primitive *primitives;
-    Pl_Prim_Info *pl_infos;
-};
-struct Node {
-union {
-    Trs trs;
-    Mat4 mat;
-};
-    u32 child_count;
-    Node *children;
-    Mesh *mesh;
-    Skin *skin;
-};
-struct Model {
-    u32 node_count;
-    u32 mesh_count;
-    u32 skinned_mesh_count;
-    u32 skin_count;
-    u32 material_count;
-
-    Node *nodes;
-    Mesh *meshes;
-    Skinned_Mesh *skinned_meshes;
-    Skin *skins;
-    Material *materials;
-
-    Allocation *index_alloc;
-    Allocation *vertex_alloc;
-    Allocation *uniform_alloc;
-    Allocation *tex_allocations;
-};
-struct Static_Model {
-    u32 node_count;
-    u32 mesh_count;
-
-    Node *nodes;
-    Mesh *meshes;
-
-    Allocation *index_alloc;
-    Allocation *vertex_alloc;
-    Allocation *tex_alloc;
-};
-struct Model_Allocators {
-    Allocator *index;
-    Allocator *vertex;
-    Tex_Allocator *tex;
+struct Buffer_View {
+    u64 offset;
+    Data_Type type;
 };
 // @Todo load_skinned_models(); <- this will also need to load animations
-Static_Model load_static_model(Model_Allocators *allocs, String *model_name) {
+Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir) {
     u64 mark = get_mark_temp();
+    
+    Gltf gltf = parse_gltf(model_name->str);
+    Gltf_Mesh *gltf_mesh;
+    Gltf_Mesh_Primitive *gltf_prim;
+    Gltf_Accessor *accessor;
+
+    u32 accessor_count = gltf_accessor_get_count(&gltf);
+    u32 view_count = gltf_buffer_view_get_count(&gltf);
+    u32 node_count = gltf_node_get_count(&gltf);
+    u32 mat_count = gltf_material_get_count(&gltf);
+    u32 mesh_count = gltf_mesh_get_count(&gltf);
+    u32 prim_count = gltf.total_primitive_count;
 
     Static_Model ret = {};
 
-    // Load Vertex Attribute Data
-    
+    ret.node_count = node_count;
+    ret.mesh_count = mesh_count;
+    ret.mat_count = mat_count;
 
-    // Load Material Data
+    ret.nodes = (Node*)malloc_h(sizeof(Node) * node_count, 8);
+    ret.meshes = (Mesh*)malloc_h(sizeof(Mesh) * mesh_count, 8);
+    ret.mats = (Material*)malloc_h(sizeof(Material) * mat_count, 8);
+
+    ret.meshes[0].primitives = (Primitive*)malloc_h(sizeof(Primitive) * prim_count, 8);
+    ret.meshes[0].pl_infos = (Pl_Prim_Info*)malloc_h(sizeof(Pl_Prim_Info) * prim_count, 8);
+
+    /*  
+        Vertex Attribute Load method:
+            1. Loop primitives - mark data
+            2. Loop buffer views - load data
+            3. Loop primitives - set offsets
+    */
+
+    Buffer_View *views = (Buffer_View*)malloc_t(sizeof(Buffer_View) * view_count, 8);
+    memset(views, 0, sizeof(Buffer_View) * view_count); // ensure type is not wrongly matched
+    u32 *view_indices = (u32*)malloc_t(sizeof(u32) * accessor_count, 8); // no more deref accessors
+
+    Primitive *prim;
+    Pl_Prim_Info *pl_info;
+
+    // 1. Loop primitives - mark data
+    gltf_mesh = gltf.meshes;
+    u32 prim_track = 0;
+    for(u32 i = 0; i < mesh_count; ++i) {
+        gltf_prim = gltf_mesh->primitives;
+
+        ret.meshes[i].count = gltf_mesh->primitive_count;
+        ret.meshes[i].primitives = ret.meshes[0].primitives + prim_track;
+        ret.meshes[i].pl_infos = ret.meshes[0].pl_infos + prim_track;
+
+        prim_track += ret.meshes[i].count;
+        for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
+            prim = &ret.meshes[i].primitives[j];
+            pl_info = &ret.meshes[i].pl_infos[j];
+
+            // Set Index
+            accessor = gltf_accessor_by_index(&gltf, gltf_prim->indices);
+
+            view_indices[gltf_prim->indices] = accessor->buffer_view;
+            views[accessor->buffer_view].type = Data_Type::INDEX;
+
+            prim->offset_index = accessor->byte_offset;
+            prim->count = accessor->count;
+            prim->material = &ret.mats[gltf_prim->material];
+
+            switch(accessor->format) {
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
+                prim->index_type = VK_INDEX_TYPE_UINT16;
+                break;
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
+                prim->index_type = VK_INDEX_TYPE_UINT32;
+                break;
+            default:
+                ASSERT(false, "Invalid Index Type");
+            }
+
+            if (gltf_prim->position != -1) {
+                accessor = gltf_accessor_by_index(&gltf, gltf_prim->position);
+
+                prim->offset_pos = accessor->byte_offset;
+
+                pl_info->strides[0] = get_accessor_byte_stride(accessor->format);
+                pl_info->formats[0] = (VkFormat)accessor->format;
+
+                view_indices[gltf_prim->position] = accessor->buffer_view;
+                views[accessor->buffer_view].type = Data_Type::VERTEX;
+            }
+            if (gltf_prim->normal != -1) {
+                accessor = gltf_accessor_by_index(&gltf, gltf_prim->normal);
+
+                prim->offset_norm = accessor->byte_offset;
+
+                pl_info->strides[1] = get_accessor_byte_stride(accessor->format);
+                pl_info->formats[1] = (VkFormat)accessor->format;
+
+                view_indices[gltf_prim->normal] = accessor->buffer_view;
+                views[accessor->buffer_view].type = Data_Type::VERTEX;
+            }
+            if (gltf_prim->tangent != -1) {
+                accessor = gltf_accessor_by_index(&gltf, gltf_prim->tangent);
+                prim->offset_tang = accessor->byte_offset;
+
+                pl_info->strides[2] = get_accessor_byte_stride(accessor->format);
+                pl_info->formats[2] = (VkFormat)accessor->format;
+
+                view_indices[gltf_prim->tangent] = accessor->buffer_view;
+                views[accessor->buffer_view].type = Data_Type::VERTEX;
+            }
+            if (gltf_prim->tex_coord_0 != -1) {
+                accessor = gltf_accessor_by_index(&gltf, gltf_prim->tex_coord_0);
+                prim->offset_tex = accessor->byte_offset;
+
+                pl_info->strides[3] = get_accessor_byte_stride(accessor->format);
+                pl_info->formats[3] = (VkFormat)accessor->format;
+
+                view_indices[gltf_prim->tex_coord_0] = accessor->buffer_view;
+                views[accessor->buffer_view].type = Data_Type::VERTEX;
+            }
+
+            gltf_prim = (Gltf_Mesh_Primitive*)((u8*)gltf_prim + gltf_prim->stride);
+        }
+        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
+    }
+
+    // 2. Loop buffer views - load data
+    ASSERT(gltf_buffer_get_count(&gltf) == 1, "Too Many Buffers");
+    Gltf_Buffer *gltf_buf = gltf.buffers;
+
+    char buf_uri[127];
+
+    memcpy(buf_uri, dir->str, dir->len);
+    strcpy(&buf_uri[0] + dir->len, gltf_buf->uri);
+
+    const u8 *buf = file_read_bin_temp_large(buf_uri, gltf_buf->byte_length);
+   
+    Gltf_Buffer_View *gltf_view = gltf.buffer_views;
+    void *ptr;
+    begin(allocs->index);
+    begin(allocs->vert);
+    for(u32 i = 0; i < view_count; ++i) {
+    // This switch seems lame, but in reality gltf views are likely packed by type, so it will be predicted.
+        switch(views[i].type) {
+        case Data_Type::VERTEX:
+            ptr = queue(allocs->vert, gltf_view->byte_length, &views[i].offset);
+            memcpy(ptr, buf + gltf_view->byte_offset, gltf_view->byte_length);
+            break;
+        case Data_Type::INDEX:
+            ptr = queue(allocs->index, gltf_view->byte_length, &views[i].offset);
+            memcpy(ptr, buf + gltf_view->byte_offset, gltf_view->byte_length);
+            break;
+        case Data_Type::NONE:
+            break;
+        case Data_Type::UNIFORM:
+            ASSERT(false, "No Uniform Data Allowed In Static Model");
+            break;
+        default:
+            ASSERT(false, "Invalid Buffer View Type");
+        }
+
+        gltf_view = (Gltf_Buffer_View*)((u8*)gltf_view + gltf_view->stride);
+    }
+    ret.index_alloc = stage(allocs->index);
+    ret.vert_alloc = stage(allocs->vert);
+
+    // 3. Loop primitives - set offsets
+    gltf_mesh = gltf.meshes;
+    for(u32 i = 0; i < mesh_count; ++i) {
+        gltf_prim = gltf_mesh->primitives;
+        for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
+            ret.meshes[i].primitives[j].offset_index += views[view_indices[gltf_prim->indices]].offset;
+            if (gltf_prim->position != -1)
+                ret.meshes[i].primitives[j].offset_pos += views[view_indices[gltf_prim->position]].offset;
+            if (gltf_prim->normal != -1)
+                ret.meshes[i].primitives[j].offset_norm += views[view_indices[gltf_prim->normal]].offset;
+            if (gltf_prim->tangent != -1)
+                ret.meshes[i].primitives[j].offset_tang += views[view_indices[gltf_prim->tangent]].offset;
+            if (gltf_prim->tex_coord_0 != -1)
+                ret.meshes[i].primitives[j].offset_tex += views[view_indices[gltf_prim->tex_coord_0]].offset;
+
+            gltf_prim = (Gltf_Mesh_Primitive*)((u8*)gltf_prim + gltf_prim->stride);
+        }
+        
+        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
+    }
+
+    // Load Material Data - @Todo
+
+    // Set Nodes - @Todo
 
     reset_to_mark_temp(mark);
-}
-#endif
-
-// `PipelineLayout
-VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info) {
-    VkPipelineLayoutCreateInfo create_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    create_info.setLayoutCount         = info->layout_count;
-    create_info.pSetLayouts            = info->layouts;
-    create_info.pushConstantRangeCount = info->push_constant_count;
-    create_info.pPushConstantRanges    = info->push_constants;
-
-    VkPipelineLayout layout;
-    auto check = vkCreatePipelineLayout(device, &create_info, ALLOCATION_CALLBACKS, &layout);
-    DEBUG_OBJ_CREATION(vkCreatePipelineLayout, check);
-    return layout;
-}
-void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout) {
-    vkDestroyPipelineLayout(device, pl_layout, ALLOCATION_CALLBACKS);
-}
-
-// Pipeline
-VkPipelineShaderStageCreateInfo* create_pl_shaders(u32 count, Shader *shaders) {
-    VkPipelineShaderStageCreateInfo *ret =
-        (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo*) * count, 8);
-    for(int i = 0; i < count; ++i) {
-        ret[i] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-        ret[i].stage = shaders[i].stage;
-        ret[i].module = shaders[i].module;
-        ret[i].pName = "main";
-        ret[i].pSpecializationInfo = NULL;
-    }
     return ret;
 }
+void free_static_model(Static_Model *model) {
+    free_h(model->meshes[0].primitives);
+    free_h(model->meshes[0].pl_infos);
+    free_h(model->nodes);
+    free_h(model->meshes);
+    free_h(model->mats);
+}
+#endif
 
 // functions like this are such a waste of time to write...
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
@@ -1365,6 +1407,7 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
                 return Max_u32;
         }
 }
+} // namespace model
 #if DEBUG
 VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info) {
     VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info = fill_vk_debug_messenger_info(info);
