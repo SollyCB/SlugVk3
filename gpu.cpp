@@ -998,7 +998,7 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 
 /*
 
-    Allocation System:
+    Model Allocation System:
 
     Loading Models:
         Call 'begin()' on an allocator to align the allocator.
@@ -1032,6 +1032,19 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
         When a model is uploaded a subsequent time, its offset must be adjusted according the
         'prev_offset' field of the allocation.
 
+        Example:
+
+        1. model loaded
+            position offset = 100 (100 bytes from beginning of allocation)
+        2. model uploaded at offset 200
+            position offset = 300 (beginning of allocation + beginning of buffer)
+        3. model evicted, prev offset = 200
+            position offset not updated
+        4. model reuploaded at offset 100:
+            position offset += (s64)upload - prev == 300 + (100 - 200) = 200
+        5. model evicted, reuploaded at offset 600:
+            position offset += (s64)upload - prev == 200 + (600 - 100) = 700
+
 */
 
 enum class Allocation_State : u32 {
@@ -1050,8 +1063,12 @@ struct Allocation {
 };
 struct Allocator {
     u32 alloc_cap;
-    u32 alloc_count;
 
+    u32 staged; // end of staged field
+    u32 to_upload; // index of first to upload
+    u32 uploaded; // index of most recent upload
+
+    // Byte counts
     u64 stage_cap;
     u64 stage_count;
     u64 upload_cap;
@@ -1062,28 +1079,45 @@ struct Allocator {
 
     Allocation *allocations;
 };
+struct Tex_Allocation {
+    u64 stage_offset;
+    u32 width;
+    u32 height;
+    VkImage image;
+    Allocation_State state;
+};
 struct Tex_Allocator {
     u32 alloc_cap;
-    u32 alloc_count;
 
+    u32 staged; // end of staged field
+    u32 to_upload; // index of first to upload
+    u32 uploaded; // index of most recent upload
+
+    // Byte counts
     u64 stage_cap;
     u64 stage_count;
     u64 upload_cap;
     u64 upload_count;
 
     VkBuffer stage;
-    VkImage *upload;
+    VkDeviceMem upload;
 
-    Allocation *allocations;
+    Tex_Allocation *allocations;
 };
-
-// Align allocator
-void begin(Allocator *alloc) {}
+/*
+    Buffer Allocation API:
+    Assumes that buffer uploads will consist of multiple smaller allocations which can
+    be grouped into a large allocation.
+    Assumes that texture uploads will consist of single allocations.
+*/
 // Push size to queue; write to pushed size
 void* queue(Allocator *alloc, u64 size) {}
 // Signal queue complete; return size and offset of final total allocation
 Allocation* stage(Allocator *alloc) {}
+// Mark data for gpu transfer
 VkBuffer upload(Allocator *alloc, Allocation *allocation) {}
+
+Tex_Allocation* tex_stage(Tex_Allocator *alloc, u32 width, u32 height, void **ptr) {}
 VkImage* tex_upload(Allocator *alloc, u32 count, Allocation *allocations) {}
 
 struct Node;
@@ -1167,6 +1201,9 @@ struct Static_Model {
     u32 node_count;
     u32 mesh_count;
 
+    Node *nodes;
+    Mesh *meshes;
+
     Allocation *index_alloc;
     Allocation *vertex_alloc;
     Allocation *tex_alloc;
@@ -1177,10 +1214,10 @@ struct Model_Allocators {
     Tex_Allocator *tex;
 };
 // @Todo load_skinned_models(); <- this will also need to load animations
-Model load_model(Model_Allocators *allocs, String *model_name) {
+Static_Model load_static_model(Model_Allocators *allocs, String *model_name) {
     u64 mark = get_mark_temp();
 
-    Model ret = {};
+    Static_Model ret = {};
 
     // Load Vertex Attribute Data
     
