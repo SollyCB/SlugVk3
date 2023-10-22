@@ -378,10 +378,16 @@ float gltf_ascii_to_float(const char *data, u64 *offset) {
     int after_dot = 0;
     float accum = 0;
     int num;
-    while((data[inc] >= '0' && data[inc] <= '9') || data[inc] == '.') {
+    bool e = false;
+    while((data[inc] >= '0' && data[inc] <= '9') || data[inc] == '.' || data[inc] == 'e') {
         if (data[inc] == '.') {
             seen_dot = true;
             inc++;
+        }
+        if (data[inc] == 'e') {
+            e = true;
+            inc++;
+            break;
         }
 
         if (seen_dot)
@@ -392,6 +398,20 @@ float gltf_ascii_to_float(const char *data, u64 *offset) {
         accum += num;
 
         inc++; // will point beyond the last int at the end of the loop, no need for +1
+    }
+
+    if (e) {
+        if (data[inc] == '-') {
+            inc++;
+            num = gltf_ascii_to_int(data + inc, &inc);
+            accum /= pow(10, num);
+            inc++;
+        }
+        else {
+            num = gltf_ascii_to_int(data + inc, &inc);
+            accum *= pow(10, num);
+            inc++;
+        }
     }
 
     // The line below this comment used to say...
@@ -469,7 +489,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
     float max[16];
     float min[16];
     int min_max_len;
-    int temp;
+    int temp = 0;
     bool min_found;
     bool max_found;
 
@@ -572,7 +592,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
             }
 
         }
-        if (min_found && max_found) {
+        if (min_found && max_found && false) {
             // @MemAlign careful here
             temp = align(sizeof(float) * min_max_len * 2, 8);
             accessor->max = (float*)malloc_t(temp, 8);

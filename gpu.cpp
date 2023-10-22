@@ -1035,8 +1035,8 @@ void* queue(Allocator *alloc, u64 size, u64 *offset) { *offset = 1; return (void
 Allocation* stage(Allocator *alloc) {}
 VkBuffer upload(Allocator *alloc, Allocation *allocation) {}
 
-Tex_Allocation* tex_stage(Tex_Allocator *alloc, u32 width, u32 height, void **ptr);
-VkImage* tex_upload(Allocator *alloc, u32 count, Allocation *allocations);
+Texture* tex_add(Tex_Allocator *alloc, String uri) { return (Texture*)malloc_t(sizeof(Texture), 8); }
+void tex_upload(Allocator *alloc) {}
 
 /*
 
@@ -1101,8 +1101,14 @@ struct Buffer_View {
 // @Todo load_skinned_models(); <- this will also need to load animations
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir) {
     u64 mark = get_mark_temp();
+
+    char tmp_uri[127];
+    memcpy(tmp_uri, dir->str, dir->len);
+    memcpy(&tmp_uri[0] + dir->len, model_name->str, model_name->len);
+    tmp_uri[dir->len + model_name->len] = '\0';
     
-    Gltf gltf = parse_gltf(model_name->str);
+    Gltf gltf = parse_gltf(tmp_uri);
+
     Gltf_Mesh *gltf_mesh;
     Gltf_Mesh_Primitive *gltf_prim;
     Gltf_Accessor *accessor;
@@ -1120,7 +1126,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     ret.mesh_count = mesh_count;
     ret.mat_count = mat_count;
 
-    ret.nodes = (Node*)malloc_h(sizeof(Node) * node_count, 8);
+    //ret.nodes = (Node*)malloc_h(sizeof(Node) * node_count, 8); @Unused
     ret.meshes = (Mesh*)malloc_h(sizeof(Mesh) * mesh_count, 8);
     ret.mats = (Material*)malloc_h(sizeof(Material) * mat_count, 8);
 
@@ -1229,12 +1235,10 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     ASSERT(gltf_buffer_get_count(&gltf) == 1, "Too Many Buffers");
     Gltf_Buffer *gltf_buf = gltf.buffers;
 
-    char buf_uri[127];
+    memcpy(tmp_uri, dir->str, dir->len);
+    strcpy(&tmp_uri[0] + dir->len, gltf_buf->uri);
 
-    memcpy(buf_uri, dir->str, dir->len);
-    strcpy(&buf_uri[0] + dir->len, gltf_buf->uri);
-
-    const u8 *buf = file_read_bin_temp_large(buf_uri, gltf_buf->byte_length);
+    const u8 *buf = file_read_bin_temp_large(tmp_uri, gltf_buf->byte_length);
    
     Gltf_Buffer_View *gltf_view = gltf.buffer_views;
     void *ptr;
@@ -1288,6 +1292,9 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
     // Load Material Data
     Gltf_Material *gltf_mat = gltf.materials;
+    Gltf_Texture *gltf_tex;
+    Gltf_Sampler *gltf_sampler;
+    Gltf_Image *gltf_image;
     for(u32 i = 0; i < mat_count; ++i) {
 
         ret.mats[i].base_factors[0] = gltf_mat->base_color_factor[0];
@@ -1318,11 +1325,76 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         //
         //     I like the vertex data being handled by the model fine, but textures should
         //     work differently.
+        memcpy(tmp_uri, dir->str, dir->len);
+
+
+        // base
+        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->base_color_texture_index);
+        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
+        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
+
+        ret.mats[i].tex_base = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_base->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+        ret.mats[i].tex_base->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+        ret.mats[i].tex_base->mag_filter = (VkFilter)gltf_sampler->mag_filter;
+        ret.mats[i].tex_base->min_filter = (VkFilter)gltf_sampler->min_filter;
+
+
+        // metallic roughness
+        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->metallic_roughness_texture_index);
+        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
+        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
+
+        ret.mats[i].tex_pbr = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_pbr->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+        ret.mats[i].tex_pbr->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+        ret.mats[i].tex_pbr->mag_filter = (VkFilter)gltf_sampler->mag_filter;
+        ret.mats[i].tex_pbr->min_filter = (VkFilter)gltf_sampler->min_filter;
+
+
+        // normal
+        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->normal_texture_index);
+        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
+        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
+
+        ret.mats[i].tex_norm = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_norm->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+        ret.mats[i].tex_norm->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+        ret.mats[i].tex_norm->mag_filter = (VkFilter)gltf_sampler->mag_filter;
+        ret.mats[i].tex_norm->min_filter = (VkFilter)gltf_sampler->min_filter;
+
+
+        // occlusion
+        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->occlusion_texture_index);
+        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
+        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
+
+        ret.mats[i].tex_occlusion = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_occlusion->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+        ret.mats[i].tex_occlusion->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+        ret.mats[i].tex_occlusion->mag_filter = (VkFilter)gltf_sampler->mag_filter;
+        ret.mats[i].tex_occlusion->min_filter = (VkFilter)gltf_sampler->min_filter;
+
+
+        // emissive
+        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->emissive_texture_index);
+        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
+        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
+
+        ret.mats[i].tex_emissive = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_emissive->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+        ret.mats[i].tex_emissive->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+        ret.mats[i].tex_emissive->mag_filter = (VkFilter)gltf_sampler->mag_filter;
+        ret.mats[i].tex_emissive->min_filter = (VkFilter)gltf_sampler->min_filter;
+
 
         gltf_mat = (Gltf_Material*)((u8*)gltf_mat + gltf_mat->stride);
     }
-
-    // Set Nodes - @Todo
 
     reset_to_mark_temp(mark);
     return ret;
@@ -1330,7 +1402,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 void free_static_model(Static_Model *model) {
     free_h(model->meshes[0].primitives);
     free_h(model->meshes[0].pl_infos);
-    free_h(model->nodes);
+    //free_h(model->nodes);
     free_h(model->meshes);
     free_h(model->mats);
 }

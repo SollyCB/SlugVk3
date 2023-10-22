@@ -219,25 +219,25 @@ struct Gltf_Material {
     float base_color_factor[4] = {1, 1, 1, 1};
     float metallic_factor      = 1;
     float roughness_factor     = 1;
-    int base_color_texture_index;
-    int base_color_tex_coord;
-    int metallic_roughness_texture_index;
-    int metallic_roughness_tex_coord;
+    int base_color_texture_index = -1;
+    int base_color_tex_coord = -1;
+    int metallic_roughness_texture_index = -1;
+    int metallic_roughness_tex_coord = -1;
 
     // normal_texture
     float normal_scale = 1;
-    int normal_texture_index;
-    int normal_tex_coord;
+    int normal_texture_index = -1;
+    int normal_tex_coord = -1;
 
     // occlusion_texture
     float occlusion_strength = 1;
-    int occlusion_texture_index;
-    int occlusion_tex_coord;
+    int occlusion_texture_index = -1;
+    int occlusion_tex_coord = -1;
 
     // emissive_texture
     float emissive_factor[3] = {0, 0, 0};
-    int emissive_texture_index;
-    int emissive_tex_coord;
+    int emissive_texture_index = -1;
+    int emissive_tex_coord = -1;
 
     // alpha
     Gltf_Alpha_Mode alpha_mode = GLTF_ALPHA_MODE_OPAQUE;

@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED true)
 set(CMAKE_BUILD_PARALLEL_LEVEL 4)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-set(CMAKE_CXX_COMPILE_FLAGS -mlzcnt -msse4.1 -mbmi -mavx2 -ggdb)
+set(CMAKE_CXX_COMPILE_FLAGS -mlzcnt -msse4.1 -mbmi -mavx2 -ggdb -fstack-protector-all)
 
 #-mavx512f <- this option causes me to crash with illegal instruction when casting int to float. I was using it for avx instructions... I assume this laptop doesnt support 512 registers?
 

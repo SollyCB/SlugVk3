@@ -40,8 +40,9 @@ int main() {
     gpu::Descriptor_Allocation basic_set_allocation = gpu::create_descriptor_sets(1, &set_allocate_info);
 
     // Model vertex setup
-    String model_dir = get_string("models/cube-static/");
-    String model_files[] = {get_string("models/cube-static/Cube.gltf")};
+    String model_dir = get_string("models/cesium-man/");
+
+    String model_files[] = {get_string("CesiumMan.gltf")};
     gpu::model::Model_Allocators allocs = {};
     gpu::model::Static_Model model = load_static_model(&allocs, &model_files[0], &model_dir);
     free_static_model(&model);

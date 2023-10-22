@@ -239,39 +239,41 @@ struct Allocator {
 
     Allocation *allocations;
 };
-struct Tex_Allocation {
-    u64 stage_offset;
+struct Texture {
+    String uri;
+
     u32 width;
     u32 height;
+
     VkImage image;
     Allocation_State state;
+
+    VkSamplerAddressMode wrap_s;
+    VkSamplerAddressMode wrap_t;
+    VkFilter mag_filter;
+    VkFilter min_filter;
 };
 struct Tex_Allocator {
-    u32 alloc_cap;
+    u32 tex_count;
+    u32 tex_cap;
 
-    u32 staged; // end of staged field
-    u32 to_upload; // index of first to upload
-    u32 uploaded; // index of most recent upload
+    u64 stage_byte_count;
+    u64 stage_byte_cap;
+    u64 upload_byte_count;
+    u64 upload_byte_cap;
 
-    u64 queue_begin;
-    u64 queue_end;
-
-    // Byte counts
-    u64 stage_cap;
-    u64 stage_count;
-    u64 upload_cap;
-    u64 upload_count;
-
+    Texture *textures;
     VkBuffer stage;
     VkDeviceMemory upload;
-
-    Tex_Allocation *allocations;
 };
 /*
     Buffer Allocation API:
     Assumes that buffer uploads will consist of multiple smaller allocations which can
     be grouped into a large allocation.
-    Assumes that texture uploads will consist of single allocations.
+    'Allocator' does not evict to disk, vertex data always in memory.
+    'Tex_Allocator' can evict textures back to disk if texture memory is low.
+
+    TLDR, 'Allocator' greater control by the model, 'Tex_Allocator' controlled by allocator.
 */
 void begin(Allocator *alloc);
 // Push size to queue; write to pushed size
@@ -281,8 +283,8 @@ Allocation* stage(Allocator *alloc);
 // Mark data for gpu transfer
 VkBuffer upload(Allocator *alloc, Allocation *allocation);
 
-Tex_Allocation* tex_stage(Tex_Allocator *alloc, u32 width, u32 height, void **ptr);
-VkImage* tex_upload(Allocator *alloc, u32 count, Allocation *allocations);
+Texture* tex_add(Tex_Allocator *alloc, String uri);
+void tex_upload(Allocator *alloc);
 
 struct Node;
 struct Skin {
@@ -304,17 +306,15 @@ struct Material {
     float occlusion_strength;
     float emissive_factors[3];
 
-    VkSamplerAddressMode wrap_s;
-    VkSamplerAddressMode wrap_t;
-    VkFilter mag_filter;
-    VkFilter min_filter;
+    // @Note I do not know how to resolve texture coordinates defined on both the primitive
+    // and the material...?? I will experiment I guess??
 
     // Texture indices
-    u32 base;
-    u32 pbr;
-    u32 normal;
-    u32 occlusion;
-    u32 emissive;
+    Texture *tex_base;
+    Texture *tex_pbr;
+    Texture *tex_norm;
+    Texture *tex_occlusion;
+    Texture *tex_emissive;
     // @Todo Alpha mode
 };
 struct Primitive {
@@ -394,7 +394,7 @@ struct Static_Model {
     u32 mesh_count;
     u32 mat_count;
 
-    Node *nodes;
+    // Node *nodes; <- Idk if this is necessary for a static model
     Mesh *meshes;
     Material *mats;
 
