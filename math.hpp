@@ -9,9 +9,9 @@ static inline float rad(float deg) {
     return 0.0055555555 * 3.1415927 * deg;
 }
 
-static inline int pow(int num, int exp) {
-    int accum = 1;
-    for(int i = 0; i < exp; ++i) {
+static inline u64 pow(u64 num, u32 exp) {
+    u64 accum = 1;
+    for(u32 i = 0; i < exp; ++i) {
         accum *= num;
     }
     return accum;

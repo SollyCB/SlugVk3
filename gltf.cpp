@@ -592,7 +592,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
             }
 
         }
-        if (min_found && max_found && false) {
+        if (min_found && max_found) {
             // @MemAlign careful here
             temp = align(sizeof(float) * min_max_len * 2, 8);
             accessor->max = (float*)malloc_t(temp, 8);
@@ -2104,17 +2104,44 @@ static void test_accessors(Gltf_Accessor *accessor) {
     TEST_EQ("accessor[0].min[0]", accessor->min[0], 0, false);
 
     accessor = (Gltf_Accessor*)((u8*)accessor + accessor->stride);
-    TEST_EQ("accessor[1].format", accessor->format, GLTF_ACCESSOR_FORMAT_VEC2_FLOAT32, false);
+    TEST_EQ("accessor[1].format", accessor->format, GLTF_ACCESSOR_FORMAT_MAT4_FLOAT32, false);
     TEST_EQ("accessor[1].buffer_view", accessor->buffer_view, 2, false);
     TEST_EQ("accessor[1].byte_offset", accessor->byte_offset, (u64)200, false);
     TEST_EQ("accessor[1].count", accessor->count, 2399, false);
 
-    TEST_FEQ("accessor[1].max[0]", accessor->max[0], 0.961799 , false);
-    TEST_FEQ("accessor[1].max[1]", accessor->max[1], -1.6397  , false);
-    TEST_FEQ("accessor[1].max[2]", accessor->max[2], 0.539252 , false);
-    TEST_FEQ("accessor[1].min[0]", accessor->min[0], -0.692985, false);
-    TEST_FEQ("accessor[1].min[1]", accessor->min[1], 0.0992937, false);
-    TEST_FEQ("accessor[1].min[2]", accessor->min[2], -0.613282, false);
+    TEST_FEQ("accessor[1].max[0]",  accessor->max[0],  0.9971418380737304    , false);
+    TEST_FEQ("accessor[1].max[1]",  accessor->max[1],  -4.371139894487897e-8 , false);
+    TEST_FEQ("accessor[1].max[2]",  accessor->max[2],  0.9996265172958374    , false);
+    TEST_FEQ("accessor[1].max[3]",  accessor->max[3],  0                     , false);
+    TEST_FEQ("accessor[1].max[4]",  accessor->max[4],  4.3586464215650273e-8 , false);
+    TEST_FEQ("accessor[1].max[5]",  accessor->max[5],  1                     , false);
+    TEST_FEQ("accessor[1].max[6]",  accessor->max[6],  4.3695074225524884e-8 , false);
+    TEST_FEQ("accessor[1].max[7]",  accessor->max[7],  0                     , false);
+    TEST_FEQ("accessor[1].max[8]",  accessor->max[8],  0.9999366402626038    , false);
+    TEST_FEQ("accessor[1].max[9]",  accessor->max[9],  0                     , false);
+    TEST_FEQ("accessor[1].max[10]", accessor->max[10], 0.9971418380737304    , false);
+    TEST_FEQ("accessor[1].max[11]", accessor->max[11], 0                     , false);
+    TEST_FEQ("accessor[1].max[12]", accessor->max[12], 1.1374080181121828    , false);
+    TEST_FEQ("accessor[1].max[13]", accessor->max[13], 0.44450080394744873   , false);
+    TEST_FEQ("accessor[1].max[14]", accessor->max[14], 1.0739599466323853    , false);
+    TEST_FEQ("accessor[1].max[15]", accessor->max[15], 1                     , false);
+
+    TEST_FEQ("accessor[1].min[0]",  accessor->min[0],  -0.9999089241027832    , false);
+    TEST_FEQ("accessor[1].min[1]",  accessor->min[1],  -4.371139894487897e-8  , false);
+    TEST_FEQ("accessor[1].min[2]",  accessor->min[2],  -0.9999366402626038    , false);
+    TEST_FEQ("accessor[1].min[3]",  accessor->min[3],  0                      , false);
+    TEST_FEQ("accessor[1].min[4]",  accessor->min[4],  -4.3707416352845037e-8 , false);
+    TEST_FEQ("accessor[1].min[5]",  accessor->min[5],  1                      , false);
+    TEST_FEQ("accessor[1].min[6]",  accessor->min[6],  -4.37086278282095e-8   , false);
+    TEST_FEQ("accessor[1].min[7]",  accessor->min[7],  0                      , false);
+    TEST_FEQ("accessor[1].min[8]",  accessor->min[8],  -0.9996265172958374    , false);
+    TEST_FEQ("accessor[1].min[9]",  accessor->min[9],  0                      , false);
+    TEST_FEQ("accessor[1].min[10]", accessor->min[10], -0.9999089241027832    , false);
+    TEST_FEQ("accessor[1].min[11]", accessor->min[11], 0                      , false);
+    TEST_FEQ("accessor[1].min[12]", accessor->min[12], -1.189831018447876     , false);
+    TEST_FEQ("accessor[1].min[13]", accessor->min[13], -0.45450031757354736   , false);
+    TEST_FEQ("accessor[1].min[14]", accessor->min[14], -1.058603048324585     , false);
+    TEST_FEQ("accessor[1].min[15]", accessor->min[15], 1                      , false);
 
     accessor = (Gltf_Accessor*)((u8*)accessor + accessor->stride);
     TEST_EQ("accessor[2].format", accessor->format, GLTF_ACCESSOR_FORMAT_VEC3_U32, false);
