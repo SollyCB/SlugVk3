@@ -6,6 +6,7 @@
 #include "file.hpp"
 #include "builtin_wrappers.h"
 #include "gltf.hpp"
+#include "image.hpp"
 
 namespace gpu {
 
@@ -1285,7 +1286,41 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 
-    // Load Material Data - @Todo
+    // Load Material Data
+    Gltf_Material *gltf_mat = gltf.materials;
+    for(u32 i = 0; i < mat_count; ++i) {
+
+        ret.mats[i].base_factors[0] = gltf_mat->base_color_factor[0];
+        ret.mats[i].base_factors[1] = gltf_mat->base_color_factor[1];
+        ret.mats[i].base_factors[2] = gltf_mat->base_color_factor[2];
+        ret.mats[i].base_factors[3] = gltf_mat->base_color_factor[3];
+
+        ret.mats[i].emissive_factors[0] = gltf_mat->emissive_factor[0];
+        ret.mats[i].emissive_factors[1] = gltf_mat->emissive_factor[1];
+        ret.mats[i].emissive_factors[2] = gltf_mat->emissive_factor[2];
+
+        ret.mats[i].metal_factor = gltf_mat->metallic_factor;
+        ret.mats[i].rough_factor = gltf_mat->roughness_factor;
+        ret.mats[i].norm_scale = gltf_mat->normal_scale;
+        ret.mats[i].occlusion_strength = gltf_mat->occlusion_strength;
+
+        //
+        // @Todo alpha settings
+        //
+
+        // Texture method:
+        //     Add textures to an array.
+        //     Material stores the index to the texture. As textures are quite expensive,
+        //     I think it will be sensible to store and manage them elsewhere: I imagine
+        //     that I can store vertex data indefinitely in memory, but texture data would
+        //     likely often need to be streamed from disk and cached well etc. and the model
+        //     allocator system does not facilitate this super well.
+        //
+        //     I like the vertex data being handled by the model fine, but textures should
+        //     work differently.
+
+        gltf_mat = (Gltf_Material*)((u8*)gltf_mat + gltf_mat->stride);
+    }
 
     // Set Nodes - @Todo
 

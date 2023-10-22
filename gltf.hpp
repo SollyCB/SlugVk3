@@ -303,9 +303,9 @@ struct Gltf_Mesh {
 };
 
 struct Gltf_Trs {
+    Vec3 translation = {0.0, 0.0, 0.0};
     Vec4 rotation    = {0.0, 0.0, 0.0, 1.0};
     Vec3 scale       = {1.0, 1.0, 1.0};
-    Vec3 translation = {0.0, 0.0, 0.0};
 };
 struct Gltf_Node {
     int stride;

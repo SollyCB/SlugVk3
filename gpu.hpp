@@ -297,8 +297,25 @@ struct Trs {
     Vec3 scale;
 };
 struct Material {
-    VkImage base;
-    VkImage pbr;
+    float base_factors[4];
+    float metal_factor;
+    float rough_factor;
+    float norm_scale;
+    float occlusion_strength;
+    float emissive_factors[3];
+
+    VkSamplerAddressMode wrap_s;
+    VkSamplerAddressMode wrap_t;
+    VkFilter mag_filter;
+    VkFilter min_filter;
+
+    // Texture indices
+    u32 base;
+    u32 pbr;
+    u32 normal;
+    u32 occlusion;
+    u32 emissive;
+    // @Todo Alpha mode
 };
 struct Primitive {
     u32 count; // draw count (num indices)
@@ -368,8 +385,9 @@ struct Model {
 
     Allocation *index_alloc;
     Allocation *vert_alloc;
-    Allocation *uniform_alloc;
     Allocation *tex_allocations;
+
+    void *animation_data; // @Wip
 };
 struct Static_Model {
     u32 node_count;
