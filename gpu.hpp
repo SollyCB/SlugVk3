@@ -25,6 +25,17 @@ static constexpr u32 VERTEX_STAGE_COUNT     = 1;
 static constexpr u32 INDEX_STAGE_COUNT      = 1;
 static constexpr u32 TEXTURE_STAGE_COUNT    = 1;
 static constexpr u32 UNIFORM_BUFFER_COUNT   = 1;
+
+// Host memory sizes - large enough to not get a warning about allocation size being too small
+static constexpr u64 VERTEX_STAGE_SIZE      = 1048576;
+static constexpr u64 INDEX_STAGE_SIZE       = 1048576;
+static constexpr u64 TEXTURE_STAGE_SIZE     = 1048576;
+static constexpr u64 UNIFORM_BUFFER_SIZE    = 1048576;
+
+static constexpr float VERTEX_DEVICE_SIZE   = 1048576;
+static constexpr float INDEX_DEVICE_SIZE    = 1048576;
+static constexpr float TEXTURE_DEVICE_SIZE  = 1048576;
+
 struct Gpu_Memory {
     VkDeviceMemory depth_mem[DEPTH_ATTACHMENT_COUNT];
     VkDeviceMemory color_mem[COLOR_ATTACHMENT_COUNT];
@@ -33,13 +44,25 @@ struct Gpu_Memory {
 
     VkDeviceMemory vertex_mem_stage[VERTEX_STAGE_COUNT];
     VkDeviceMemory index_mem_stage [INDEX_STAGE_COUNT];
+    VkBuffer vertex_bufs_stage[VERTEX_STAGE_COUNT];
+    VkBuffer index_bufs_stage [INDEX_STAGE_COUNT];
+
     VkDeviceMemory vertex_mem_device;
     VkDeviceMemory index_mem_device;
+    VkBuffer vertex_buf_device;
+    VkBuffer index_buf_device;
 
     VkDeviceMemory texture_mem_stage[TEXTURE_STAGE_COUNT];
+    VkBuffer texture_bufs_stage[TEXTURE_STAGE_COUNT];
     VkDeviceMemory texture_mem_device;
 
     VkDeviceMemory uniform_mem[UNIFORM_BUFFER_COUNT];
+    VkBuffer uniform_bufs[UNIFORM_BUFFER_COUNT];
+
+    void *vert_ptrs[VERTEX_STAGE_COUNT];
+    void *index_ptrs[INDEX_STAGE_COUNT];
+    void *tex_ptrs[TEXTURE_STAGE_COUNT];
+    void *uniform_ptrs[UNIFORM_BUFFER_COUNT];
 };
 struct Gpu_Info {
     VkPhysicalDeviceProperties props;
@@ -137,6 +160,7 @@ void free_memory();
 
 // Shaders
 struct Shader {
+    // @Todo Add state for hot reloading checks
     VkShaderStageFlagBits stage;
     VkShaderModule module;
 };
@@ -223,22 +247,49 @@ struct Allocation {
 };
 struct Allocator {
     u32 alloc_cap;
-
-    u32 staged; // end of staged field
-    u32 to_upload; // index of first to upload
-    u32 uploaded; // index of most recent upload
+    u32 alloc_count;
+    u32 to_upload_count;
 
     // Byte counts
     u64 stage_cap;
-    u64 stage_count;
+    u64 bytes_staged;
     u64 upload_cap;
-    u64 upload_count;
+    u64 bytes_uploaded;
+    u64 bytes_to_upload;
+    u64 upload_block_begin; // byte offset to the beginning of the free block for uploading into
 
+    u64 queue_front;
+
+    void *stage_ptr;
     VkBuffer stage;
     VkBuffer upload;
+    VkBufferMemoryBarrier2 buf_barr;
 
     Allocation *allocations;
+    VkBufferCopy2 *copy_infos;
 };
+struct Create_Info {
+    void *stage_ptr;
+    u64 stage_cap;
+    u64 device_cap;
+    u32 alloc_cap;
+    VkBuffer stage;
+    VkBuffer upload;
+    VkSemaphore upload_semaphore;
+};
+Allocator create_allocator(Create_Info *info);
+void destroy_allocator(Allocator *alloc);
+// Prepare allocator queue
+void begin(Allocator *alloc);
+// Push size to queue; write to pushed size
+void* queue(Allocator *alloc, u64 size, u64 *offset);
+// Signal queue complete; return size and offset of final total allocation
+Allocation* stage(Allocator *alloc);
+// Mark data for gpu transfer
+VkBuffer queue_upload(Allocator *alloc, Allocation *allocation);
+// Upload marked data
+bool upload(Allocator *alloc);
+
 struct Texture {
     String uri;
 
@@ -275,14 +326,6 @@ struct Tex_Allocator {
 
     TLDR, 'Allocator' greater control by the model, 'Tex_Allocator' controlled by allocator.
 */
-void begin(Allocator *alloc);
-// Push size to queue; write to pushed size
-void* queue(Allocator *alloc, u64 size, u64 *offset);
-// Signal queue complete; return size and offset of final total allocation
-Allocation* stage(Allocator *alloc);
-// Mark data for gpu transfer
-VkBuffer upload(Allocator *alloc, Allocation *allocation);
-
 Texture* tex_add(Tex_Allocator *alloc, String uri);
 void tex_upload(Allocator *alloc);
 

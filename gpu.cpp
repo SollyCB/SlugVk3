@@ -536,7 +536,9 @@ static void integrated_gpu_get_memory_type(
     u32 largest_heap_index_device,
     u32 largest_heap_index_host,
     u32 *device_mem_type,
-    u32 *host_mem_type)
+    u32 *host_mem_type,
+    u32 *final_heap_device,
+    u32 *final_heap_host)
 {
     for(int i = 0; i < props->memoryTypeCount; ++i)
         if (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT &&
@@ -570,15 +572,20 @@ static void discrete_gpu_get_memory_type(
     u32 largest_heap_index_host,
     u32 *device_mem_type,
     u32 *host_mem_type,
-    u32 *device_host_mem_type)
+    u32 *device_host_mem_type,
+    u32 *final_heap_device,
+    u32 *final_heap_host,
+    u32 *final_heap_both)
 {
     for(int i = 0; i < props->memoryTypeCount; ++i)
         if (props->memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
             if (props->memoryTypes[i].heapIndex == largest_heap_index_device) {
                 *device_mem_type = i;
+                *final_heap_device = props->memoryTypes[i].heapIndex;
                 break;
             } else {
                 *device_mem_type = i;
+                *final_heap_device = props->memoryTypes[i].heapIndex;
             }
         }
 
@@ -589,9 +596,11 @@ static void discrete_gpu_get_memory_type(
         {
             if (props->memoryTypes[i].heapIndex == largest_heap_index_host) {
                 *host_mem_type = i;
+                *final_heap_host = props->memoryTypes[i].heapIndex;
                 break;
             } else {
                 *host_mem_type = i;
+                *final_heap_host = props->memoryTypes[i].heapIndex;
             }
         }
     for(int i = 0; i < props->memoryTypeCount; ++i)
@@ -605,31 +614,22 @@ static void discrete_gpu_get_memory_type(
                 props->memoryTypes[i].heapIndex == largest_heap_index_device)
             {
                 *device_host_mem_type = i;
+                *final_heap_both = props->memoryTypes[i].heapIndex;
                 break;
             } else {
                 *device_host_mem_type = i;
+                *final_heap_both = props->memoryTypes[i].heapIndex;
             }
         }
 }
-void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
-    Gpu *gpu = get_gpu_instance();
-    VkDevice device = gpu->device;
-
-    gpu->memory.vertex_mem_device = NULL;
-    gpu->memory.index_mem_device = NULL;
-
+void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
     VkResult check;
-
     VkMemoryRequirements mem_req;
-
     VkMemoryDedicatedAllocateInfo dedicate_info = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
-
     VkMemoryPriorityAllocateInfoEXT priority_info = {VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT};
 
     VkMemoryAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     allocate_info.pNext = &priority_info;
-
-                                    /* Attachments */
 
     VkImageCreateInfo attachment_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     attachment_info.imageType = VK_IMAGE_TYPE_2D;
@@ -681,9 +681,113 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
 
         vkBindImageMemory(device, gpu->memory.depth_attachments[i], gpu->memory.depth_mem[i], 0);
     }
+}
+void create_buffers(Gpu *gpu, u32 mem_type, u32 count, VkBuffer *bufs, VkDeviceMemory *mems, void **ptrs, u64 size,
+                    VkBufferUsageFlags usage, float priority) {
 
-                                    /* Vertex Attributes */
+    VkResult check;
+    VkBufferCreateInfo buf_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buf_info.size = align(size, gpu->info.props.limits.nonCoherentAtomSize);
+    buf_info.usage = usage;
+    for(u32 i = 0; i < count; ++i) {
+        check = vkCreateBuffer(gpu->device, &buf_info, ALLOCATION_CALLBACKS, &bufs[i]);
+        DEBUG_OBJ_CREATION(vkCreateBuffer, check);
+    }
 
+    VkMemoryRequirements mem_req;
+    vkGetBufferMemoryRequirements(gpu->device, bufs[0], &mem_req);
+
+    // Dedicated allocations because these are large linear allocators
+    VkMemoryDedicatedAllocateInfo dedicate_info = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+
+    VkMemoryPriorityAllocateInfoEXT priority_info = {VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT};
+    priority_info.pNext = &dedicate_info;
+    priority_info.priority = priority;
+
+    VkMemoryAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate_info.pNext = &priority_info;
+    allocate_info.allocationSize = mem_req.size;
+    allocate_info.memoryTypeIndex = mem_type;
+    for(u32 i = 0; i < count; ++i) {
+        check = vkAllocateMemory(gpu->device, &allocate_info, ALLOCATION_CALLBACKS, &mems[i]);
+        DEBUG_OBJ_CREATION(vkAllocateMemory, check);
+
+        vkBindBufferMemory(gpu->device, bufs[i], mems[i], 0);
+        vkMapMemory(gpu->device, mems[i], 0, VK_WHOLE_SIZE, 0x0, &ptrs[i]);
+    }
+}
+void create_mem(Gpu *gpu, u32 mem_type, u32 count, u64 size, VkDeviceMemory *mem, float priority) {
+    VkMemoryDedicatedAllocateInfo dedicate_info = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+
+    VkMemoryPriorityAllocateInfoEXT priority_info = {VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT};
+    priority_info.pNext = &dedicate_info;
+    priority_info.priority = priority;
+
+    VkMemoryAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate_info.pNext = &priority_info;
+    allocate_info.allocationSize = size;
+    allocate_info.memoryTypeIndex = mem_type;
+
+    VkResult check;
+    for(u32 i = 0; i < count; ++i) {
+        check = vkAllocateMemory(gpu->device, &allocate_info, ALLOCATION_CALLBACKS, &mem[i]);
+        DEBUG_OBJ_CREATION(vkAllocateMemory, check);
+    }
+}
+void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    /*
+        Staging buffers which do not require upload (index, vertex, uniform) use device memory.
+        Others use host mem (textures).
+    */
+
+    gpu->memory.vertex_mem_device = NULL;
+    gpu->memory.index_mem_device = NULL;
+
+    create_attachments(gpu, device, device_mem_type);
+
+    // No Upload Buffers
+    create_buffers(gpu,
+        device_mem_type,
+        VERTEX_STAGE_COUNT,
+        gpu->memory.vertex_bufs_stage,
+        gpu->memory.vertex_mem_stage,
+        gpu->memory.vert_ptrs,
+        VERTEX_STAGE_SIZE,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        0.4);
+    create_buffers(gpu,
+        device_mem_type,
+        INDEX_STAGE_COUNT,
+        gpu->memory.index_bufs_stage,
+        gpu->memory.index_mem_stage,
+        gpu->memory.index_ptrs,
+        INDEX_STAGE_SIZE,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+        0.4);
+    create_buffers(gpu,
+        device_mem_type,
+        UNIFORM_BUFFER_COUNT,
+        gpu->memory.uniform_bufs,
+        gpu->memory.uniform_mem,
+        gpu->memory.uniform_ptrs,
+        UNIFORM_BUFFER_SIZE,
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        0);
+
+    // Other Buffers
+    create_buffers(gpu,
+        device_mem_type,
+        INDEX_STAGE_COUNT,
+        gpu->memory.texture_bufs_stage,
+        gpu->memory.texture_mem_stage,
+        gpu->memory.tex_ptrs,
+        TEXTURE_STAGE_SIZE,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        0);
+    create_mem(gpu, device_mem_type, 1, TEXTURE_DEVICE_SIZE, &gpu->memory.texture_mem_device, 0.6);
 }
 void allocate_memory() {
     Gpu *gpu = get_gpu_instance();
@@ -708,25 +812,40 @@ void allocate_memory() {
                 largest_heap_host = i;
             }
 
+    // @Unused these final heap indices were intended for allocating proportions of device memory rather than
+    // fixed sizes because it is sooo variable and can be adapted to by the allocator implmentations, but I am
+    // not going bother with that yet. (The allocators already totally work with this, but I am not implementing
+    // actually allocating the proportion way yet. These values are set, but do nothing.)
+    u32 final_heap_device;
+    u32 final_heap_host;
+    u32 final_heap_both;
+
     u32 host_mem_type;
     u32 device_mem_type;
     u32 both_mem_type;
     if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
-        integrated_gpu_get_memory_type(&mem_props,
-            largest_heap_device,
-            largest_heap_host,
-            &device_mem_type,
-            &host_mem_type);
-        setup_memory_integrated(device_mem_type, host_mem_type);
-    }
-    else if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
-        discrete_gpu_get_memory_type(&mem_props,
+        integrated_gpu_get_memory_type(
+            &mem_props,
             largest_heap_device,
             largest_heap_host,
             &device_mem_type,
             &host_mem_type,
-            &both_mem_type);
-        //setup_memory_discrete(device_mem_type, host_mem_type, both_mem_type);
+            &final_heap_device,
+            &final_heap_host);
+        setup_memory_integrated(device_mem_type, host_mem_type);
+    }
+    else if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+        discrete_gpu_get_memory_type(
+            &mem_props,
+            largest_heap_device,
+            largest_heap_host,
+            &device_mem_type,
+            &host_mem_type,
+            &both_mem_type,
+            &final_heap_device,
+            &final_heap_host,
+            &final_heap_both);
+        //setup_memory_discrete(device_mem_type, host_mem_type, both_mem_type)
     }
 }
 void free_memory() {
@@ -1030,10 +1149,171 @@ namespace model {
 #if 1
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 
-void begin(Allocator *alloc) {}
-void* queue(Allocator *alloc, u64 size, u64 *offset) { *offset = 1; return (void*)malloc_t(size, 1); }
-Allocation* stage(Allocator *alloc) {}
-VkBuffer upload(Allocator *alloc, Allocation *allocation) {}
+Allocator create_allocator(Create_Info *info) {
+    Allocator ret = {};
+    ret.stage_ptr = info->stage_ptr;
+    ret.stage_cap = info->stage_cap;
+    ret.upload_cap = info->device_cap;
+    ret.alloc_cap = info->alloc_cap;
+    ret.stage = info->stage;
+    ret.upload = info->upload;
+
+    ret.allocations = (Allocation*)malloc_h(sizeof(Allocation) * ret.alloc_cap, 8);
+    ret.copy_infos = (VkBufferCopy2*)malloc_h(sizeof(VkBufferCopy2) * ret.alloc_cap, 8);
+
+    return ret;
+}
+void destroy_allocator(Allocator *alloc) {
+    free_h(alloc->allocations);
+    *alloc = {};
+}
+void begin(Allocator *alloc) {
+    u64 alignment = get_gpu_instance()->info.props.limits.nonCoherentAtomSize;
+    alloc->bytes_staged = align(alloc->bytes_staged, alignment);
+    alloc->queue_front = alloc->bytes_staged;
+}
+void* queue(Allocator *alloc, u64 size, u64 *offset) {
+    *offset = alloc->bytes_staged;
+    alloc->bytes_staged += size;
+    ASSERT(alloc->bytes_staged <= alloc->stage_cap, "Model Allocator Staged Byte Overflow");
+    return (u8*)alloc->stage_ptr + *offset;
+}
+Allocation* stage(Allocator *alloc) {
+    u64 alignment = get_gpu_instance()->info.props.limits.nonCoherentAtomSize;
+    alloc->bytes_staged = align(alloc->bytes_staged, alignment);
+
+    alloc->allocations[alloc->alloc_count].stage_offset = alloc->queue_front,
+    alloc->allocations[alloc->alloc_count].size = alloc->bytes_staged - alloc->queue_front,
+    alloc->allocations[alloc->alloc_count].state = Allocation_State::STAGED,
+
+    alloc->alloc_count++;
+    ASSERT(alloc->alloc_count <= alloc->alloc_cap, "Model Allocator Allocation Overflow");
+
+    return &alloc->allocations[alloc->alloc_count];
+}
+VkBuffer queue_upload(Allocator *alloc, Allocation *allocation) {
+    // If the to_upload queue is too large, return invalid buffer handle
+    if (alloc->bytes_to_upload + allocation->size > alloc->upload_cap)
+        return NULL;
+
+    switch(allocation->state) {
+    case Allocation_State::DRAWN:
+        allocation->state = Allocation_State::UPLOADED;
+        break;
+    case Allocation_State::STAGED:
+        allocation->state = Allocation_State::TO_UPLOAD;
+        break;
+    default:
+        break;
+    }
+
+    alloc->bytes_to_upload += allocation->size;
+    alloc->to_upload_count++;
+
+    return alloc->upload;
+}
+/* 
+    Make space in uploaded buffer for to_upload stuff.
+    Returns false if the number of bytes in the device buffer minus the number of bytes
+    drawn is smaller than the space required for the 'to_upload' bytes.
+
+    Evictions begin at the end of the allocations array, while the upload function begins at the start
+    of the array. Therefore the earlier the model is staged, the more likely it is to be in device
+    memory.
+*/
+bool evict(Allocator *alloc) {
+    u64 available = 0;
+    u64 required = alloc->bytes_to_upload;
+    u32 eviction_front;
+
+    // Check for large enough contiguous block of drawn allocations
+    for(u32 i = alloc->alloc_count - 1; i < Max_u32; --i) {
+        switch(alloc->allocations[i].state) {
+        case Allocation_State::DRAWN:
+            available += alloc->allocations[i].size;
+            break;
+        case Allocation_State::UPLOADED:
+            available = 0;
+            break;
+        default:
+            break;
+        }
+
+        if (available >= required) {
+            eviction_front = i;
+            available = 0;
+            goto sufficient_space; // jump early return
+        }
+    }
+    return false;
+
+    sufficient_space: // goto label; jump early return
+
+    alloc->upload_block_begin = alloc->allocations[eviction_front].upload_offset;
+    for(u32 i = eviction_front; available < required; ++i) {
+        alloc->allocations[i].state = Allocation_State::STAGED;
+        alloc->allocations[i].prev_offset = alloc->allocations[i].upload_offset;
+        available += alloc->allocations[i].size;
+    }
+    alloc->bytes_uploaded -= available;
+    return true;
+}
+/*
+    Upload Queue Implementation note:
+        The upload queue will only be flushed if the entire queue can fit into the device allocator.
+        This could be slow in the case that the queue is very large, as even tho there may be a lot of
+        room in device memory, there is not a large enough contiguous block due to a small number of
+        draws. In this case, it could be preferable to upload some of the queue, allowing for more
+        draw calls to be submitted. But now the algorithm for searching the allocations array becomes
+        more expensive, and while there are models waiting to be uploaded in order to be drawn, we know
+        that the gpu is working as there are allocations which are waiting to be drawn. Furthermore, copy
+        operations are not as local, as now smaller copies are being done on a wider area (depending on
+        how granular the partial queue flush operations are). 
+
+        For now I will leave the implementation as searching for the first contiguous block large enough
+        to hold the entire queue, and will update if this is a bottleneck. In my mental model tho, this
+        implementation is fine: for one, the above design changes can be sort of achieved by making fewer
+        queue calls, so the effect of queue fragmentation should be smaller. Secondly, it is expected
+        that drawing will happen in a similar order as the allocations array, meaning that there should
+        be little fragmentation (operations should always happen in similar groupings as the allocations).
+        Finally, while waiting on device memory availability, there should be other work that can be done.
+*/
+bool upload(Allocator *alloc) {
+    if (alloc->bytes_to_upload + alloc->bytes_uploaded > alloc->upload_cap)
+        if (!evict(alloc)) // call evict as late as possible to maximise state::DRAWN count;
+            return false; // if the queue is larger than the space available
+
+    u64 upload_offset = alloc->upload_block_begin;
+    for(u32 i = 0; i < alloc->alloc_count; ++i) {
+        switch(alloc->allocations[i].state) {
+        case Allocation_State::TO_UPLOAD:
+            alloc->allocations[i].state = Allocation_State::UPLOADED;
+
+            alloc->copy_infos[i] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2},
+            alloc->copy_infos[i].srcOffset = alloc->allocations[i].stage_offset,
+            alloc->copy_infos[i].dstOffset = upload_offset,
+            alloc->copy_infos[i].size = alloc->allocations[i].size,
+
+            upload_offset += alloc->allocations[i].size;
+            break;
+        default:
+            break;
+        }
+    }
+    alloc->upload_block_begin = upload_offset;
+
+    Gpu *gpu = get_gpu_instance();
+    alloc->buf_barr = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    alloc->buf_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
+    alloc->buf_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
+    alloc->buf_barr.srcQueueFamilyIndex = gpu->transfer_queue_index;
+    alloc->buf_barr.dstQueueFamilyIndex = gpu->graphics_queue_index;
+    alloc->buf_barr.buffer = alloc->upload;
+    alloc->buf_barr.offset = 0;
+    alloc->buf_barr.size = VK_WHOLE_SIZE;
+
+    return true;
+}
 
 Texture* tex_add(Tex_Allocator *alloc, String uri) { return (Texture*)malloc_t(sizeof(Texture), 8); }
 void tex_upload(Allocator *alloc) {}

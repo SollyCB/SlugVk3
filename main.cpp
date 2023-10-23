@@ -31,7 +31,7 @@ int main() {
 
     gpu::Shader_Map shader_map = gpu::create_shader_map(128);
 
-    // Load shaders
+    // Load Shaders
     String basic_shader_files[] = {
         get_string("shaders/basic.vert.spv"),
         get_string("shaders/basic.frag.spv"),
@@ -39,7 +39,11 @@ int main() {
     gpu::Set_Allocate_Info set_allocate_info = insert_shader_set("basic", 2, basic_shader_files, &shader_map);
     gpu::Descriptor_Allocation basic_set_allocation = gpu::create_descriptor_sets(1, &set_allocate_info);
 
-    // Model vertex setup
+    // Create Model Allocators
+    gpu::model::Create_Info model_info = {};
+    //gpu::model::Allocator model_allocator = create_allocator(
+
+    // Load Models
     String model_dir = get_string("models/cesium-man/");
 
     String model_files[] = {get_string("CesiumMan.gltf")};
