@@ -683,7 +683,7 @@ void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
     }
 }
 void create_buffers(Gpu *gpu, u32 mem_type, u32 count, VkBuffer *bufs, VkDeviceMemory *mems, void **ptrs, u64 size,
-                    VkBufferUsageFlags usage, float priority) {
+                    VkBufferUsageFlags usage, float priority, bool map) {
 
     VkResult check;
     VkBufferCreateInfo buf_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -713,7 +713,9 @@ void create_buffers(Gpu *gpu, u32 mem_type, u32 count, VkBuffer *bufs, VkDeviceM
         DEBUG_OBJ_CREATION(vkAllocateMemory, check);
 
         vkBindBufferMemory(gpu->device, bufs[i], mems[i], 0);
-        vkMapMemory(gpu->device, mems[i], 0, VK_WHOLE_SIZE, 0x0, &ptrs[i]);
+
+        if (map)
+            vkMapMemory(gpu->device, mems[i], 0, VK_WHOLE_SIZE, 0x0, &ptrs[i]);
     }
 }
 void create_mem(Gpu *gpu, u32 mem_type, u32 count, u64 size, VkDeviceMemory *mem, float priority) {
@@ -757,7 +759,8 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
         gpu->memory.vert_ptrs,
         VERTEX_STAGE_SIZE,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        0.4);
+        0.4,
+        true);
     create_buffers(gpu,
         device_mem_type,
         INDEX_STAGE_COUNT,
@@ -766,7 +769,8 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
         gpu->memory.index_ptrs,
         INDEX_STAGE_SIZE,
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        0.4);
+        0.4,
+        true);
     create_buffers(gpu,
         device_mem_type,
         UNIFORM_BUFFER_COUNT,
@@ -775,18 +779,95 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
         gpu->memory.uniform_ptrs,
         UNIFORM_BUFFER_SIZE,
         VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        0);
+        0,
+        true);
 
     // Other Buffers
     create_buffers(gpu,
-        device_mem_type,
-        INDEX_STAGE_COUNT,
+        host_mem_type,
+        TEXTURE_STAGE_COUNT,
         gpu->memory.texture_bufs_stage,
         gpu->memory.texture_mem_stage,
         gpu->memory.tex_ptrs,
         TEXTURE_STAGE_SIZE,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-        0);
+        0,
+        true);
+    create_mem(gpu, device_mem_type, 1, TEXTURE_DEVICE_SIZE, &gpu->memory.texture_mem_device, 0.6);
+}
+void setup_memory_discrete(u32 device_mem_type, u32 host_mem_type, u32 both_mem_type) {
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    create_attachments(gpu, device, device_mem_type);
+
+    // Staging Buffers
+    create_buffers(gpu,
+        host_mem_type,
+        VERTEX_STAGE_COUNT,
+        gpu->memory.vertex_bufs_stage,
+        gpu->memory.vertex_mem_stage,
+        gpu->memory.vert_ptrs,
+        VERTEX_STAGE_SIZE,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        0.0,
+        true);
+    create_buffers(gpu,
+        host_mem_type,
+        INDEX_STAGE_COUNT,
+        gpu->memory.index_bufs_stage,
+        gpu->memory.index_mem_stage,
+        gpu->memory.index_ptrs,
+        INDEX_STAGE_SIZE,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        0.0,
+        true);
+    create_buffers(gpu,
+        host_mem_type,
+        TEXTURE_STAGE_COUNT,
+        gpu->memory.texture_bufs_stage,
+        gpu->memory.texture_mem_stage,
+        gpu->memory.tex_ptrs,
+        TEXTURE_STAGE_SIZE,
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        0,
+        true);
+
+    // Device Buffers
+    create_buffers(gpu,
+        device_mem_type,
+        1,
+        &gpu->memory.vertex_buf_device,
+        &gpu->memory.vertex_mem_device,
+        NULL,
+        VERTEX_STAGE_SIZE,
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        0.4,
+        false);
+    create_buffers(gpu,
+        device_mem_type,
+        1,
+        &gpu->memory.index_buf_device,
+        &gpu->memory.index_mem_device,
+        NULL,
+        INDEX_STAGE_SIZE,
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        0.4,
+        false);
+
+    // Shared heaps
+    create_buffers(gpu,
+        both_mem_type,
+        UNIFORM_BUFFER_COUNT,
+        gpu->memory.uniform_bufs,
+        gpu->memory.uniform_mem,
+        gpu->memory.uniform_ptrs,
+        UNIFORM_BUFFER_SIZE,
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        0,
+        true);
+
+    // Device Mem
     create_mem(gpu, device_mem_type, 1, TEXTURE_DEVICE_SIZE, &gpu->memory.texture_mem_device, 0.6);
 }
 void allocate_memory() {
@@ -835,7 +916,7 @@ void allocate_memory() {
         setup_memory_integrated(device_mem_type, host_mem_type);
     }
     else if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
-        discrete_gpu_get_memory_type(
+        discrete_gpu_get_memory_type( // @Note Assumes there is some shared heap (for uniform buffers)
             &mem_props,
             largest_heap_device,
             largest_heap_host,
@@ -845,7 +926,7 @@ void allocate_memory() {
             &final_heap_device,
             &final_heap_host,
             &final_heap_both);
-        //setup_memory_discrete(device_mem_type, host_mem_type, both_mem_type)
+        setup_memory_discrete(device_mem_type, host_mem_type, both_mem_type);
     }
 }
 void free_memory() {
@@ -862,27 +943,34 @@ void free_memory() {
         vkFreeMemory(device, gpu->memory.depth_mem[i], ALLOCATION_CALLBACKS);
     }
 
-    /*
     // Vertex attribute mem
-
     if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+        vkDestroyBuffer(device, gpu->memory.vertex_buf_device, ALLOCATION_CALLBACKS);
+        vkDestroyBuffer(device, gpu->memory.index_buf_device, ALLOCATION_CALLBACKS);
         vkFreeMemory(device, gpu->memory.vertex_mem_device, ALLOCATION_CALLBACKS);
         vkFreeMemory(device, gpu->memory.index_mem_device, ALLOCATION_CALLBACKS);
     }
-    for(u32 i= 0; i < VERTEX_STAGE_COUNT; ++i)
+    for(u32 i= 0; i < VERTEX_STAGE_COUNT; ++i) {
+        vkDestroyBuffer(device, gpu->memory.vertex_bufs_stage[i], ALLOCATION_CALLBACKS);
         vkFreeMemory(device, gpu->memory.vertex_mem_stage[i], ALLOCATION_CALLBACKS);
-    for(u32 i= 0; i < INDEX_STAGE_COUNT; ++i)
+    }
+    for(u32 i= 0; i < INDEX_STAGE_COUNT; ++i) {
+        vkDestroyBuffer(device, gpu->memory.index_bufs_stage[i], ALLOCATION_CALLBACKS);
         vkFreeMemory(device, gpu->memory.index_mem_stage[i], ALLOCATION_CALLBACKS);
+    }
 
     // Texture mem
-    for(u32 i= 0; i < TEXTURE_STAGE_COUNT; ++i)
+    for(u32 i= 0; i < TEXTURE_STAGE_COUNT; ++i) {
+        vkDestroyBuffer(device, gpu->memory.texture_bufs_stage[i], ALLOCATION_CALLBACKS);
         vkFreeMemory(device, gpu->memory.texture_mem_stage[i], ALLOCATION_CALLBACKS);
+    }
     vkFreeMemory(device, gpu->memory.texture_mem_device, ALLOCATION_CALLBACKS);
 
     // Uniform mem
-    for(u32 i= 0; i < UNIFORM_BUFFER_COUNT; ++i)
+    for(u32 i= 0; i < UNIFORM_BUFFER_COUNT; ++i) {
+        vkDestroyBuffer(device, gpu->memory.uniform_bufs[i], ALLOCATION_CALLBACKS);
         vkFreeMemory(device, gpu->memory.uniform_mem[i], ALLOCATION_CALLBACKS);
-    */
+    }
 }
 
 // `Shaders
