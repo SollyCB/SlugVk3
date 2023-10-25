@@ -47,7 +47,7 @@ struct Gpu_Memory {
     VkBuffer vertex_bufs_stage[VERTEX_STAGE_COUNT];
     VkBuffer index_bufs_stage [INDEX_STAGE_COUNT];
 
-    VkDeviceMemory vertex_mem_device;
+    VkDeviceMemory vertex_mem_device; // will likely need multiple of these
     VkDeviceMemory index_mem_device;
     VkBuffer vertex_buf_device;
     VkBuffer index_buf_device;
@@ -229,80 +229,123 @@ VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info);
 void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout);
 
 
-/* Model Loading */
+        /* Model Allocation */
 namespace model {
-enum class Allocation_State : u32 {
+enum class Alloc_State : u32 {
     NONE = 0,
     STAGED = 1,
     TO_UPLOAD = 2,
     UPLOADED = 3,
     DRAWN = 4,
+    SEEN = 5,
 };
 struct Allocation {
+    Alloc_State state;
+
     u64 stage_offset;
+    u64 size;
     u64 upload_offset;
     u64 prev_offset;
-    u64 size;
-    Allocation_State state;
+};
+enum class Flags : u8 {
+    UNIFIED_MEM = 0x01,
+    UNIFIED_TRANSFER = 0x02,
 };
 struct Allocator {
+    // Bit Mask
+    u32 bit_granularity;
+    u32 mask_count;
+    u32 bit_cursor;
+    u64 *masks;
+
+    // Allocations
     u32 alloc_cap;
     u32 alloc_count;
-    u32 to_upload_count;
+    Allocation *allocs;
 
-    // Byte counts
+    // Staging
+    u64 staging_queue;
     u64 stage_cap;
     u64 bytes_staged;
+    VkBuffer stage;
+    void *stage_ptr;
+
+    // Upload
+    u64 upload_queue;
     u64 upload_cap;
     u64 bytes_uploaded;
-    u64 bytes_to_upload;
-    u64 upload_block_begin; // byte offset to the beginning of the free block for uploading into
-
-    u64 queue_front;
-
-    void *stage_ptr;
-    VkBuffer stage;
     VkBuffer upload;
-    VkBufferMemoryBarrier2 buf_barr;
 
-    Allocation *allocations;
-    VkBufferCopy2 *copy_infos;
-};
-struct Create_Info {
-    void *stage_ptr;
-    u64 stage_cap;
-    u64 device_cap;
-    u32 alloc_cap;
-    VkBuffer stage;
-    VkBuffer upload;
+    // Transfer Info
+    VkBufferCopy2 *regions;
+    VkCopyBufferInfo2 copy_info;
+    VkMemoryBarrier2 mem_barr;
     VkSemaphore upload_semaphore;
+    VkCommandBuffer upload_cmd;
+    //VkBufferMemoryBarrier2 buf_barr;
+
+    // Miscellaneous
+    u64 alignment;
+    u8 flags;
+    VkCommandPool cmd_pool; // Why not ??
 };
-Allocator create_allocator(Create_Info *info);
+struct Allocator_Create_Info {
+    u64 stage_cap;
+    u64 upload_cap;
+    VkBuffer stage;
+    void *stage_ptr;
+    VkBuffer upload;
+
+    u32 bit_granularity = 256; // Upload cap must be a multiple of 64 of this number
+    u32 alloc_cap; // How many allocations can exist in the allocator
+};
+Allocator create_allocator(Allocator_Create_Info *info);
 void destroy_allocator(Allocator *alloc);
-// Prepare allocator queue
-void begin(Allocator *alloc);
-// Push size to queue; write to pushed size
-void* queue(Allocator *alloc, u64 size, u64 *offset);
-// Signal queue complete; return size and offset of final total allocation
-Allocation* stage(Allocator *alloc);
-// Mark data for gpu transfer
-VkBuffer queue_upload(Allocator *alloc, Allocation *allocation);
-// Upload marked data
-bool upload(Allocator *alloc);
 
+/*
+    Buffer Allocator Front End:
+        Staging:
+            1. staging_queue_begin() to prepare the allocator staging queue.
+            2. staging_queue_add() to add to the staging queue.
+            3. staging_queue_submit() to receive a pointer to the final full allocation.
+        Uploading:
+            1. upload_queue_begin() to prepare the allocator upload queue.
+            2. upload_queue_add() to add an allocation to the queue.
+            3. upload_queue_submit() to upload the allocations in the queue to the device buffer.
+*/
+bool staging_queue_begin(Allocator *alloc);
+void* staging_queue_add(Allocator *alloc, u64 size, u64 *offset);
+Allocation* staging_queue_submit(Allocator *alloc);
+
+bool upload_queue_begin(Allocator *alloc);
+VkBuffer upload_queue_add(Allocator *alloc, Allocation *allocation);
+bool upload_queue_submit(Allocator *alloc);
+
+        /* Texture Allocation */
+struct Sampler_Info {
+    VkSamplerAddressMode wrap_s;
+    VkSamplerAddressMode wrap_t;
+
+    VkFilter mag_filter;
+    VkFilter min_filter;
+
+    VkSampler sampler;
+};
 struct Texture {
-    String uri;
-
     u32 width;
     u32 height;
 
-    VkImage image;
-    Allocation_State state;
+    u64 img_size;
+    u64 stage_offset;
+    u64 upload_offset;
 
-    VkSamplerAddressMode wrap_s;
-    VkSamplerAddressMode wrap_t;
-    VkFilter mag_filter;
-    VkFilter min_filter;
+    VkImage image;
+    Alloc_State state;
+};
+struct Tex_Info {
+    String uri;
+    VkFormat format;
+    Texture *tex;
 };
 struct Tex_Allocator {
     u32 tex_count;
@@ -314,20 +357,28 @@ struct Tex_Allocator {
     u64 upload_byte_cap;
 
     Texture *textures;
+    Tex_Info *tex_infos;
+    Sampler_Info *sampler_infos;
+
     VkBuffer stage;
     VkDeviceMemory upload;
-};
-/*
-    Buffer Allocation API:
-    Assumes that buffer uploads will consist of multiple smaller allocations which can
-    be grouped into a large allocation.
-    'Allocator' does not evict to disk, vertex data always in memory.
-    'Tex_Allocator' can evict textures back to disk if texture memory is low.
 
-    TLDR, 'Allocator' greater control by the model, 'Tex_Allocator' controlled by allocator.
-*/
+    void *stage_ptr;
+};
+
 Texture* tex_add(Tex_Allocator *alloc, String uri);
 void tex_upload(Allocator *alloc);
+
+    /* End Texture Allocation */
+
+    /* Model Loading */
+struct Model_Allocators {
+    Allocator index;
+    Allocator vert;
+    Tex_Allocator tex;
+};
+Model_Allocators init_allocators();
+void shutdown_allocators(Model_Allocators *allocs);
 
 struct Node;
 struct Skin {
@@ -363,9 +414,6 @@ struct Material {
 struct Primitive {
     u32 count; // draw count (num indices)
     VkIndexType index_type;
-
-    VkBuffer indices;
-    VkBuffer vertices;
 
     u64 offset_index;
     u64 offset_pos;
@@ -445,11 +493,7 @@ struct Static_Model {
     Allocation *vert_alloc;
     Allocation *tex_alloc;
 };
-struct Model_Allocators {
-    Allocator *index;
-    Allocator *vert;
-    Tex_Allocator *tex;
-};
+
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
 void free_static_model(Static_Model *model);
 

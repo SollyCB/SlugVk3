@@ -1134,7 +1134,7 @@ void count_descriptors(u32 count, Set_Layout_Info *infos, u32 descriptor_counts[
 }
 
 VkDescriptorSetLayout* create_set_layouts(u32 count, Set_Layout_Info *infos) {
-    VkDescriptorSetLayout *layouts = 
+    VkDescriptorSetLayout *layouts =
         (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * count, 8);
 
     VkDevice device = get_gpu_instance()->device;
@@ -1237,174 +1237,501 @@ namespace model {
 #if 1
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 
-Allocator create_allocator(Create_Info *info) {
+/*
+    New Model Allocator Plan:
+        The allocator's device buffer is represented by a large bit mask (an array of u64s)
+        where each bit is some memory granularity (each bit could represent a Kb, Mb, etc).
+        When a queue is submitted, allocations array is searched for DRAWN states, these ranges
+        are then marked as free in the bit mask. Next, the mask is searched for a free range large
+        enough to hold the queue (a queue can only be submitted if there is one large enough contiguous
+        block i.e. the block holds all allocations, or none.) The memory range that the queue fills
+        is then marked as full in the bit mask. The DRAWN allocations are then again checked against
+        the bit mask. If a drawn allocations range has moved from free to full, then its memory has
+        been overwritten by the most recent queue, therefore it is marked as staged.
+
+        When the buffer copies have been **VK QUEUE SUBMITTED**, the allocation's states are set to UPLOADED.
+        Now a new queue is allowed to begin.
+*/
+
+        /* Begin Allocator Helper Algorithms */
+static u32 find_contiguous_free(u32 count, u64 *bits, u32 offset, u32 req_count) {
+    u32 ll_idx = offset >> 6;
+    u32 adj_idx = ll_idx * 64;
+    u32 bit_idx = offset & 63;
+    bits += ll_idx;
+    count -= ll_idx;
+
+    u64 restore = bits[0];
+    bits[0] |= 0xffffffffffffffff >> (64 - bit_idx);
+
+    u32 total_count = 0;
+    for(u32 i = 0; i < count; ++i) {
+        total_count += pop_count64(~bits[i]);
+    }
+    if (total_count < req_count) {
+        bits[0] = restore;
+        return Max_u32;
+    }
+
+    u32 bit_count = 0;
+    u32 idx = 0;
+    for(u32 i = 0; i < count; ++i) {
+        u64 tmp = bits[i];
+        if (tmp == Max_u64) {
+            bit_count = 0;
+            idx = (i + 1) * 64;
+            continue;
+        }
+        if (!tmp) {
+            bit_count += 64;
+            if (bit_count >= req_count) {
+                bits[0] = restore;
+                return idx + adj_idx;
+            }
+            else
+                continue;
+        }
+        u32 tz = count_trailing_zeros_u64(~tmp);
+        tmp >>= tz;
+        u32 shift = tz;
+        while(tmp) {
+            tz = count_trailing_zeros_u64(tmp);
+            if (tz + bit_count >= req_count) {
+                bits[0] = restore;
+                return idx + adj_idx;
+            }
+
+            tmp >>= tz;
+            shift += tz;
+            tz = count_trailing_zeros_u64(~tmp);
+            tmp >>= tz;
+            shift += tz;
+            idx = shift + (64 * i);
+            bit_count = 0;
+        }
+        tz = count_leading_zeros_u64(bits[i]);
+        idx = (i * 64) + (64 - tz);
+        if (tz >= req_count) {
+            bits[0] = restore;
+            return idx + adj_idx;
+        }
+        else {
+            bit_count += tz;
+        }
+        shift = 0;
+    }
+
+    bits[0] = restore;
+    return Max_u32;
+}
+inline static void make_full(u32 count, u64 *bits, u32 offset, u32 range) {
+    u64 mask = 0xffffffffffffffff;
+    if ((offset & 63) + range < 64) {
+        mask >>= offset & 63;
+        mask <<= offset & 63;
+
+        mask <<= 64 - (range + (offset & 63));
+        mask >>= 64 - (range + (offset & 63));
+
+        bits[offset >> 6] |= mask;
+        return;
+    }
+    u32 tmp32;
+    while(range + (offset & 63) > 64) {
+        mask = 0xffffffffffffffff;
+        mask >>= offset & 63;
+        mask <<= offset & 63;
+
+        tmp32 = 64 - (offset & 63);
+
+        mask <<= 64 - (tmp32 + (offset & 63));
+        mask >>= 64 - (tmp32 + (offset & 63));
+
+        bits[offset >> 6] |= mask;
+
+        offset += 64 - (offset & 63);
+        range -= tmp32;
+    }
+    mask = 0xffffffffffffffff;
+    mask >>= offset & 63;
+    mask <<= offset & 63;
+
+    mask <<= 64 - (range + (offset & 63));
+    mask >>= 64 - (range + (offset & 63));
+
+    bits[offset >> 6] |= mask;
+}
+inline static void make_free(u32 count, u64 *bits, u32 offset, u32 range) {
+    u64 mask = 0xffffffffffffffff;
+    if ((offset & 63) + range < 64) {
+        mask >>= offset & 63;
+        mask <<= offset & 63;
+
+        mask <<= 64 - (range + (offset & 63));
+        mask >>= 64 - (range + (offset & 63));
+
+        bits[offset >> 6] &= ~mask;
+        return;
+    }
+    u32 tmp32;
+    while(range + (offset & 63) > 64) {
+        mask = 0xffffffffffffffff;
+        mask >>= offset & 63;
+        mask <<= offset & 63;
+
+        tmp32 = 64 - (offset & 63);
+
+        mask <<= 64 - (tmp32 + (offset & 63));
+        mask >>= 64 - (tmp32 + (offset & 63));
+
+        bits[offset >> 6] &= ~mask;
+
+        offset += 64 - (offset & 63);
+        range -= tmp32;
+    }
+    mask = 0xffffffffffffffff;
+    mask >>= offset & 63;
+    mask <<= offset & 63;
+
+    mask <<= 64 - (range + (offset & 63));
+    mask >>= 64 - (range + (offset & 63));
+
+    bits[offset >> 6] &= ~mask;
+}
+bool is_range_free(u32 count, u64 *bits, u32 offset, u32 range) {
+    u64 mask = 0xffffffffffffffff;
+    if ((offset & 63) + range < 64) {
+        mask >>= offset & 63;
+        mask <<= offset & 63;
+
+        mask <<= 64 - (range + (offset & 63));
+        mask >>= 64 - (range + (offset & 63));
+
+        if ((bits[offset >> 6] | ~mask) != ~mask)
+            return false;
+        return true;
+    }
+    u32 tmp32;
+    while(range + (offset & 63) > 64) {
+        mask = 0xffffffffffffffff;
+        mask >>= offset & 63;
+        mask <<= offset & 63;
+
+        tmp32 = 64 - (offset & 63);
+
+        mask <<= 64 - (tmp32 + (offset & 63));
+        mask >>= 64 - (tmp32 + (offset & 63));
+
+        if ((bits[offset >> 6] | ~mask) != ~mask)
+            return false;
+
+        offset += 64 - (offset & 63);
+        range -= tmp32;
+    }
+    mask = 0xffffffffffffffff;
+    mask >>= offset & 63;
+    mask <<= offset & 63;
+
+    mask <<= 64 - (range + (offset & 63));
+    mask >>= 64 - (range + (offset & 63));
+
+    if ((bits[offset >> 6] | ~mask) != ~mask)
+        return false;
+    return true;
+}
+        /* End Allocator Helper Algorithms */
+
+        /* Implement Model Allocator */
+
+Allocator create_allocator(Allocator_Create_Info *info) {
+    ASSERT(info->upload_cap % (info->bit_granularity * 64) == 0,
+            "upload_cap \% bit_granularity * 64 must be equivalent to 0");
+
     Allocator ret = {};
-    ret.stage_ptr = info->stage_ptr;
     ret.stage_cap = info->stage_cap;
-    ret.upload_cap = info->device_cap;
-    ret.alloc_cap = info->alloc_cap;
+    ret.upload_cap = info->upload_cap;
     ret.stage = info->stage;
+    ret.stage_ptr = info->stage_ptr;
     ret.upload = info->upload;
 
-    ret.allocations = (Allocation*)malloc_h(sizeof(Allocation) * ret.alloc_cap, 8);
-    ret.copy_infos = (VkBufferCopy2*)malloc_h(sizeof(VkBufferCopy2) * ret.alloc_cap, 8);
+    ret.alloc_cap = info->alloc_cap;
+    ret.allocs = (Allocation*)malloc_h(sizeof(Allocation) * ret.alloc_cap, 8);
+    ret.regions = (VkBufferCopy2*)malloc_h(sizeof(VkBufferCopy2) * ret.alloc_cap, 8);
+
+    ret.bit_granularity = info->bit_granularity;
+
+    u64 c = ret.upload_cap;
+    u64 g = ret.bit_granularity;
+    ret.mask_count = c / (g * 64);
+    ret.masks = (u64*)malloc_h(sizeof(u64) * ret.mask_count, 8);
+    memset(ret.masks, 0, sizeof(u64) * ret.mask_count);
+
+    Gpu *gpu = get_gpu_instance();
+    ret.alignment = gpu->info.props.limits.nonCoherentAtomSize;
+    ret.staging_queue = Max_u64;
+
+    if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+        ret.flags |= (u8)Flags::UNIFIED_MEM;
+        // Could early return here, as the transfer queue info is not needed if memory
+        // is unified...
+    }
+    if (gpu->transfer_queue_index == gpu->graphics_queue_index) {
+        ret.flags |= (u8)Flags::UNIFIED_TRANSFER;
+
+     // skip creating transfer resources, no transfers happen in the allocator if the
+     // transfer queue is not discrete. The buffer copy is submitted with other commands
+     // which use the graphics queue.
+        return ret;
+    }
+
+    VkSemaphoreCreateInfo semaphore_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    auto check = vkCreateSemaphore(
+            gpu->device,
+            &semaphore_info,
+            ALLOCATION_CALLBACKS,
+            &ret.upload_semaphore);
+    DEBUG_OBJ_CREATION(vkCreateSemaphore, check);
+
+    VkCommandPoolCreateInfo cmd_pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cmd_pool_info.queueFamilyIndex = gpu->transfer_queue_index;
+    check = vkCreateCommandPool(
+                gpu->device,
+                &cmd_pool_info,
+                ALLOCATION_CALLBACKS,
+                &ret.cmd_pool);
+    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
+
+    VkCommandBufferAllocateInfo cmd_alloc_info = {
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    cmd_alloc_info.commandPool = ret.cmd_pool;
+    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmd_alloc_info.commandBufferCount = 1;
+    vkAllocateCommandBuffers(gpu->device, &cmd_alloc_info, &ret.upload_cmd);
 
     return ret;
 }
 void destroy_allocator(Allocator *alloc) {
-    free_h(alloc->allocations);
+    free_h(alloc->masks);
+    free_h(alloc->allocs);
+    free_h(alloc->regions);
+
+    VkDevice device = get_gpu_instance()->device;
+    vkDestroyCommandPool(device, alloc->cmd_pool, ALLOCATION_CALLBACKS);
+    vkDestroySemaphore(device, alloc->upload_semaphore, ALLOCATION_CALLBACKS);
+
     *alloc = {};
 }
-void begin(Allocator *alloc) {
-    u64 alignment = get_gpu_instance()->info.props.limits.nonCoherentAtomSize;
-    alloc->bytes_staged = align(alloc->bytes_staged, alignment);
-    alloc->queue_front = alloc->bytes_staged;
-}
-void* queue(Allocator *alloc, u64 size, u64 *offset) {
-    *offset = alloc->bytes_staged;
-    alloc->bytes_staged += size;
-    ASSERT(alloc->bytes_staged <= alloc->stage_cap, "Model Allocator Staged Byte Overflow");
-    return (u8*)alloc->stage_ptr + *offset;
-}
-Allocation* stage(Allocator *alloc) {
-    u64 alignment = get_gpu_instance()->info.props.limits.nonCoherentAtomSize;
-    alloc->bytes_staged = align(alloc->bytes_staged, alignment);
 
-    alloc->allocations[alloc->alloc_count].stage_offset = alloc->queue_front,
-    alloc->allocations[alloc->alloc_count].size = alloc->bytes_staged - alloc->queue_front,
-    alloc->allocations[alloc->alloc_count].state = Allocation_State::STAGED,
+bool staging_queue_begin(Allocator *alloc) {
+    if (alloc->staging_queue != Max_u64)
+        return false;
 
-    alloc->alloc_count++;
-    ASSERT(alloc->alloc_count <= alloc->alloc_cap, "Model Allocator Allocation Overflow");
+    alloc->bytes_staged = align(alloc->bytes_staged, alloc->alignment);
+    alloc->staging_queue = alloc->bytes_staged;
 
-    return &alloc->allocations[alloc->alloc_count];
+    return true;
 }
-VkBuffer queue_upload(Allocator *alloc, Allocation *allocation) {
-    // If the to_upload queue is too large, return invalid buffer handle
-    if (alloc->bytes_to_upload + allocation->size > alloc->upload_cap)
+void* staging_queue_add(Allocator *alloc, u64 size, u64 *offset) {
+    if (alloc->staging_queue + size > alloc->stage_cap)
         return NULL;
 
-    switch(allocation->state) {
-    case Allocation_State::DRAWN:
-        allocation->state = Allocation_State::UPLOADED;
-        break;
-    case Allocation_State::STAGED:
-        allocation->state = Allocation_State::TO_UPLOAD;
-        break;
-    default:
-        break;
-    }
+    *offset = alloc->staging_queue;
+    alloc->staging_queue += size;
+    return (u8*)alloc->stage_ptr + *offset;
+}
+Allocation* staging_queue_submit(Allocator *alloc) {
 
-    alloc->bytes_to_upload += allocation->size;
-    alloc->to_upload_count++;
+    alloc->staging_queue = align(alloc->staging_queue, alloc->alignment);
+    if (alloc->staging_queue + alloc->bytes_staged > alloc->stage_cap)
+        return NULL;
 
+    Allocation *ret = &alloc->allocs[alloc->alloc_count];
+    ret->state = Alloc_State::STAGED;
+    ret->stage_offset = alloc->bytes_staged;
+
+    ret->size = alloc->staging_queue - alloc->bytes_staged;
+
+    alloc->bytes_staged += alloc->staging_queue;
+    alloc->alloc_count++;
+    alloc->staging_queue = Max_u64;
+    return ret;
+}
+
+bool upload_queue_begin(Allocator *alloc) {
+    if (alloc->upload_queue != Max_u64)
+        return false;
+    alloc->upload_queue = 0;
+    return true;
+}
+VkBuffer upload_queue_add(Allocator *alloc, Allocation *allocation) {
+    if (alloc->upload_queue + allocation->size > alloc->upload_cap)
+        return NULL;
+    allocation->state = Alloc_State::TO_UPLOAD;
+    alloc->upload_queue += allocation->size;
     return alloc->upload;
 }
-/* 
-    Make space in uploaded buffer for to_upload stuff.
-    Returns false if the number of bytes in the device buffer minus the number of bytes
-    drawn is smaller than the space required for the 'to_upload' bytes.
+bool upload_queue_submit(Allocator *alloc) {
+    if (alloc->flags & (u8)Flags::UNIFIED_MEM)
+        return true;
 
-    Evictions begin at the end of the allocations array, while the upload function begins at the start
-    of the array. Therefore the earlier the model is staged, the more likely it is to be in device
-    memory.
-*/
-bool evict(Allocator *alloc) {
-    u64 available = 0;
-    u64 required = alloc->bytes_to_upload;
-    u32 eviction_front;
-
-    // Check for large enough contiguous block of drawn allocations
-    for(u32 i = alloc->alloc_count - 1; i < Max_u32; --i) {
-        switch(alloc->allocations[i].state) {
-        case Allocation_State::DRAWN:
-            available += alloc->allocations[i].size;
-            break;
-        case Allocation_State::UPLOADED:
-            available = 0;
-            break;
-        default:
-            break;
-        }
-
-        if (available >= required) {
-            eviction_front = i;
-            available = 0;
-            goto sufficient_space; // jump early return
-        }
-    }
-    return false;
-
-    sufficient_space: // goto label; jump early return
-
-    alloc->upload_block_begin = alloc->allocations[eviction_front].upload_offset;
-    for(u32 i = eviction_front; available < required; ++i) {
-        alloc->allocations[i].state = Allocation_State::STAGED;
-        alloc->allocations[i].prev_offset = alloc->allocations[i].upload_offset;
-        available += alloc->allocations[i].size;
-    }
-    alloc->bytes_uploaded -= available;
-    return true;
-}
-/*
-    Upload Queue Implementation note:
-        The upload queue will only be flushed if the entire queue can fit into the device allocator.
-        This could be slow in the case that the queue is very large, as even tho there may be a lot of
-        room in device memory, there is not a large enough contiguous block due to a small number of
-        draws. In this case, it could be preferable to upload some of the queue, allowing for more
-        draw calls to be submitted. But now the algorithm for searching the allocations array becomes
-        more expensive, and while there are models waiting to be uploaded in order to be drawn, we know
-        that the gpu is working as there are allocations which are waiting to be drawn. Furthermore, copy
-        operations are not as local, as now smaller copies are being done on a wider area (depending on
-        how granular the partial queue flush operations are). 
-
-        For now I will leave the implementation as searching for the first contiguous block large enough
-        to hold the entire queue, and will update if this is a bottleneck. In my mental model tho, this
-        implementation is fine: for one, the above design changes can be sort of achieved by making fewer
-        queue calls, so the effect of queue fragmentation should be smaller. Secondly, it is expected
-        that drawing will happen in a similar order as the allocations array, meaning that there should
-        be little fragmentation (operations should always happen in similar groupings as the allocations).
-        Finally, while waiting on device memory availability, there should be other work that can be done.
-*/
-bool upload(Allocator *alloc) {
-    if (alloc->bytes_to_upload + alloc->bytes_uploaded > alloc->upload_cap)
-        if (!evict(alloc)) // call evict as late as possible to maximise state::DRAWN count;
-            return false; // if the queue is larger than the space available
-
-    u64 upload_offset = alloc->upload_block_begin;
+    u32 g = alloc->bit_granularity;
+    u64 adj_size;
+    u64 adj_offset;
     for(u32 i = 0; i < alloc->alloc_count; ++i) {
-        switch(alloc->allocations[i].state) {
-        case Allocation_State::TO_UPLOAD:
-            alloc->allocations[i].state = Allocation_State::UPLOADED;
-
-            alloc->copy_infos[i] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2},
-            alloc->copy_infos[i].srcOffset = alloc->allocations[i].stage_offset,
-            alloc->copy_infos[i].dstOffset = upload_offset,
-            alloc->copy_infos[i].size = alloc->allocations[i].size,
-
-            upload_offset += alloc->allocations[i].size;
+        switch(alloc->allocs[i].state) {
+        case Alloc_State::DRAWN:
+        {
+            adj_size = (alloc->allocs[i].size / g) + 1;
+            adj_offset = alloc->allocs[i].upload_offset / g;
+            make_free(alloc->mask_count, alloc->masks, adj_offset, adj_size);
             break;
+        }
         default:
             break;
         }
     }
-    alloc->upload_block_begin = upload_offset;
+
+    adj_size = (alloc->upload_queue / g) + 1;
+    u32 free_block = find_contiguous_free(
+                        alloc->mask_count,
+                        alloc->masks,
+                        alloc->bit_cursor,
+                        adj_size);
+
+    if (free_block == Max_u32) {
+        alloc->bit_cursor = 0;
+        free_block = find_contiguous_free(
+                        alloc->mask_count,
+                        alloc->masks,
+                        alloc->bit_cursor,
+                        adj_size);
+
+        if (free_block == Max_u32)
+            return false;
+    }
+
+    make_full(alloc->mask_count, alloc->masks, free_block, adj_size);
+
+    u32 region_count = 0;
+    u64 upload_offset = free_block * g;
+    for(u32 i = 0; i < alloc->alloc_count; ++i) {
+        switch(alloc->allocs[i].state) {
+        case Alloc_State::TO_UPLOAD:
+        {
+            alloc->regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+            alloc->regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
+            alloc->regions[region_count].dstOffset = upload_offset;
+            alloc->regions[region_count].size = alloc->allocs[i].size;
+
+            alloc->allocs[i].state = Alloc_State::UPLOADED;
+            alloc->allocs[i].upload_offset = upload_offset;
+
+            upload_offset += alloc->allocs[i].size;
+            region_count++;
+            break;
+        }
+        case Alloc_State::DRAWN:
+        {
+            adj_size = (alloc->allocs[i].size / g) + 1;
+            adj_offset = alloc->allocs[i].upload_offset / g;
+            if (!is_range_free(alloc->mask_count, alloc->masks, adj_offset, adj_size)) {
+                alloc->allocs[i].state = Alloc_State::STAGED;
+                alloc->allocs[i].prev_offset = alloc->allocs[i].upload_offset;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    alloc->copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2};
+    alloc->copy_info.srcBuffer = alloc->stage;
+    alloc->copy_info.dstBuffer = alloc->upload;
+    alloc->copy_info.regionCount = region_count;
+    alloc->copy_info.pRegions = alloc->regions;
 
     Gpu *gpu = get_gpu_instance();
-    alloc->buf_barr = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    alloc->buf_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
-    alloc->buf_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
-    alloc->buf_barr.srcQueueFamilyIndex = gpu->transfer_queue_index;
-    alloc->buf_barr.dstQueueFamilyIndex = gpu->graphics_queue_index;
-    alloc->buf_barr.buffer = alloc->upload;
-    alloc->buf_barr.offset = 0;
-    alloc->buf_barr.size = VK_WHOLE_SIZE;
+    if (alloc->flags & (u8)Flags::UNIFIED_TRANSFER) {
+        alloc->mem_barr = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        alloc->mem_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
+        alloc->mem_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
+        alloc->mem_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
+        alloc->mem_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
+    }
+    else {
+        VkBufferMemoryBarrier2 buf_barr = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        buf_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
+        buf_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
+        buf_barr.srcQueueFamilyIndex = gpu->transfer_queue_index;
+        buf_barr.dstQueueFamilyIndex = gpu->graphics_queue_index;
+        buf_barr.buffer = alloc->upload;
 
+        VkDependencyInfo dep_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep_info.bufferMemoryBarrierCount = 1;
+        dep_info.pBufferMemoryBarriers = &buf_barr;
+
+        VkCommandBufferBeginInfo cmd_begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        vkBeginCommandBuffer(alloc->upload_cmd, &cmd_begin);
+
+            vkCmdCopyBuffer2(alloc->upload_cmd, &alloc->copy_info);
+            vkCmdPipelineBarrier2(alloc->upload_cmd, &dep_info);
+
+        vkEndCommandBuffer(alloc->upload_cmd);
+
+        VkSemaphoreSubmitInfo signal_info = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+        signal_info.semaphore = alloc->upload_semaphore;
+        signal_info.stageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+        VkCommandBufferSubmitInfo cmd_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+        cmd_info.commandBuffer = alloc->upload_cmd;
+
+        VkSubmitInfo2 submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+        submit_info.commandBufferInfoCount = 1;
+        submit_info.pCommandBufferInfos = &cmd_info;
+        submit_info.signalSemaphoreInfoCount = 1;
+        submit_info.pSignalSemaphoreInfos = &signal_info;
+
+        auto check = vkQueueSubmit2(gpu->transfer_queue, 1, &submit_info, NULL);
+        DEBUG_OBJ_CREATION(vkQueueSubmit2, check);
+    }
+
+    alloc->upload_queue = Max_u64;
     return true;
 }
+    /* End Model Allocator Implementation */
 
-Texture* tex_add(Tex_Allocator *alloc, String uri) { return (Texture*)malloc_t(sizeof(Texture), 8); }
-void tex_upload(Allocator *alloc) {}
+            /* Model Loading */
+
+Model_Allocators init_allocators() {
+    Gpu *gpu = get_gpu_instance();
+
+    Allocator_Create_Info allocator_info = {};
+    allocator_info.stage_cap = gpu::VERTEX_STAGE_SIZE;
+    allocator_info.upload_cap = gpu::VERTEX_DEVICE_SIZE;
+    allocator_info.stage = gpu->memory.vertex_bufs_stage[0];
+    allocator_info.stage_ptr = gpu->memory.vert_ptrs[0];
+    allocator_info.upload = gpu->memory.vertex_buf_device;
+    allocator_info.bit_granularity = 256;
+    allocator_info.alloc_cap = 128;
+
+    Allocator vertex_allocator = create_allocator(&allocator_info);
+
+    allocator_info.stage_cap = gpu::INDEX_STAGE_SIZE;
+    allocator_info.upload_cap = gpu::INDEX_DEVICE_SIZE;
+    allocator_info.stage = gpu->memory.index_bufs_stage[0];
+    allocator_info.stage_ptr = gpu->memory.index_ptrs[0];
+    allocator_info.upload = gpu->memory.index_buf_device;
+    Allocator index_allocator = create_allocator(&allocator_info);
+
+    Model_Allocators ret = {.index = index_allocator, .vert = vertex_allocator};
+    return ret;
+}
+void shutdown_allocators(Model_Allocators *allocs) {
+    destroy_allocator(&allocs->index);
+    destroy_allocator(&allocs->vert);
+    // destroy tex
+}
 
 /*
 
@@ -1419,7 +1746,7 @@ void tex_upload(Allocator *alloc) {}
     Uploading Models:
         When a model wants to be drawn, its checks the state of its allocations. If they
         are not uploaded, it calls 'upload()' with its allocation. The allocation's state
-        is updated indicated it needs to be uploaded. 
+        is updated indicated it needs to be uploaded.
         When the allocation is uploaded, its state is updated to reflect this. It also updates
         its 'upload_offset' field with the offset of the allocation in the device buffer.
         When an allocation's state demonstrates that it has been uploaded, the model can loop
@@ -1430,30 +1757,7 @@ void tex_upload(Allocator *alloc) {}
         When memory is running low in the device buffer, allocations can be evicted. This
         can only happen to allocations whose state == DRAWN. When an allocation is evicted,
         its state will return to STAGED, and its 'prev_offset' field will be set to its
-        'upload_offset' field. This allocation can then be overwritten in the device buffer.
-        Eviction begins at the end of the buffer, so models which are expected to be persistent
-        should be allocated first.
-
-    Updating Offsets:
-        When a model is first loaded, its members' offsets should be relative to the beginning
-        of the allocation, as if the allocation's offset into the device buffer were zero.
-        When the allocation is later upload, the members' offsets will += the offset of the
-        allocation into the device buffer.
-        When a model is uploaded a subsequent time, its offset must be adjusted according the
-        'prev_offset' field of the allocation.
-
-        Example:
-
-        1. model loaded
-            position offset = 100 (100 bytes from beginning of allocation)
-        2. model uploaded at offset 200
-            position offset = 300 (beginning of allocation + beginning of buffer)
-        3. model evicted, prev offset = 200
-            position offset not updated
-        4. model reuploaded at offset 100:
-            position offset += (s64)upload - prev == 300 + (100 - 200) = 200
-        5. model evicted, reuploaded at offset 600:
-            position offset += (s64)upload - prev == 200 + (600 - 100) = 700
+        'upload_offset' field. This memory is guaranteed to have been overwritten.
 
 */
 enum class Data_Type : u32 {
@@ -1474,7 +1778,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     memcpy(tmp_uri, dir->str, dir->len);
     memcpy(&tmp_uri[0] + dir->len, model_name->str, model_name->len);
     tmp_uri[dir->len + model_name->len] = '\0';
-    
+
     Gltf gltf = parse_gltf(tmp_uri);
 
     Gltf_Mesh *gltf_mesh;
@@ -1501,7 +1805,11 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     ret.meshes[0].primitives = (Primitive*)malloc_h(sizeof(Primitive) * prim_count, 8);
     ret.meshes[0].pl_infos = (Pl_Prim_Info*)malloc_h(sizeof(Pl_Prim_Info) * prim_count, 8);
 
-    /*  
+    // Allow summing offset
+    memset(ret.meshes[0].primitives, 0, sizeof(Primitive) * prim_count);
+    memset(ret.meshes[0].pl_infos, 0, sizeof(Pl_Prim_Info) * prim_count);
+
+    /*
         Vertex Attribute Load method:
             1. Loop primitives - mark data
             2. Loop buffer views - load data
@@ -1607,20 +1915,20 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     strcpy(&tmp_uri[0] + dir->len, gltf_buf->uri);
 
     const u8 *buf = file_read_bin_temp_large(tmp_uri, gltf_buf->byte_length);
-   
+
     Gltf_Buffer_View *gltf_view = gltf.buffer_views;
     void *ptr;
-    begin(allocs->index);
-    begin(allocs->vert);
+    staging_queue_begin(&allocs->index);
+    staging_queue_begin(&allocs->vert);
     for(u32 i = 0; i < view_count; ++i) {
     // This switch seems lame, but in reality gltf views are likely packed by type, so it will be predicted.
         switch(views[i].type) {
         case Data_Type::VERTEX:
-            ptr = queue(allocs->vert, gltf_view->byte_length, &views[i].offset);
+            ptr = staging_queue_add(&allocs->vert, gltf_view->byte_length, &views[i].offset);
             memcpy(ptr, buf + gltf_view->byte_offset, gltf_view->byte_length);
             break;
         case Data_Type::INDEX:
-            ptr = queue(allocs->index, gltf_view->byte_length, &views[i].offset);
+            ptr = staging_queue_add(&allocs->index, gltf_view->byte_length, &views[i].offset);
             memcpy(ptr, buf + gltf_view->byte_offset, gltf_view->byte_length);
             break;
         case Data_Type::NONE:
@@ -1634,30 +1942,48 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
         gltf_view = (Gltf_Buffer_View*)((u8*)gltf_view + gltf_view->stride);
     }
-    ret.index_alloc = stage(allocs->index);
-    ret.vert_alloc = stage(allocs->vert);
+    ret.index_alloc = staging_queue_submit(&allocs->index);
+    ret.vert_alloc = staging_queue_submit(&allocs->vert);
 
     // 3. Loop primitives - set offsets
     gltf_mesh = gltf.meshes;
     for(u32 i = 0; i < mesh_count; ++i) {
         gltf_prim = gltf_mesh->primitives;
         for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
-            ret.meshes[i].primitives[j].offset_index += views[view_indices[gltf_prim->indices]].offset;
+
+            //
+            // Previously acquired the offsets of buffer views into their respective allocation.
+            // Now add these offsets to the offsets of the primitives into their respective
+            // buffer view; this gives the total offset of the primitive data into the
+            // model's allocation (vertex or index allocation).
+            //
+
+            ret.meshes[i].primitives[j].offset_index +=
+                views[view_indices[gltf_prim->indices]].offset;
+
             if (gltf_prim->position != -1)
-                ret.meshes[i].primitives[j].offset_pos += views[view_indices[gltf_prim->position]].offset;
+                ret.meshes[i].primitives[j].offset_pos +=
+                    views[view_indices[gltf_prim->position]].offset;
+
             if (gltf_prim->normal != -1)
-                ret.meshes[i].primitives[j].offset_norm += views[view_indices[gltf_prim->normal]].offset;
+                ret.meshes[i].primitives[j].offset_norm +=
+                    views[view_indices[gltf_prim->normal]].offset;
+
             if (gltf_prim->tangent != -1)
-                ret.meshes[i].primitives[j].offset_tang += views[view_indices[gltf_prim->tangent]].offset;
+                ret.meshes[i].primitives[j].offset_tang +=
+                    views[view_indices[gltf_prim->tangent]].offset;
+
             if (gltf_prim->tex_coord_0 != -1)
-                ret.meshes[i].primitives[j].offset_tex += views[view_indices[gltf_prim->tex_coord_0]].offset;
+                ret.meshes[i].primitives[j].offset_tex +=
+                    views[view_indices[gltf_prim->tex_coord_0]].offset;
 
             gltf_prim = (Gltf_Mesh_Primitive*)((u8*)gltf_prim + gltf_prim->stride);
         }
-        
+
         gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 
+    #if 0
     // Load Material Data
     Gltf_Material *gltf_mat = gltf.materials;
     Gltf_Texture *gltf_tex;
@@ -1763,6 +2089,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
         gltf_mat = (Gltf_Material*)((u8*)gltf_mat + gltf_mat->stride);
     }
+    #endif
 
     reset_to_mark_temp(mark);
     return ret;

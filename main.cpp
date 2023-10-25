@@ -8,7 +8,7 @@
 
 #if TEST
    #include "test.hpp"
-   void run_tests(); 
+   void run_tests();
 #endif
 
 int main() {
@@ -39,22 +39,23 @@ int main() {
     gpu::Set_Allocate_Info set_allocate_info = insert_shader_set("basic", 2, basic_shader_files, &shader_map);
     gpu::Descriptor_Allocation basic_set_allocation = gpu::create_descriptor_sets(1, &set_allocate_info);
 
-    // Create Model Allocators
-    gpu::model::Create_Info model_info = {};
-    //gpu::model::Allocator model_allocator = create_allocator(
-
     // Load Models
+    gpu::model::Model_Allocators model_allocs = gpu::model::init_allocators();
+
     String model_dir = get_string("models/cesium-man/");
 
     String model_files[] = {get_string("CesiumMan.gltf")};
-    gpu::model::Model_Allocators allocs = {};
-    gpu::model::Static_Model model = load_static_model(&allocs, &model_files[0], &model_dir);
-    free_static_model(&model);
+
+    gpu::model::Static_Model model =
+        load_static_model(&model_allocs, &model_files[0], &model_dir);
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);
     }
-          
+
+    free_static_model(&model);
+
+    gpu::model::shutdown_allocators(&model_allocs);
     gpu::destroy_descriptor_sets(&basic_set_allocation);
     gpu::destroy_shader_map(&shader_map);
     gpu::kill_window(gpu, window);

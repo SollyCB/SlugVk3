@@ -24,14 +24,19 @@ inline int count_leading_zeros_u16(u16 mask) {
 inline int count_leading_zeros_u32(u32 mask) {
     return __builtin_clzl(mask);
 }
+inline int count_leading_zeros_u64(u64 mask) {
+    return __builtin_clzll(mask);
+}
 inline int pop_count16(u16 num) {
-    return (int)__builtin_popcount(num);
+    u32 tmp = num;
+    tmp &= 0x0000ffff; // just to be sure;
+    return (int)__builtin_popcount(tmp);
 }
 inline int pop_count32(u32 num) {
-    return (int)__builtin_popcount(num);
+    return (int)__builtin_popcountl(num);
 }
 inline int pop_count64(u64 num) {
-    return (int)__builtin_popcount(num);
+    return (int)__builtin_popcountll(num);
 }
 
     /* math */
@@ -65,6 +70,9 @@ inline int count_leading_zeros_u16(u16 mask) {
 }
 inline int count_leading_zeros_u32(u32 mask) {
     return __lzcnt(mask);
+}
+inline int count_leading_zeros_u64(u64 mask) {
+    return __lzcnt64(mask);
 }
 inline int pop_count16(u16 num) {
     return (int)__popcnt16(num);
