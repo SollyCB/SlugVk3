@@ -1537,6 +1537,7 @@ void* staging_queue_add(Allocator *alloc, u64 size, u64 *offset) {
 
     *offset = alloc->staging_queue;
     alloc->staging_queue += size;
+
     return (u8*)alloc->stage_ptr + *offset;
 }
 Allocation* staging_queue_submit(Allocator *alloc) {
@@ -1554,20 +1555,25 @@ Allocation* staging_queue_submit(Allocator *alloc) {
     alloc->bytes_staged += alloc->staging_queue;
     alloc->alloc_count++;
     alloc->staging_queue = Max_u64;
+
     return ret;
 }
 
 bool upload_queue_begin(Allocator *alloc) {
     if (alloc->upload_queue != Max_u64)
         return false;
+
     alloc->upload_queue = 0;
+
     return true;
 }
 VkBuffer upload_queue_add(Allocator *alloc, Allocation *allocation) {
     if (alloc->upload_queue + allocation->size > alloc->upload_cap)
         return NULL;
+
     allocation->state = Alloc_State::TO_UPLOAD;
     alloc->upload_queue += allocation->size;
+
     return alloc->upload;
 }
 bool upload_queue_submit(Allocator *alloc) {
@@ -1575,75 +1581,127 @@ bool upload_queue_submit(Allocator *alloc) {
         return true;
 
     u32 g = alloc->bit_granularity;
-    u64 adj_size;
     u64 adj_offset;
-    for(u32 i = 0; i < alloc->alloc_count; ++i) {
-        switch(alloc->allocs[i].state) {
-        case Alloc_State::DRAWN:
-        {
-            adj_size = (alloc->allocs[i].size / g) + 1;
-            adj_offset = alloc->allocs[i].upload_offset / g;
-            make_free(alloc->mask_count, alloc->masks, adj_offset, adj_size);
-            break;
-        }
-        default:
-            break;
-        }
-    }
+    u64 adj_size;
+    u32 free_block;
 
+    // Test large enough block from cursor without evicting
     adj_size = (alloc->upload_queue / g) + 1;
-    u32 free_block = find_contiguous_free(
+    free_block = find_contiguous_free(
                         alloc->mask_count,
                         alloc->masks,
                         alloc->bit_cursor,
                         adj_size);
 
+    bool evict = false;
     if (free_block == Max_u32) {
-        alloc->bit_cursor = 0;
+        // Test large enough block from buffer start without evicting
         free_block = find_contiguous_free(
                         alloc->mask_count,
                         alloc->masks,
-                        alloc->bit_cursor,
+                        0,
                         adj_size);
 
-        if (free_block == Max_u32)
-            return false;
+        if (free_block == Max_u32) {
+            evict = true;
+
+            // Do evictions
+            for(u32 i = 0; i < alloc->alloc_count; ++i) {
+                switch(alloc->allocs[i].state) {
+                case Alloc_State::DRAWN:
+                {
+                    adj_size = (alloc->allocs[i].size / g) + 1;
+                    adj_offset = alloc->allocs[i].upload_offset / g;
+                    make_free(alloc->mask_count, alloc->masks, adj_offset, adj_size);
+                    break;
+                }
+                default:
+                    break;
+                }
+            }
+
+            // Test large enough block post evictions from cursor
+            adj_size = (alloc->upload_queue / g) + 1;
+            free_block = find_contiguous_free(
+                                alloc->mask_count,
+                                alloc->masks,
+                                alloc->bit_cursor,
+                                adj_size);
+
+            // Test large enough block post evictions from buffer start
+            if (free_block == Max_u32) {
+                alloc->bit_cursor = 0;
+                free_block = find_contiguous_free(
+                                alloc->mask_count,
+                                alloc->masks,
+                                alloc->bit_cursor,
+                                adj_size);
+
+                if (free_block == Max_u32)
+                    return false;
+            }
+        }
     }
 
     make_full(alloc->mask_count, alloc->masks, free_block, adj_size);
 
     u32 region_count = 0;
     u64 upload_offset = free_block * g;
-    for(u32 i = 0; i < alloc->alloc_count; ++i) {
-        switch(alloc->allocs[i].state) {
-        case Alloc_State::TO_UPLOAD:
-        {
-            alloc->regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
-            alloc->regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
-            alloc->regions[region_count].dstOffset = upload_offset;
-            alloc->regions[region_count].size = alloc->allocs[i].size;
 
-            alloc->allocs[i].state = Alloc_State::UPLOADED;
-            alloc->allocs[i].upload_offset = upload_offset;
+    if (evict) { // We can loop tighter if there weren't evictions
+        for(u32 i = 0; i < alloc->alloc_count; ++i) {
+            switch(alloc->allocs[i].state) {
+            case Alloc_State::TO_UPLOAD:
+            {
+                alloc->regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+                alloc->regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
+                alloc->regions[region_count].dstOffset = upload_offset;
+                alloc->regions[region_count].size = alloc->allocs[i].size;
 
-            upload_offset += alloc->allocs[i].size;
-            region_count++;
-            break;
-        }
-        case Alloc_State::DRAWN:
-        {
-            adj_size = (alloc->allocs[i].size / g) + 1;
-            adj_offset = alloc->allocs[i].upload_offset / g;
-            if (!is_range_free(alloc->mask_count, alloc->masks, adj_offset, adj_size)) {
-                alloc->allocs[i].state = Alloc_State::STAGED;
-                alloc->allocs[i].prev_offset = alloc->allocs[i].upload_offset;
+                alloc->allocs[i].state = Alloc_State::UPLOADED;
+                alloc->allocs[i].upload_offset = upload_offset;
+
+                upload_offset += alloc->allocs[i].size;
+                region_count++;
+                break;
             }
-            break;
+            case Alloc_State::DRAWN:
+            {
+                adj_size = (alloc->allocs[i].size / g) + 1;
+                adj_offset = alloc->allocs[i].upload_offset / g;
+                if (!is_range_free(alloc->mask_count, alloc->masks, adj_offset, adj_size)) {
+                    alloc->allocs[i].state = Alloc_State::STAGED;
+                    alloc->allocs[i].prev_offset = alloc->allocs[i].upload_offset;
+                }
+                break;
+            }
+            default:
+                break;
+            }
         }
-        default:
-            break;
+    } else { // Static predict no evictions to further optimise this path
+        for(u32 i = 0; i < alloc->alloc_count; ++i) {
+            switch(alloc->allocs[i].state) {
+            case Alloc_State::TO_UPLOAD:
+            {
+                alloc->regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+                alloc->regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
+                alloc->regions[region_count].dstOffset = upload_offset;
+                alloc->regions[region_count].size = alloc->allocs[i].size;
+
+                alloc->allocs[i].state = Alloc_State::UPLOADED;
+                alloc->allocs[i].upload_offset = upload_offset;
+
+                upload_offset += alloc->allocs[i].size;
+                region_count++;
+                break;
+            }
+            default:
+                break;
+            }
         }
     }
+    alloc->bit_cursor = (upload_offset / g) + 1; // Point cursor at the end of the final upload region
 
     alloc->copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2};
     alloc->copy_info.srcBuffer = alloc->stage;
@@ -1652,14 +1710,17 @@ bool upload_queue_submit(Allocator *alloc) {
     alloc->copy_info.pRegions = alloc->regions;
 
     Gpu *gpu = get_gpu_instance();
+
+    // Submit copies later with other commands that use the graphics queue
     if (alloc->flags & (u8)Flags::UNIFIED_TRANSFER) {
         alloc->mem_barr = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         alloc->mem_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
         alloc->mem_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
         alloc->mem_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
         alloc->mem_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
-    }
-    else {
+
+    // Submit copies now since transfer queue is discrete
+    } else {
         VkBufferMemoryBarrier2 buf_barr = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
         buf_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
         buf_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
