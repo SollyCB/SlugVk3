@@ -163,6 +163,7 @@ struct HashMap {
                 make_group_empty(data + i);
             }
 
+            bool c;
             Group gr;
             KeyValue *kv;
             u16 mask;
@@ -174,13 +175,15 @@ struct HashMap {
                 while(mask > 0) {
                     tz = count_trailing_zeros_u16(mask);
 
-                    // @FFS This was fking set to '&=' cos I am dumb and tired which means 
+                    // @FFS This was fking set to '&=' cos I am dumb and tired which means
                     // infinite loop lol... I fking hate and love programming
                     mask ^= 1 << tz;
 
                     kv = (KeyValue*)(old_data + old_cap);
 
-                    ASSERT(insert_cpy(kv[group_index + tz].key , kv[group_index + tz].value) != false, "Insert fail while growing");
+                    // @Note Assumes this compiles to just the function call
+                    c = insert_cpy(kv[group_index + tz].key , kv[group_index + tz].value);
+                    ASSERT(c, "Rehash Failure");
                 }
             }
 
@@ -240,6 +243,7 @@ struct HashMap {
                 make_group_empty(data + i);
             }
 
+            bool c;
             KeyValue *kv;
             Group gr;
             u16 mask;
@@ -251,15 +255,14 @@ struct HashMap {
                 while(mask > 0) {
                     tz = count_trailing_zeros_u16(mask);
 
-                    // @FFS This was fking set to '&=' cos I am dumb and tired which means 
+                    // @FFS This was fking set to '&=' cos I am dumb and tired which means
                     // infinite loop lol... I fking hate and love programming
                     mask ^= 1 << tz;
 
                     kv = (KeyValue*)(old_data + old_cap);
                     u64 exact_index = tz + group_index;
-                    ASSERT(
-                        insert_ptr(&kv[exact_index].key, &kv[exact_index].value) != false,
-                        "Insert fail while growing");
+                    c = insert_ptr(&kv[exact_index].key, &kv[exact_index].value);
+                    ASSERT(c, "Rehash Failure");
                 }
             }
 
@@ -267,6 +270,86 @@ struct HashMap {
         }
 
         u64 hash = hash_bytes((void*)key, sizeof(*key));
+        u8 top7 = hash >> 57;
+
+        u64 exact_index = (hash & (cap - 1));
+        u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
+
+        KeyValue *kv;
+        Group gr;
+        u16 mask;
+        u32 tz;
+        u64 inc = 0;
+        while(inc < cap) {
+            ASSERT(inc < cap, "Probe went too far");
+            gr = Group::get_from_index(group_index, data);
+            mask = gr.is_empty();
+
+            if (!mask) {
+                inc += GROUP_WIDTH;
+                group_index += inc;
+                group_index &= cap - 1;
+                continue;
+            }
+
+            tz = count_trailing_zeros_u16(mask);
+            exact_index = group_index + tz;
+            data[exact_index] &= top7;
+
+            kv = (KeyValue*)(data + cap);
+            kv[exact_index].key = *key;
+            kv[exact_index].value = *value;
+
+            --slots_left;
+            return true;
+        }
+
+        return false;
+    }
+    bool insert_hash(u64 hash, V *value) {
+		ASSERT(key != nullptr, "pass key == nullptr to HashMap::insert_ptr");
+		ASSERT(value != nullptr, "pass value == nullptr to HashMap::insert_ptr");
+
+        bool c;
+        if (slots_left == 0) {
+            u8 *old_data = data;
+            u64 old_cap = cap;
+
+            checked_mul(cap, 2);
+            data = malloc_h(cap + cap * sizeof(KeyValue), GROUP_WIDTH);
+            slots_left = ((cap + 1) / 8) * 7;
+
+            for(u64 i = 0; i < cap; i += GROUP_WIDTH) {
+                make_group_empty(data + i);
+            }
+
+            KeyValue *kv;
+            Group gr;
+            u16 mask;
+            u32 tz;
+            for(u64 group_index = 0; group_index < old_cap; group_index += GROUP_WIDTH) {
+                gr = *(Group*)(old_data + group_index);
+
+                mask = gr.is_full();
+                while(mask > 0) {
+                    tz = count_trailing_zeros_u16(mask);
+
+                    // @FFS This was fking set to '&=' cos I am dumb and tired which means
+                    // infinite loop lol... I fking hate and love programming
+                    mask ^= 1 << tz;
+
+                    kv = (KeyValue*)(old_data + old_cap);
+                    u64 exact_index = tz + group_index;
+
+                    // @Note Assumes this compiles to just the function call
+                    c = insert_hash(&kv[exact_index].key, &kv[exact_index].value);
+                    ASSERT(c, "Rehash Failure");
+                }
+            }
+
+            free_h(old_data);
+        }
+
         u8 top7 = hash >> 57;
 
         u64 exact_index = (hash & (cap - 1));
@@ -344,6 +427,42 @@ struct HashMap {
 		ASSERT(key != nullptr, "pass key == nullptr to HashMap::find_ptr");
 
         u64 hash = hash_bytes((void*)key, sizeof(*key));
+        u8 top7 = hash >> 57;
+        u64 exact_index = hash & (cap - 1);
+        u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
+
+        KeyValue *kv;
+        Group gr;
+        u16 mask;
+        u32 tz;
+        u64 inc = 0;
+        while(inc < cap) {
+            gr = Group::get_from_index(group_index, data);
+            mask = gr.match_byte(top7);
+
+            if (mask) {
+                // Ik the while catches an empty mask, but I want to skip the pointer arithmetic
+                kv = (KeyValue*)(data + cap);
+                while(mask) {
+                    tz = count_trailing_zeros_u16(mask);
+                    exact_index = group_index + tz;
+
+                    if (kv[exact_index].key == *key)
+                        return &kv[exact_index].value;
+
+                    mask ^= 1 << tz;
+                }
+            }
+
+            inc += GROUP_WIDTH;
+            group_index += inc;
+            group_index &= cap - 1;
+        }
+        return NULL;
+    }
+    V* find_hash(u64 hash) {
+		ASSERT(key != nullptr, "pass key == nullptr to HashMap::find_ptr");
+
         u8 top7 = hash >> 57;
         u64 exact_index = hash & (cap - 1);
         u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
