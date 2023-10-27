@@ -1571,8 +1571,21 @@ VkBuffer upload_queue_add(Allocator *alloc, Allocation *allocation) {
     if (alloc->upload_queue + allocation->size > alloc->upload_cap)
         return NULL;
 
-    allocation->state = Alloc_State::TO_UPLOAD;
-    alloc->upload_queue += allocation->size;
+    switch(allocation->state) {
+    case Alloc_State::STAGED:
+    {
+        allocation->state = Alloc_State::TO_UPLOAD;
+        alloc->upload_queue += allocation->size;
+        break;
+    }
+    case Alloc_State::DRAWN:
+    {
+        allocation->state = Alloc_State::UPLOADED;
+        break;
+    }
+    default:
+        break;
+    }
 
     return alloc->upload;
 }
