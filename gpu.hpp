@@ -245,12 +245,20 @@ struct Allocation {
     u64 stage_offset;
     u64 size;
     u64 upload_offset;
-    u64 prev_offset;
+    // u64 prev_offset; <- pretty sure I do not need this... was a dumb thought
 };
 enum class Flags : u8 {
     UNIFIED_MEM = 0x01,
     UNIFIED_TRANSFER = 0x02,
 };
+/*
+   I want to apply caching at a higher level for this allocator in the same way as
+   the sampler allocator, by assigning models a weight, and each time models are
+   accessed this weight is increased or decreased etc. Then each time models are
+   queued, models with some weight above some threshold are also queued behind
+   the scenes to keep them in memory, (queueing an allocation is basically free
+   if it is already in memory).
+*/
 struct Allocator {
     // Bit Mask
     u32 bit_granularity;
@@ -325,50 +333,29 @@ bool upload_queue_submit(Allocator *alloc);
 struct Sampler_Info {
     VkSamplerAddressMode wrap_s;
     VkSamplerAddressMode wrap_t;
-
     VkFilter mag_filter;
     VkFilter min_filter;
-
-    VkSampler sampler;
+    VkSamplerMipMapMode mipmap_mode;
 };
-struct Texture {
-    u32 width;
-    u32 height;
-
-    u64 img_size;
-    u64 stage_offset;
-    u64 upload_offset;
-
-    VkImage image;
-    Alloc_State state;
+struct Sampler_Key {
+    u64 hash;
+    int weight;
 };
-struct Tex_Info {
-    String uri;
-    VkFormat format;
-    Texture *tex;
+struct Sampler_Allocator {
+    float anisotropy;
+    u32 device_sampler_cap;
+
+    u32 sampler_cap;
+    u32 sampler_count;
+    u32 active_samplers;
+
+    VkSampler *samplers;
+    Sampler_Info *infos;
+    Sampler_Key *sampler_keys;
 };
-struct Tex_Allocator {
-    u32 tex_count;
-    u32 tex_cap;
-
-    u64 stage_byte_count;
-    u64 stage_byte_cap;
-    u64 upload_byte_count;
-    u64 upload_byte_cap;
-
-    Texture *textures;
-    Tex_Info *tex_infos;
-    Sampler_Info *sampler_infos;
-
-    VkBuffer stage;
-    VkDeviceMemory upload;
-
-    void *stage_ptr;
-};
-
-Texture* tex_add(Tex_Allocator *alloc, String uri);
-void tex_upload(Allocator *alloc);
-
+// Set to cap to zero to let the allocator decide a size
+Sampler_Allocator create_sampler_allocator(u32 sampler_cap);
+void destroy_sampler_allocator(Sampler_Allocator *alloc);
     /* End Texture Allocation */
 
     /* Model Loading */

@@ -1023,7 +1023,7 @@ Set_Allocate_Info insert_shader_set(const char *set_name, u32 count, String *fil
     vkCreatePipelineLayout(device, &pl_layout_info, ALLOCATION_CALLBACKS, &set.pl_layout);
 
     u64 hash = get_string_hash(set_name);
-    map->map.insert_ptr(&hash, &set);
+    map->map.insert_hash(hash, &set);
 
     Set_Allocate_Info ret;
     ret.count = layout_count;
@@ -1036,7 +1036,7 @@ Set_Allocate_Info insert_shader_set(const char *set_name, u32 count, String *fil
 
 Shader_Set* get_shader_set(const char *set_name, Shader_Map *map) {
     u64 hash = get_string_hash(set_name);
-    return map->map.find_cpy(hash);
+    return map->map.find_hash(hash);
 }
 
 Shader_Info create_shaders(u32 count, String *strings) {
@@ -1441,7 +1441,7 @@ bool is_range_free(u32 count, u64 *bits, u32 offset, u32 range) {
 }
         /* End Allocator Helper Algorithms */
 
-        /* Implement Model Allocator */
+        /* Implement Vertex Attribute Allocator */
 
 Allocator create_allocator(Allocator_Create_Info *info) {
     ASSERT(info->upload_cap % (info->bit_granularity * 64) == 0,
@@ -1598,6 +1598,18 @@ bool upload_queue_submit(Allocator *alloc) {
     u64 adj_size;
     u32 free_block;
 
+    //
+    // @Todo This state system is useful for the model to know whether it is
+    // ready for drawing, but switching on it in the loop in this function
+    // is a bit jank. Really allocations to be uploaded and ones already
+    // uploaded should be in their own lists. But if you want coherency between
+    // the model and the allocator, then you need some single source of truth,
+    // so then after using the other lists, you would still have to go through
+    // and update the truth source, which would require some sort of indexing/derefing,
+    // so then you trade a dirty loop with a switch potentially for cache hits???
+    // Idk the best solution off the top of my head.
+    //
+
     // Test large enough block from cursor without evicting
     adj_size = (alloc->upload_queue / g) + 1;
     free_block = find_contiguous_free(
@@ -1680,11 +1692,12 @@ bool upload_queue_submit(Allocator *alloc) {
             }
             case Alloc_State::DRAWN:
             {
+                // Only set the state of drawn allocations to staged if they were actually overwritten.
                 adj_size = (alloc->allocs[i].size / g) + 1;
                 adj_offset = alloc->allocs[i].upload_offset / g;
                 if (!is_range_free(alloc->mask_count, alloc->masks, adj_offset, adj_size)) {
                     alloc->allocs[i].state = Alloc_State::STAGED;
-                    alloc->allocs[i].prev_offset = alloc->allocs[i].upload_offset;
+                    //alloc->allocs[i].prev_offset = alloc->allocs[i].upload_offset;
                 }
                 break;
             }
@@ -1773,7 +1786,102 @@ bool upload_queue_submit(Allocator *alloc) {
     alloc->upload_queue = Max_u64;
     return true;
 }
-    /* End Model Allocator Implementation */
+    /* End Vertex Attribute Allocator Implementation */
+
+        /* Texture Allocator Implementation */
+Sampler_Allocator create_sampler_allocator(u32 sampler_cap) {
+    Gpu *gpu = get_gpu_instance();
+
+    Sampler_Allocator ret = {};
+    ret.device_sampler_cap = gpu->info.props.limits.maxSamplerAllocationCount;
+
+    if (sampler_cap == 0)
+        ret.sampler_cap = ret.device_sampler_cap > 64 ? 64 : ret.device_sampler_cap;
+
+    ret.samplers = (VkSampler*)malloc_h(sizeof(VkSampler) * ret.sampler_cap, 8);
+    ret.infos = (Sampler_Info*)malloc_h(sizeof(Sampler_Info) * ret.sampler_cap, 8);
+    ret.sampler_keys = (Sampler_Key*)malloc_h(sizeof(Sampler_Key) * ret.sampler_cap, 8);
+
+    return ret;
+}
+void destroy_sampler_allocator(Sampler_Allocator *alloc) {
+    VkDevice device = get_gpu_instance()->device;
+    for(u32 i = 0; i < alloc->sampler_count; ++i)
+        vkDestroySampler(device, alloc->samplers[i], ALLOCATION_CALLBACKS);
+    free_h(alloc->samplers;
+    free_h(alloc->infos);
+    free_h(alloc->sampler_keys);
+}
+u64 add_sampler(Sampler_Allocator *alloc, Sampler_Info *info) {
+    u64 hash = hash_bytes(info, sizeof(Sampler_Info));
+    bool found = false;
+    for(u32 i = 0; i < alloc->sampler_count; ++i)
+        if (alloc->sampler_keys[i].hash == hash) {
+            alloc->sampler_keys[i].weight++; // More things will be trying to use this sampler
+            found = true;
+            break;
+        }
+
+    if (!found) {
+        alloc->infos[alloc->sampler_count] = *info;
+        alloc->sampler_keys[alloc->sampler_count].hash = hash;
+        alloc->sampler_keys[alloc->sampler_count].weight = 0;
+        alloc->sampler_count++;
+        ASSERT(alloc->sampler_count <= alloc->sampler_cap, "");
+    }
+    return hash;
+}
+VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
+    u32 index = Max_u32;
+    u32 lowest_index = 0;
+    u32 lowest_value = 0;
+    for(u32 i = 0; i < alloc->sampler_count; ++i) {
+        // Dont break in order to adjust the weights of the other samplers;
+        // The assembly the generated for the ternary should be branchless;
+        if (alloc->sampler_keys[i].hash == hash) {
+            index = i;
+            alloc->sampler_keys[i].weight += 10; // @Test Find a good weight increase
+
+         // The assembly for this should be branchless, (I couldnt think of a bit way off the top of my head)
+            if (alloc->sampler_keys[i].weight > 255)
+                alloc->sampler_keys[i].weight = 255;
+        }
+        alloc->sampler_keys[i].weight -= 1;
+        alloc->sampler_keys[i].weight %= 255; // prevent wrapping (Max_u32 % 255 = 0)
+        ASSERT(x < 255);
+
+        // Find the value to be evicted if there are too many samplers
+        if (lowest_value > alloc->sampler_keys[i].weight && i != index) {
+            lowest_value = alloc->sampler_keys[i].weight;
+            lowest_index = i;
+        }
+    }
+
+    ASSERT(index != Max_u32, "Invalid Sampler Hash");
+    if (alloc->samplers[index] == NULL) {
+        VkDevice device = get_gpu_instance()->device;
+
+        // Evict least used sampler
+        if (alloc->active_samplers == alloc->device_sampler_cap) {
+            vkDestroySampler(device, alloc->samplers[lowest_index], ALLOCATION_CALLBACKS);
+            alloc->samplers[lowest_index] = NULL;
+        }
+
+        VkSamplerCreateInfo sampler_info = {VK_SAMPLER_CREATE_INFO};
+        sampler_info.magFilter = alloc->sampler_infos[index].mag_filter;
+        sampler_info.minFilter = alloc->sampler_infos[index].min_filter;
+        sampler_info.mipmapMode = alloc->sampler_infos[index].mipmap_mode;
+        sampler_info.addressModeU = alloc->sampler_infos[index].wrap_s;
+        sampler_info.addressModeV = alloc->sampler_infos[index].wrap_t;
+        sampler_info.maxAnisotropy = alloc->anisotropy;
+
+        auto check = vkCreateSampler(device, &sampler_info, ALLOCATION_CALLBACKS, &alloc->samplers[index]);
+        DEBUG_OBJ_CREATION(vkCreateSampler, check);
+    }
+
+    return alloc->samplers[index];
+}
+        /* End Texture Allocator Implementation */
 
             /* Model Loading */
 
