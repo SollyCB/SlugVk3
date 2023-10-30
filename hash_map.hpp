@@ -307,7 +307,6 @@ struct HashMap {
         return false;
     }
     bool insert_hash(u64 hash, V *value) {
-		ASSERT(key != nullptr, "pass key == nullptr to HashMap::insert_ptr");
 		ASSERT(value != nullptr, "pass value == nullptr to HashMap::insert_ptr");
 
         bool c;
@@ -342,7 +341,7 @@ struct HashMap {
                     u64 exact_index = tz + group_index;
 
                     // @Note Assumes this compiles to just the function call
-                    c = insert_hash(&kv[exact_index].key, &kv[exact_index].value);
+                    c = insert_hash(kv[exact_index].key, &kv[exact_index].value);
                     ASSERT(c, "Rehash Failure");
                 }
             }
@@ -377,7 +376,7 @@ struct HashMap {
             data[exact_index] &= top7;
 
             kv = (KeyValue*)(data + cap);
-            kv[exact_index].key = *key;
+            kv[exact_index].key = hash;
             kv[exact_index].value = *value;
 
             --slots_left;
@@ -461,8 +460,6 @@ struct HashMap {
         return NULL;
     }
     V* find_hash(u64 hash) {
-		ASSERT(key != nullptr, "pass key == nullptr to HashMap::find_ptr");
-
         u8 top7 = hash >> 57;
         u64 exact_index = hash & (cap - 1);
         u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
@@ -483,7 +480,7 @@ struct HashMap {
                     tz = count_trailing_zeros_u16(mask);
                     exact_index = group_index + tz;
 
-                    if (kv[exact_index].key == *key)
+                    if (kv[exact_index].key == hash)
                         return &kv[exact_index].value;
 
                     mask ^= 1 << tz;
