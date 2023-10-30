@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.9)
 
 # Setup
-set(CMAKE_CXX_STANDARD 20) 
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED true)
 set(CMAKE_BUILD_PARALLEL_LEVEL 4)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -12,8 +12,8 @@ set(CMAKE_CXX_COMPILE_FLAGS -mlzcnt -msse4.1 -mbmi -mavx2 -ggdb -fstack-protecto
 
 project(Slug)
 
-set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE) 
-set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE) 
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 # Build Options
@@ -40,7 +40,7 @@ endif()
 
 
 # Source
-add_executable(Slug 
+add_executable(Slug
     main.cpp
     allocator.cpp
     vulkan_errors.cpp
@@ -52,7 +52,6 @@ add_executable(Slug
     string.cpp
 
     external/tlsf.cpp
-    external/stb_image.cpp
 
     test/test.cpp
 )

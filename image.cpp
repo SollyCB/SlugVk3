@@ -3,7 +3,8 @@
 
 #define STBI_MALLOC(sz) malloc_t(sz, 8)
 #define STBI_FREE(sz)
-#define STBI_REALLOC(p, newsz) realloc_h(p, newsz)
+#define STBI_REALLOC(p, newsz)
+#define STB_IMAGE_IMPLEMENTATION;
 #include "stb_image.h"
 
 Image load_image(String file_name) {
