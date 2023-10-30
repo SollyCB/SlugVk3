@@ -330,32 +330,33 @@ VkBuffer upload_queue_add(Allocator *alloc, Allocation *allocation);
 bool upload_queue_submit(Allocator *alloc);
 
         /* Texture Allocation */
-struct Sampler_Info {
+struct Sampler { // This is potentially a bad name
     VkSamplerAddressMode wrap_s;
     VkSamplerAddressMode wrap_t;
     VkFilter mag_filter;
     VkFilter min_filter;
-    VkSamplerMipMapMode mipmap_mode;
-};
-struct Sampler_Key {
-    u64 hash;
-    int weight;
+    VkSamplerMipmapMode mipmap_mode;
+
+    VkSampler sampler;
 };
 struct Sampler_Allocator {
     float anisotropy;
-    u32 device_sampler_cap;
+    u32 device_cap;
 
-    u32 sampler_cap;
-    u32 sampler_count;
-    u32 active_samplers;
+    u32 cap;
+    u32 count;
+    u32 active;
+    HashMap<u64, Sampler> map;
 
-    VkSampler *samplers;
-    Sampler_Info *infos;
-    Sampler_Key *sampler_keys;
+    u64 *hashes;
+    u8 *weights;
 };
 // Set to cap to zero to let the allocator decide a size
 Sampler_Allocator create_sampler_allocator(u32 sampler_cap);
 void destroy_sampler_allocator(Sampler_Allocator *alloc);
+
+struct Texture {};
+struct Tex_Allocator {};
     /* End Texture Allocation */
 
     /* Model Loading */

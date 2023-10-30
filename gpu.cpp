@@ -1439,6 +1439,104 @@ bool is_range_free(u32 count, u64 *bits, u32 offset, u32 range) {
         return false;
     return true;
 }
+void correct_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
+    //
+    // @Todo Add a little simd thing to search for a contiguous block of equal weights:
+    // It will almost certainly be the case that there will be loads of zero weights
+    // at the end of the array, and so when you load one of these, there has to be loads
+    // of pointless swaps, when you can just do one swap. I cba to add it right now...
+    //
+    u8 flag_bit = weights[idx] & 0b10000000;
+    weights[idx] &= 0b01111111;
+    if ((weights[idx] + inc + dec) <= 127)
+        weights[idx] += inc + dec;
+    else
+        weights[idx] = 127;
+    weights[idx] |= flag_bit;
+
+    // @Note Clamps like this should compile without branches, but if there is a way
+    // to do this without the 'if' (just to always be sure) I would like that...
+    for(u32 i = 0; i < count; ++i) {
+        flag_bit = weights[i] & 0b10000000;
+        weights[i] &= 0b01111111;
+        if ((weights[i] - dec) > weights[i])
+            weights[i] = 0;
+        else
+            weights[i] -= dec;
+        weights[i] |= flag_bit;
+    }
+
+    // Find the index where the weight should be
+    // @Note higher weights exist closer to the beginning of the list, so loop backwards
+    u32 shift = idx & 15;
+    u32 pos = idx - shift;
+    __m128i a = _mm_load_si128((__m128i*)(weights + pos));
+    __m128i b = _mm_set1_epi8(weights[idx]);
+    __m128i c = _mm_set1_epi8(0b01111111);
+    a = _mm_and_si128(a, c); // flag bit irrelevant cmping weights
+    a = _mm_cmplt_epi8(a, b);
+    u16 mask = _mm_movemask_epi8(a);
+    mask <<= 16 - shift;
+    u32 new_idx = idx;
+    new_idx -= pop_count16(mask);
+    while(mask && pos) {
+        pos -= 16;
+        a = _mm_load_si128((__m128i*)(weights + pos));
+        a = _mm_and_si128(a, c);
+        a = _mm_cmplt_epi8(a, b);
+        mask = _mm_movemask_epi8(a);
+        new_idx -= pop_count16(mask);
+    }
+
+    // Shift all lt weights towards the end of the list
+    u8 w = weights[idx];
+    for(u32 i = idx - 1; i >= new_idx && i != Max_u32; --i)
+        weights[i + 1] = weights[i];
+    weights[new_idx] = w;
+
+    // Repeat weights for hashes
+    u64 h = hashes[idx];
+    for(u32 i = idx - 1; i >= new_idx && i != Max_u32; --i)
+        hashes[i + 1] = hashes[i];
+    hashes[new_idx] = h;
+}
+u32 find_hash_idx(u32 count, u64 *hashes, u64 hash) {
+    __m128i a = _mm_load_si128((__m128i*)hashes);
+    __m128i b = _mm_set1_epi64((__m64)hash);
+    a = _mm_cmpeq_epi64(a, b);
+    u16 mask = _mm_movemask_epi8(a);
+    u32 inc = 2;
+    while(!mask) {
+        if (inc > count)
+            return Max_u32;
+
+        a = _mm_load_si128((__m128i*)(hashes + inc));
+        a = _mm_cmpeq_epi64(a, b);
+        mask = _mm_movemask_epi8(a);
+
+        inc += 2;
+    }
+    return (count_trailing_zeros_u16(mask) >> 3) + (inc - 2);
+}
+u32 find_lowest_flagged_weight(u32 count, u8 *weights) {
+    u32 shift = count & 15;
+    u32 pos = count - shift;
+    __m128i a = _mm_load_si128((__m128i*)(weights + pos));
+    __m128i b = _mm_set1_epi8(0b10000000);
+    a = _mm_and_si128(a, b);
+    u16 mask = _mm_movemask_epi8(a);
+    mask <<= 16 - shift; // Just in case weights beyond count are not zero'd
+    while(!mask) {
+        if (pos == 0)
+            return Max_u32;
+        pos -= 16;
+
+        a = _mm_load_si128((__m128i*)(weights + pos));
+        a = _mm_and_si128(a, b);
+        mask = _mm_movemask_epi8(a);
+    }
+    return pos + (15 - count_leading_zeros_u16(mask)); // 15 not 16 because leading zeros not inclusive
+}
         /* End Allocator Helper Algorithms */
 
         /* Implement Vertex Attribute Allocator */
@@ -1786,102 +1884,100 @@ bool upload_queue_submit(Allocator *alloc) {
     alloc->upload_queue = Max_u64;
     return true;
 }
-    /* End Vertex Attribute Allocator Implementation */
+    /* End Vertex Attribute Allocator */
 
-        /* Texture Allocator Implementation */
-Sampler_Allocator create_sampler_allocator(u32 sampler_cap) {
-    Gpu *gpu = get_gpu_instance();
+        /* Texture Allocator */
 
+// @Todo
+
+        /* End Texture Allocator */
+
+        /* Sampler Allocator */
+Sampler_Allocator create_sampler_allocator(u32 cap, float anisotropy) {
     Sampler_Allocator ret = {};
-    ret.device_sampler_cap = gpu->info.props.limits.maxSamplerAllocationCount;
 
-    if (sampler_cap == 0)
-        ret.sampler_cap = ret.device_sampler_cap > 64 ? 64 : ret.device_sampler_cap;
+    u64 device_cap = get_gpu_instance()->info.props.limits.maxSamplerAllocationCount;
+    if (cap)
+        ret.cap = align(cap, 16);
+    else
+        ret.cap = align(device_cap, 16); // malloc'd size must be aligned to 16 for correct_weights() simd
 
-    ret.samplers = (VkSampler*)malloc_h(sizeof(VkSampler) * ret.sampler_cap, 8);
-    ret.infos = (Sampler_Info*)malloc_h(sizeof(Sampler_Info) * ret.sampler_cap, 8);
-    ret.sampler_keys = (Sampler_Key*)malloc_h(sizeof(Sampler_Key) * ret.sampler_cap, 8);
+    ret.anisotropy = anisotropy;
+    ret.device_cap = device_cap;
+    ret.map = HashMap<u64, Sampler>::get(ret.cap);
+
+    // Align 16 for SIMD
+    ret.hashes = (u64*)malloc_h(sizeof(u64) * ret.cap, 16);
+    ret.weights = malloc_h(ret.cap, 16);
+    memset(ret.weights, 0, ret.cap);
 
     return ret;
 }
 void destroy_sampler_allocator(Sampler_Allocator *alloc) {
-    VkDevice device = get_gpu_instance()->device;
-    for(u32 i = 0; i < alloc->sampler_count; ++i)
-        vkDestroySampler(device, alloc->samplers[i], ALLOCATION_CALLBACKS);
-    free_h(alloc->samplers;
-    free_h(alloc->infos);
-    free_h(alloc->sampler_keys);
+    free_h(alloc->hashes);
+    free_h(alloc->weights);
+    alloc->map.kill();
 }
-u64 add_sampler(Sampler_Allocator *alloc, Sampler_Info *info) {
-    u64 hash = hash_bytes(info, sizeof(Sampler_Info));
-    bool found = false;
-    for(u32 i = 0; i < alloc->sampler_count; ++i)
-        if (alloc->sampler_keys[i].hash == hash) {
-            alloc->sampler_keys[i].weight++; // More things will be trying to use this sampler
-            found = true;
-            break;
-        }
+u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
+    //
+    // @Note Ik that the hash will change when the sampler handle in the 'Sampler' type
+    // changes, but calling 'insert_hash()' doesnt actually do a rehash, so the hash that the
+    // sampler is inserted with will always be its key.
+    //
+    sampler_info->sampler = NULL; // Ensure only type data influences hash, not the handle
 
-    if (!found) {
-        alloc->infos[alloc->sampler_count] = *info;
-        alloc->sampler_keys[alloc->sampler_count].hash = hash;
-        alloc->sampler_keys[alloc->sampler_count].weight = 0;
-        alloc->sampler_count++;
-        ASSERT(alloc->sampler_count <= alloc->sampler_cap, "");
+    u64 hash = hash_bytes(sampler_info, sizeof(Sampler));
+    u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
+    if (h_idx != Max_u32) {
+        correct_weights(alloc->count, alloc->weights, alloc->hashes, h_idx, 1, 0);
+        return hash;
     }
+
+    ASSERT(alloc->count <= alloc->cap, "");
+    if (alloc->count >= alloc->cap)
+        return Max_u64;
+
+    alloc->map.insert_hash(hash, sampler_info);
+    alloc->hashes[alloc->count] = hash;
+    alloc->count++;
+
     return hash;
 }
 VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
-    u32 index = Max_u32;
-    u32 lowest_index = 0;
-    u32 lowest_value = 0;
-    for(u32 i = 0; i < alloc->sampler_count; ++i) {
-        // Dont break in order to adjust the weights of the other samplers;
-        // The assembly the generated for the ternary should be branchless;
-        if (alloc->sampler_keys[i].hash == hash) {
-            index = i;
-            alloc->sampler_keys[i].weight += 10; // @Test Find a good weight increase
+    u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
 
-         // The assembly for this should be branchless, (I couldnt think of a bit way off the top of my head)
-            if (alloc->sampler_keys[i].weight > 255)
-                alloc->sampler_keys[i].weight = 255;
-        }
-        alloc->sampler_keys[i].weight -= 1;
-        alloc->sampler_keys[i].weight %= 255; // prevent wrapping (Max_u32 % 255 = 0)
-        ASSERT(x < 255);
+    ASSERT(h_idx != Max_u32, "Invalid Sampler Hash");
+    if (h_idx == Max_u32)
+        return NULL;
 
-        // Find the value to be evicted if there are too many samplers
-        if (lowest_value > alloc->sampler_keys[i].weight && i != index) {
-            lowest_value = alloc->sampler_keys[i].weight;
-            lowest_index = i;
-        }
-    }
+    correct_weights(alloc->count, alloc->weights, alloc->hashes, h_idx, 5, 1);
+    Sampler *info = alloc->map.find_hash(hash);
+    if (!info->sampler) {
+        VkSamplerCreateInfo create_info = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        create_info.magFilter = info->mag_filter;
+        create_info.minFilter = info->min_filter;
+        create_info.addressModeU = info->wrap_s;
+        create_info.addressModeV = info->wrap_t;
+        create_info.anisotropyEnable = alloc->anisotropy > 0 ? VK_TRUE : VK_FALSE;
+        create_info.maxAnisotropy = alloc->anisotropy;
 
-    ASSERT(index != Max_u32, "Invalid Sampler Hash");
-    if (alloc->samplers[index] == NULL) {
         VkDevice device = get_gpu_instance()->device;
-
-        // Evict least used sampler
-        if (alloc->active_samplers == alloc->device_sampler_cap) {
-            vkDestroySampler(device, alloc->samplers[lowest_index], ALLOCATION_CALLBACKS);
-            alloc->samplers[lowest_index] = NULL;
+        if (alloc->active == alloc->device_cap) {
+            u32 evict_idx = find_lowest_flagged_weight(alloc->count, alloc->weights);
+            alloc->weights[evict_idx] &= 0b01111111;
+            VkSampler *to_evict = &alloc->map.find_hash(alloc->hashes[evict_idx])->sampler;
+            vkDestroySampler(device, *to_evict, ALLOCATION_CALLBACKS);
+            *to_evict = NULL;
+            alloc->active--;
         }
-
-        VkSamplerCreateInfo sampler_info = {VK_SAMPLER_CREATE_INFO};
-        sampler_info.magFilter = alloc->sampler_infos[index].mag_filter;
-        sampler_info.minFilter = alloc->sampler_infos[index].min_filter;
-        sampler_info.mipmapMode = alloc->sampler_infos[index].mipmap_mode;
-        sampler_info.addressModeU = alloc->sampler_infos[index].wrap_s;
-        sampler_info.addressModeV = alloc->sampler_infos[index].wrap_t;
-        sampler_info.maxAnisotropy = alloc->anisotropy;
-
-        auto check = vkCreateSampler(device, &sampler_info, ALLOCATION_CALLBACKS, &alloc->samplers[index]);
+        auto check = vkCreateSampler(device, &create_info, ALLOCATION_CALLBACKS, &info->sampler);
         DEBUG_OBJ_CREATION(vkCreateSampler, check);
+        alloc->active++;
     }
 
-    return alloc->samplers[index];
+    return info->sampler;
 }
-        /* End Texture Allocator Implementation */
+        /* End Sampler Allocation */
 
             /* Model Loading */
 
