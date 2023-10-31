@@ -1565,7 +1565,15 @@ Allocator create_allocator(Allocator_Create_Info *info) {
     memset(ret.masks, 0, sizeof(u64) * ret.mask_count);
 
     Gpu *gpu = get_gpu_instance();
-    ret.alignment = gpu->info.props.limits.nonCoherentAtomSize;
+    // Choose the most optimal alignment
+    if (gpu->info.props.limits.nonCoherentAtomSize % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 ||
+        gpu->info.props.limits.optimalBufferCopyOffsetAlignment % gpu->info.props.limits.nonCoherentAtomSize == 0)
+    {
+        if (gpu->info.props.limits.nonCoherentAtomSize > gpu->info.props.limits.optimalBufferCopyOffsetAlignment)
+            ret.alignment = gpu->info.props.limits.nonCoherentAtomSize;
+        else
+            ret.alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
+    }
     ret.staging_queue = Max_u64;
 
     if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
@@ -1887,8 +1895,206 @@ bool upload_queue_submit(Allocator *alloc) {
     /* End Vertex Attribute Allocator */
 
         /* Texture Allocator */
+Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info) {
+    ASSERT(info->upload_cap % (info->upload_bit_granularity * 64) == 0,
+            "upload_cap \% upload_bit_granularity * 64 must be equivalent to 0");
+    ASSERT(info->stage_cap % (info->stage_bit_granularity * 64) == 0,
+            "stage_cap \% stage_bit_granularity * 64 must be equivalent to 0");
 
-// @Todo
+    Tex_Allocator ret = {};
+    ret.stage_cap = info->stage_cap;
+    ret.upload_cap = info->upload_cap;
+    ret.stage = info->stage;
+    ret.stage_ptr = info->stage_ptr;
+    ret.upload = info->upload;
+
+    ret.alloc_cap = info->alloc_cap;
+    ret.allocs = (Tex_Allocation*)malloc_h(sizeof(Tex_Allocation) * ret.alloc_cap, 8);
+
+    // @Note These things could be temp allocated as I will probably never need this many at once.
+    // But compared to actual memory footprint of the data that it represents, I might as well just
+    // have them for the lifetime of the allocator...
+    ret.regions = (VkBufferImageCopy2*)malloc_h(sizeof(VkBufferImageCopy2) * ret.alloc_cap, 8);
+    ret.img_barrs = (VkImageMemoryBarrier*)malloc_h(sizeof(VkImageMemoryBarrier) * ret.alloc_cap, 8);
+
+    ret.stage_bit_granularity = info->stage_bit_granularity;
+
+    u64 c = ret.upload_cap;
+    u64 g = ret.upload_bit_granularity;
+    ret.upload_mask_count = c / (g * 64);
+    ret.upload_masks = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 8);
+    memset(ret.upload_masks, 0, sizeof(u64) * ret.upload_mask_count);
+
+    c = ret.stage_cap;
+    g = ret.stage_bit_granularity;
+    ret.stage_mask_count = c / (g * 64);
+    ret.stage_masks = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count, 8);
+    memset(ret.stage_masks, 0, sizeof(u64) * ret.stage_mask_count);
+
+    ret.str_buf = create_str_buf(1024); // @Note This is probably too small, just update with the assert
+
+    Gpu *gpu = get_gpu_instance();
+    // Choose the most optimal alignment
+    if (gpu->info.props.limits.nonCoherentAtomSize % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 ||
+        gpu->info.props.limits.optimalBufferCopyOffsetAlignment % gpu->info.props.limits.nonCoherentAtomSize == 0)
+    {
+        if (gpu->info.props.limits.nonCoherentAtomSize > gpu->info.props.limits.optimalBufferCopyOffsetAlignment)
+            ret.alignment = gpu->info.props.limits.nonCoherentAtomSize;
+        else
+            ret.alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
+    }
+    ret.staging_queue = Max_u64;
+
+    if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+        ret.flags |= (u8)Flags::UNIFIED_MEM;
+        // Could early return here, as the transfer queue info is not needed if memory
+        // is unified...
+    }
+    if (gpu->transfer_queue_index == gpu->graphics_queue_index) {
+        ret.flags |= (u8)Flags::UNIFIED_TRANSFER;
+
+     // skip creating transfer resources, no transfers happen in the allocator if the
+     // transfer queue is not discrete. The buffer image copy is submitted with other commands
+     // which use the graphics queue.
+        return ret;
+    }
+
+    VkSemaphoreCreateInfo semaphore_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    auto check = vkCreateSemaphore(
+            gpu->device,
+            &semaphore_info,
+            ALLOCATION_CALLBACKS,
+            &ret.upload_semaphore);
+    DEBUG_OBJ_CREATION(vkCreateSemaphore, check);
+
+    VkCommandPoolCreateInfo cmd_pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cmd_pool_info.queueFamilyIndex = gpu->transfer_queue_index;
+    check = vkCreateCommandPool(
+                gpu->device,
+                &cmd_pool_info,
+                ALLOCATION_CALLBACKS,
+                &ret.cmd_pool);
+    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
+
+    VkCommandBufferAllocateInfo cmd_alloc_info = {
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    cmd_alloc_info.commandPool = ret.cmd_pool;
+    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmd_alloc_info.commandBufferCount = 1;
+    vkAllocateCommandBuffers(gpu->device, &cmd_alloc_info, &ret.upload_cmd);
+
+    return ret;
+}
+void destroy_tex_allocator(Tex_Allocator *alloc) {
+    VkDevice device = get_gpu_instance()->device;
+    for(u32 i = 0; i < alloc->alloc_count; ++i)
+        if (alloc->allocs[i].image)
+            vkDestroyImage(device, image, ALLOCATION_CALLBACKS);
+
+    if (alloc->cmd_pool)
+        vkDestroyCommandPool(device, alloc->cmd_pool, ALLOCATION_CALLBACKS);
+    if (alloc->upload_semaphore)
+        vkDestroySemaphore(device, alloc->upload_semaphore, ALLOCATION_CALLBACKS);
+
+    destroy_str_buf(&alloc->str_buf);
+
+    free_h(alloc->allocs);
+    free_h(alloc->stage_masks);
+    free_h(alloc->upload_masks);
+    free_h(alloc->img_barrs);
+    free_h(alloc->regions);
+}
+Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri) {
+    Tex_Allocation *ret = alloc->allocs[alloc->alloc_count];
+    ret->state = Alloc_State::SEEN;
+    ret->uri = str_buf_get_string(alloc->str_buf, uri);
+
+    u64 mark = get_mark_temp(); // Probably unnecessary to reset so often but whatever.
+
+    // @Note Kind of lame to read the file into memory, but it is only temp allocation,
+    // and idk how much more expensive it is to get the image info without reading it in...?
+    // It might be better to copy it into staging memory, just so it is there. And then if
+    // the staging allocator is full, just empty it and continue...? But then this seems like
+    // even more overhead for probably little benefit. But idk, maybe it would be better, but
+    // it seems like it would only be helpful if the staging buffer is never filled by all
+    // added textures. But then again, this laptop has 16gb ram, so I can actually see that
+    // being a completely reasonable possibility... Fine I will do it.
+    Image img = load_image(ret->uri);
+    ret->width = img.width;
+    ret->height = img.height;
+    ret->state = Alloc_State::STAGED; // Read above comment, read below 'if ... else ... 'code
+
+    if (allocator->bytes_staged + (img.height * img.width) <= alloc->stage_cap) {
+        alloc->bytes_staged = align(bytes_staged, alloc->alignment);
+        memcpy(alloc->stage_ptr + alloc->bytes_staged, img.data, img.height * img.width);
+        alloc->bytes_staged += align(img.height * img.width, alloc->alignment);
+    } else {
+        // @Note Assume that we are in a 'tex adding stage' of the program, so nothing should really be
+        // staged in the typical sense, only in this pseudo cached state created by adding a texture.
+        // Hence why the allocator is just emptied if we are going to overflow: dont want to incur too
+        // much overhead, but also dont want to waste reading the texture into memory.
+        for(u32 i = 0; i < alloc->alloc_count; ++i)
+            alloc->state = Alloc_State::SEEN;
+
+        alloc->bytes_staged = 0;
+        ret->stage_offset = alloc->bytes_staged;
+        memcpy(alloc->stage_ptr + alloc->bytes_staged, img.data, img.height * img.width);
+        alloc->bytes_staged += align(img.height * img.width, alloc->alignment);
+    }
+
+    Settings *settings = get_global_settings();
+    VkImageCreateInfo img_create_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    img_create_info.imageType = VK_IMAGE_TYPE_2D;
+    img_create_info.extent = {.width = ret.width, .height = ret.height, .depth = 1};
+    img_create_info.arrayLayers = 1;
+    img_create_info.samples = settings->tex_samples;
+    img_create_info.mipLevels = settings->tex_mip_levels;
+    img_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    img_create_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    img_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    switch(n_channels) {
+    case 1:
+        img_create_info.format = VK_FORMAT_R8_SRGB;
+        break;
+    case 2:
+        img_create_info.format = VK_FORMAT_R8G8_SRGB;
+        break;
+    case 3:
+        img_create_info.format = VK_FORMAT_R8G8B8_SRGB;
+        break;
+    case 4:
+        img_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+        break;
+    default:
+        ASSERT(false, "Invalid n_channels");
+        break;
+    }
+    Gpu *gpu = get_gpu_instance();
+    auto check = vkCreateImage(gpu->device, &img_create_info, ALLOCATION_CALLBACKS, &ret->image);
+    DEBUG_OBJ_CREATION(vkCreateImage, check);
+
+    VkMemoryRequirements mem_req;
+    vkGetImageMemoryRequirements(gpu->device, ret->image, &mem_req);
+    ret->size = mem_req->size;
+
+    // Choose the most optimal alignment (I think I can just assume optimal buffer copy here but I am not 100%
+    if (mem_req.alignment % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 ||
+        gpu->info.props.limits.optimalBufferCopyOffsetAlignment % mem_req.alignment == 0)
+    {
+        if (mem_req.alignment > gpu->info.props.limits.optimalBufferCopyOffsetAlignment)
+            ret.alignment = mem_req.alignment;
+        else
+            ret.alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
+    } else {
+        ret.alignment = mem_req.alignment;
+    }
+
+    reset_to_mark_temp(mark);
+    alloc->alloc_count++;
+    return ret;
+}
+
+// @TODO CURRENT TASK!! Texture staging and upload queues.
 
         /* End Texture Allocator */
 
@@ -2306,7 +2512,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
         strcpy(&tmp_uri[0] + dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
 
-        ret.mats[i].tex_base = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_base = tex_add(allocs->tex, cstr_to_string(tmp_uri));
         ret.mats[i].tex_base->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
         ret.mats[i].tex_base->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
         ret.mats[i].tex_base->mag_filter = (VkFilter)gltf_sampler->mag_filter;
@@ -2319,7 +2525,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
         strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
 
-        ret.mats[i].tex_pbr = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_pbr = tex_add(allocs->tex, cstr_to_string(tmp_uri));
         ret.mats[i].tex_pbr->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
         ret.mats[i].tex_pbr->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
         ret.mats[i].tex_pbr->mag_filter = (VkFilter)gltf_sampler->mag_filter;
@@ -2332,7 +2538,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
         strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
 
-        ret.mats[i].tex_norm = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_norm = tex_add(allocs->tex, cstr_to_string(tmp_uri));
         ret.mats[i].tex_norm->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
         ret.mats[i].tex_norm->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
         ret.mats[i].tex_norm->mag_filter = (VkFilter)gltf_sampler->mag_filter;
@@ -2345,7 +2551,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
         strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
 
-        ret.mats[i].tex_occlusion = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_occlusion = tex_add(allocs->tex, cstr_to_string(tmp_uri));
         ret.mats[i].tex_occlusion->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
         ret.mats[i].tex_occlusion->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
         ret.mats[i].tex_occlusion->mag_filter = (VkFilter)gltf_sampler->mag_filter;
@@ -2358,7 +2564,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
         strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
 
-        ret.mats[i].tex_emissive = tex_add(allocs->tex, get_string(tmp_uri));
+        ret.mats[i].tex_emissive = tex_add(allocs->tex, cstr_to_string(tmp_uri));
         ret.mats[i].tex_emissive->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
         ret.mats[i].tex_emissive->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
         ret.mats[i].tex_emissive->mag_filter = (VkFilter)gltf_sampler->mag_filter;

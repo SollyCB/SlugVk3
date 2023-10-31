@@ -14,13 +14,58 @@ struct String {
     u32 len;
     const char *str;
 };
-inline static String get_string(const char *cstr) {
+inline static String cstr_to_string(const char *cstr) {
     String string;
     string.str = cstr;
     string.len = strlen(cstr);
     return string;
 }
 
+struct String_Buffer {
+    char *buf;
+    u32 len;
+    u32 cap;
+};
+inline static String_Buffer create_str_buf(u32 size, bool temp) {
+    String_Buffer ret;
+    ret.len = 0;
+    size = align(size, 16); // Just in case of some simd
+    ret.cap = size;
+    if (temp)
+        ret.buf = (char*)malloc_t(size, 16);
+    else
+        ret.buf = (char*)malloc_h(size, 16); // static predict heap
+    return ret;
+}
+inline static void destroy_str_buf(String_Buffer *buf) {
+    free_h(buf->buf);
+    *buf = {};
+}
+inline static String str_buf_get_string(String_Buffer *buf, String *str) {
+    String ret = {};
+    ret.len = str->len;
+    ret.str = (const char*)(buf->buf + buf->len);
+
+    buf->len += ret.len + 1; // +1 for null byte
+    ASSERT(buf->len <= ret.cap, "String Buffer Overflow");
+    memcpy((char*)ret.str, str->str, ret.len); // copy null byte
+    ret.str[ret.len] = '\0';
+
+    return ret;
+}
+inline static String str_buf_get_string(String_Buffer *buf, const char *cstr) {
+    String ret = {};
+    ret.len = strlen(cstr);
+    ret.str = (const char*)(buf->buf + buf->len);
+
+    buf->len += ret.len + 1; // +1 for null byte
+    ASSERT(buf->len <= ret.cap, "String Buffer Overflow");
+    memcpy((char*)ret.str, cstr, ret.len + 1); // copy null byte
+
+    return ret;
+}
+
+    /* Old Interface (still used by test.hpp) */
 struct Heap_String_Buffer {
     u32 len;
     char *data;

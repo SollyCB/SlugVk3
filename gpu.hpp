@@ -16,6 +16,14 @@
 #include "string.hpp"
 #include "hash_map.hpp"
 #include "math.hpp"
+#include "string.hpp"
+
+struct Settings {
+    VkSampleCountFlagBits tex_samples = VK_SAMPLE_COUNT_1_BIT;
+    u32 tex_mip_levels = 1;
+};
+static Settings global_settings = {};
+inline static Settings* get_global_settings() { return &global_settings; }
 
 namespace gpu {
 
@@ -258,6 +266,13 @@ enum class Flags : u8 {
    queued, models with some weight above some threshold are also queued behind
    the scenes to keep them in memory, (queueing an allocation is basically free
    if it is already in memory).
+
+   @Note That this allocator may need to be turned into smtg which more resembles the Tex_Allocator:
+   this allocator currently assumes that the staging buffer will always be large enough to hold all
+   vertex attribute data for all loaded models at any given time (i.e. vertex data is always small
+   enough to be in host memory). This is probably not true, but was setup like this for now to get
+   my toes wet with a simpler system, rather than jumping to max. This would be a pretty trivial update,
+   since it is just the same as now but double layered.
 */
 struct Allocator {
     // Bit Mask
@@ -329,7 +344,7 @@ bool upload_queue_begin(Allocator *alloc);
 VkBuffer upload_queue_add(Allocator *alloc, Allocation *allocation);
 bool upload_queue_submit(Allocator *alloc);
 
-        /* Texture Allocation */
+        /* Texture (+ Sampler) Allocation */
 struct Sampler { // This is potentially a bad name
     VkSamplerAddressMode wrap_s;
     VkSamplerAddressMode wrap_t;
@@ -355,8 +370,86 @@ struct Sampler_Allocator {
 Sampler_Allocator create_sampler_allocator(u32 sampler_cap);
 void destroy_sampler_allocator(Sampler_Allocator *alloc);
 
-struct Texture {};
-struct Tex_Allocator {};
+// @Todo @StructSize
+// I REALLY do not like how big this struct is... It is not the worst thing in the world (as the more expensive
+// traversals will be done using the bit masks which mirror the allocation structs), but is lame as there are
+// so many half dead fields: when allocation traversals to stage allocations, you want the uri right there;
+// when you do uploads, you want the VkImage right there.
+// The struct is not HUGE, but it really feels like it can be smaller...
+struct Tex_Allocation {
+    Alloc_State state;
+    u32 width;
+    u32 height;
+    String uri;
+    u64 stage_offset;
+    u64 upload_offset;
+    u64 size;
+    u64 alignment; // memreq.alignment
+    VkImage image;
+
+    u8 pad[14]; // @Test Idk if this is completely correct
+};
+struct Tex_Allocator { // @Todo Pack this
+    // Allocations
+    u32 alloc_count;
+    u32 alloc_cap;
+    Tex_Allocation *allocs;
+
+    /* Stage */
+
+    // Bit Masks
+    u32 stage_bit_granularity;
+    u32 stage_mask_count;
+    u32 stage_bit_cursor;
+    u64 *stage_masks;
+
+    // General
+    u64 bytes_staged;
+    u64 stage_cap;
+    u64 staging_queue;
+    VkBuffer stage;
+    void *stage_ptr;
+
+    /* Upload */
+
+    // Bit Masks
+    u32 upload_bit_granularity;
+    u32 upload_mask_count;
+    u32 upload_bit_cursor;
+    u64 *upload_masks;
+
+    // General
+    u64 bytes_uploaded;
+    u64 upload_cap;
+    u64 upload_queue;
+    VkDeviceMemory upload;
+
+    // Transfer
+    VkBufferImageCopy2 *regions;
+    VkImageMemoryBarrier2 *img_barrs;
+    VkCopyBufferToImageInfo2 copy_info;
+    VkSemaphore upload_semaphore;
+    VkCommandBuffer upload_cmd;
+
+    // Miscellaneous
+    u64 alignment; // nonCoherentAtomSize
+    u8 flags;
+    VkCommandPool cmd_pool; // Why not ??
+    String_Buffer str_buf;
+};
+struct Tex_Allocator_Create_Info {
+    u64 stage_cap;
+    u64 upload_cap;
+    VkBuffer stage;
+    void *stage_ptr;
+    VkDeviceMemory upload;
+
+    u32 stage_bit_granularity = 256; // Upload cap must be a multiple of 64 of this number
+    u32 upload_bit_granularity = 256; // Upload cap must be a multiple of 64 of this number
+    u32 alloc_cap; // How many allocations can exist in the allocator
+};
+Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info);
+void destroy_tex_allocator(Tex_Allocator *alloc);
     /* End Texture Allocation */
 
     /* Model Loading */
