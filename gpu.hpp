@@ -239,14 +239,16 @@ void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout);
 
         /* Model Allocation */
 namespace model {
-enum class Alloc_State : u32 {
-    NONE = 0,
-    STAGED = 1,
-    TO_UPLOAD = 2,
-    UPLOADED = 3,
-    DRAWN = 4,
-    SEEN = 5,
+enum class Alloc_State_Bits : u8 {
+    NONE      = 0x00,
+    SEEN      = 0x01,
+    TO_STAGE  = 0x02,
+    STAGED    = 0x04,
+    TO_UPLOAD = 0x08,
+    UPLOADED  = 0x10,
+    DRAWN     = 0x80,
 };
+typedef u8 Alloc_State;
 struct Allocation {
     Alloc_State state;
 
@@ -274,7 +276,7 @@ enum class Flags : u8 {
    my toes wet with a simpler system, rather than jumping to max. This would be a pretty trivial update,
    since it is just the same as now but double layered.
 */
-struct Allocator {
+struct Allocator { // @Todo Setup this type's functions to use the flags state system
     // Bit Mask
     u32 bit_granularity;
     u32 mask_count;
@@ -389,36 +391,32 @@ struct Tex_Allocation {
 
     u8 pad[14]; // @Test Idk if this is completely correct
 };
-struct Tex_Allocator { // @Todo Pack this
+struct Tex_Allocator { // @Todo Pack this. Its laid out neatly for development.
     // Allocations
     u32 alloc_count;
     u32 alloc_cap;
     Tex_Allocation *allocs;
 
-    /* Stage */
-
-    // Bit Masks
+    // Bit Masks - Staging
     u32 stage_bit_granularity;
     u32 stage_mask_count;
     u32 stage_bit_cursor;
     u64 *stage_masks;
 
-    // General
+    // General - Staging
     u64 bytes_staged;
     u64 stage_cap;
     u64 staging_queue;
     VkBuffer stage;
     void *stage_ptr;
 
-    /* Upload */
-
-    // Bit Masks
+    // Bit Masks - Upload
     u32 upload_bit_granularity;
     u32 upload_mask_count;
     u32 upload_bit_cursor;
     u64 *upload_masks;
 
-    // General
+    // General - Upload
     u64 bytes_uploaded;
     u64 upload_cap;
     u64 upload_queue;

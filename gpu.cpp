@@ -2004,98 +2004,132 @@ void destroy_tex_allocator(Tex_Allocator *alloc) {
     free_h(alloc->img_barrs);
     free_h(alloc->regions);
 }
-Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri) {
+// Upload textures as a list in order to keep textures grouped when doing the pseudo caching (see below notes)
+Tex_Allocation* tex_add(Tex_Allocator *alloc, u32 count, String *uris) {
+    ASSERT(alloc->alloc_count + count <= alloc->alloc_cap, "Tex Allocator Overflow");
+    if (alloc->alloc_count + count > alloc->alloc_cap)
+        return NULL;
+
     Tex_Allocation *ret = alloc->allocs[alloc->alloc_count];
-    ret->state = Alloc_State::SEEN;
-    ret->uri = str_buf_get_string(alloc->str_buf, uri);
 
-    u64 mark = get_mark_temp(); // Probably unnecessary to reset so often but whatever.
+    u64 to_add = 0;
+    u64 mark = get_mark_temp();
+    u8 **img_ptrs = malloc_t(sizeof(u64) * count, 8);
 
-    // @Note Kind of lame to read the file into memory, but it is only temp allocation,
-    // and idk how much more expensive it is to get the image info without reading it in...?
-    // It might be better to copy it into staging memory, just so it is there. And then if
-    // the staging allocator is full, just empty it and continue...? But then this seems like
-    // even more overhead for probably little benefit. But idk, maybe it would be better, but
-    // it seems like it would only be helpful if the staging buffer is never filled by all
-    // added textures. But then again, this laptop has 16gb ram, so I can actually see that
-    // being a completely reasonable possibility... Fine I will do it.
-    Image img = load_image(ret->uri);
-    ret->width = img.width;
-    ret->height = img.height;
-    ret->state = Alloc_State::STAGED; // Read above comment, read below 'if ... else ... 'code
-
-    if (allocator->bytes_staged + (img.height * img.width) <= alloc->stage_cap) {
-        alloc->bytes_staged = align(bytes_staged, alloc->alignment);
-        memcpy(alloc->stage_ptr + alloc->bytes_staged, img.data, img.height * img.width);
-        alloc->bytes_staged += align(img.height * img.width, alloc->alignment);
-    } else {
-        // @Note Assume that we are in a 'tex adding stage' of the program, so nothing should really be
-        // staged in the typical sense, only in this pseudo cached state created by adding a texture.
-        // Hence why the allocator is just emptied if we are going to overflow: dont want to incur too
-        // much overhead, but also dont want to waste reading the texture into memory.
-        for(u32 i = 0; i < alloc->alloc_count; ++i)
-            alloc->state = Alloc_State::SEEN;
-
-        alloc->bytes_staged = 0;
-        ret->stage_offset = alloc->bytes_staged;
-        memcpy(alloc->stage_ptr + alloc->bytes_staged, img.data, img.height * img.width);
-        alloc->bytes_staged += align(img.height * img.width, alloc->alignment);
-    }
+    Image img;
+    VkResult check;
+    VkMemoryRequirements mem_req;
+    VkImageCreateInfo img_create_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
 
     Settings *settings = get_global_settings();
-    VkImageCreateInfo img_create_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    img_create_info.imageType = VK_IMAGE_TYPE_2D;
-    img_create_info.extent = {.width = ret.width, .height = ret.height, .depth = 1};
-    img_create_info.arrayLayers = 1;
-    img_create_info.samples = settings->tex_samples;
-    img_create_info.mipLevels = settings->tex_mip_levels;
-    img_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    img_create_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-    img_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    switch(n_channels) {
-    case 1:
-        img_create_info.format = VK_FORMAT_R8_SRGB;
-        break;
-    case 2:
-        img_create_info.format = VK_FORMAT_R8G8_SRGB;
-        break;
-    case 3:
-        img_create_info.format = VK_FORMAT_R8G8B8_SRGB;
-        break;
-    case 4:
-        img_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
-        break;
-    default:
-        ASSERT(false, "Invalid n_channels");
-        break;
-    }
     Gpu *gpu = get_gpu_instance();
-    auto check = vkCreateImage(gpu->device, &img_create_info, ALLOCATION_CALLBACKS, &ret->image);
-    DEBUG_OBJ_CREATION(vkCreateImage, check);
+    for(u32 i = 0; i < count; ++i) {
+        // @Note Kind of lame to read the file into memory, but it is only temp allocation,
+        // and idk how much more expensive it is to get the image info without reading it in...?
+        // It might be better to copy it into staging memory, just so it is there. And then if
+        // the staging allocator is full, just empty it and continue...? But then this seems like
+        // even more overhead for probably little benefit. But idk, maybe it would be better, but
+        // it seems like it would only be helpful if the staging buffer is never filled by all
+        // added textures. But then again, this laptop has 16gb ram, so I can actually see that
+        // being a completely reasonable possibility... Fine I will do it (see code below loop.)
+        //     - 30 Oct, 2023 | Sol
+        ret[i].uri = str_buf_get_string(alloc->str_buf, uri);
+        img = load_image(ret[i].uri);
+        img_ptrs[i] = img.data;
+        ret[i].width = img.width;
+        ret[i].height = img.height;
+        ret[i].state |= (Alloc_State)Alloc_State_Bits::SEEN;
+        to_add += align(ret[i].height * ret[i].width, alloc->alignment)
 
-    VkMemoryRequirements mem_req;
-    vkGetImageMemoryRequirements(gpu->device, ret->image, &mem_req);
-    ret->size = mem_req->size;
+        img_create_info.imageType = VK_IMAGE_TYPE_2D;
+        img_create_info.extent = {.width = ret[i].width, .height = ret[i].height, .depth = 1};
+        img_create_info.arrayLayers = 1;
+        img_create_info.samples = settings->tex_samples;
+        img_create_info.mipLevels = settings->tex_mip_levels;
+        img_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        img_create_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        img_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        switch(n_channels) {
+        case 1:
+            img_create_info.format = VK_FORMAT_R8_SRGB;
+            break;
+        case 2:
+            img_create_info.format = VK_FORMAT_R8G8_SRGB;
+            break;
+        case 3:
+            img_create_info.format = VK_FORMAT_R8G8B8_SRGB;
+            break;
+        case 4:
+            img_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
+            break;
+        default:
+            ASSERT(false, "Invalid n_channels");
+            break;
+        }
+        check = vkCreateImage(gpu->device, &img_create_info, ALLOCATION_CALLBACKS, &ret[i].image);
+        DEBUG_OBJ_CREATION(vkCreateImage, check);
 
-    // Choose the most optimal alignment (I think I can just assume optimal buffer copy here but I am not 100%
-    if (mem_req.alignment % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 ||
-        gpu->info.props.limits.optimalBufferCopyOffsetAlignment % mem_req.alignment == 0)
-    {
-        if (mem_req.alignment > gpu->info.props.limits.optimalBufferCopyOffsetAlignment)
-            ret.alignment = mem_req.alignment;
-        else
-            ret.alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
-    } else {
-        ret.alignment = mem_req.alignment;
+        vkGetImageMemoryRequirements(gpu->device, ret[i].image, &mem_req);
+        ret[i].size = mem_req->size;
+
+        // Choose the most optimal alignment (I think I can just assume optimal buffer copy here but I am not 100%
+        if (mem_req.alignment % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 ||
+            gpu->info.props.limits.optimalBufferCopyOffsetAlignment % mem_req.alignment == 0)
+        {
+            if (mem_req.alignment > gpu->info.props.limits.optimalBufferCopyOffsetAlignment)
+                ret[i].alignment = mem_req.alignment;
+            else
+                ret[i].alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
+        } else {
+            ret[i].alignment = mem_req.alignment;
+        }
     }
 
+    // @Note Assume that we are in a 'tex adding stage' of the program, so nothing should really be
+    // staged in the typical sense, only in this pseudo cached state created by adding a texture.
+    // We just fill up the stage until it is full, assuming that the most important textures are
+    // loaded first. When full, stop staging.
+    alloc->bytes_staged = align(bytes_staged, alloc->alignment);
+    to_add = align(to_add, alloc->alignment); // This should be unnecessary, as its the sum of aligned sizes
+    if (alloc->bytes_staged + to_add <= alloc->stage_cap)
+        for(u32 i = 0; i < count; ++i) {
+            memcpy(
+                alloc->stage_ptr + alloc->bytes_staged,
+                img_ptrs[i],
+                ret[i].height * ret[i].width);
+
+            ret[i].state |= (Alloc_State)Alloc_State_Bits::STAGED;
+            ret[i].stage_offset = alloc->bytes_staged;
+
+            alloc->bytes_staged += align(ret[i].height * ret[i].width, alloc->alignment);
+        }
+
+    alloc->alloc_count += count;
     reset_to_mark_temp(mark);
-    alloc->alloc_count++;
     return ret;
 }
+// Staging queue functions, upload queue functions. I do want to do double level queueing.
+// Keeping stuff together is good. The allocator itself can fragment, but work like reading textures into memory
+// is best grouped together. Plus this way can be more easily multithreaded, as items from the queue can be
+// easily delegated. - 31 Oct 2023, Sol
+bool tex_staging_queue_begin(Tex_Allocator *alloc) {
+    if (alloc->staging_queue != Max_u32)
+        return false;
+    alloc->staging_queue = 0;
+    return true;
+}
+bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *allocation) {
+    if (alloc->staging_queue > alloc->stage_cap)
+        return false;
 
-// @TODO CURRENT TASK!! Texture staging and upload queues.
+    allocation->state &= ~(Alloc_State)Alloc_State_Bits::DRAWN;
+    allocation->state |= (Alloc_State)Alloc_State_Bits::TO_STAGE;
+    u8 tmp = allocation->state & (Alloc_State)Alloc_State_Bits::STAGED;
+    allocation->state ^= tmp >> 1; // clear TO_STAGE bit if STAGED is set.
 
+    return true;
+}
+bool tex_staging_queue_submit(Tex_Allocator *alloc) {}
         /* End Texture Allocator */
 
         /* Sampler Allocator */
