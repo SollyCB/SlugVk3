@@ -7,11 +7,11 @@
 #include "basic.h"
 #include "builtin_wrappers.h"
 
-/* 
+/*
    *********************************************************
 
     WARNING! These functions have not been used enough to count as full stress tested. Normally I would be confident
-    enough not to warn, some these do relatively complex things, so I will put a little alert here to catch my eye 
+    enough not to warn, some these do relatively complex things, so I will put a little alert here to catch my eye
     in case of weird errors.
 
    *********************************************************
@@ -30,6 +30,22 @@
 // as the next comparison (the while loop test)? I am trying it out anyway. One day I will test it,
 // but I imagine it is completely negligible...
 //
+
+// @Todo Where possible, convert older methodologies to use this updated version I somehow only just realised:
+/*
+    while(inc < alloc->allocation_count) {
+        for(u32 i = 0; i < pop_count16(mask); ++i) {
+            tz = count_trailing_zeros_u16(mask);
+            indices[idx] = inc + tz;
+            mask ^= 1 << tz;
+        }
+        inc += 16;
+        a = _mm_load_si128((__m128i*)(alloc->allocations + inc));
+        a = _mm_and_si128(a, b);
+        a = _mm_cmpeq_epi8(a, b);
+        mask = _mm_movemask_epi8(a);
+    }
+*/
 
 // @Todo better document what these functions are doing. Some of the operations might look confusing
 // if I come to them after not using simd for a while or smtg
@@ -110,7 +126,7 @@ inline static void simd_skip_passed_char_count(const char *string, char skip, in
         }
     }
 
-    // when count == skip_count, 
+    // when count == skip_count,
     // position in file += total increment + the distance to the last matched char in the group
     *pos += inc + (16 - lz);
 }
@@ -166,7 +182,7 @@ inline static int simd_get_ascii_array_len(const char *string) {
         count++;
         inc++;
     }
-    
+
     inc -= 16;
     __m128i a = _mm_loadu_si128((__m128i*)(string + inc));
 
@@ -392,7 +408,7 @@ inline static bool simd_skip_to_int(const char *string, u64 *offset, u64 limit) 
         if (inc > limit) {
             return false;
         }
-            
+
         a = _mm_loadu_si128((__m128i*)(string + inc));
         d = _mm_cmpgt_epi8(a, b);
         a = _mm_cmplt_epi8(a, c);
