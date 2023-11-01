@@ -1895,6 +1895,44 @@ bool upload_queue_submit(Allocator *alloc) {
     /* End Vertex Attribute Allocator */
 
         /* Texture Allocator */
+
+/*
+   @Note @Todo @Speed This note also applies to the vertex attribute version of this allocator.
+
+       Do I want to unpack allocation structs into their own arrays?
+
+    Now I am thinking about it, I think I should unpack 'Allocation' and 'Tex_Allocation' structs
+    into SOA form. Previously I thought that it would be better to keep this stuff all in the same
+    structs, because although it made looping more expensive, it meant that in the loops, all the
+    data was right there, so when I saw an allocation in TO_UPLOAD state, for instance, the copy
+    info was already present in cache. However, now I am thinking that I might be better off
+    separating the stuff out more. The plan would be to put state and size stuff in their own
+    arrays. Then when I loop the states to see what stuff needs uploading etc, I can either call
+    up the data right there by index, or save the indices and loop them later if necessary.
+
+    Not only is the most pertinent data all close together, but state searching can also be
+    well simderised. However, now I have to pretty much random access into the size arrays
+    to setup uploads, or set offsets, so the cache is less friendly. But then again, when
+    uploading data, the use case should be that contiguous allocations are queued up (allocations
+    which will be drawn together should be uploaded/added/staged together), so
+    the cache is fine, as the random access will not be random, but should instead be contiguous
+    access of a small section of the allocator. This also makes the previous layout less attractive,
+    because now you spend most time pointlessly looping large structs with mostly useless data (the data
+    is only useful if the allocation is in a relevant state), then come across a few state
+    hits, then nothing useful again, in which case I would rather quickly filter out the stuff I need.
+
+    I will implement the Tex_Allocator with this new style. And I am pretty sure it will also be applied
+    to the vertex attribute Allocator, since I will need to update it to use the new Alloc_State flags.
+    Plus I do really have to change it to use the double layered stage and upload syste like the tex
+    allocator, because in the case that the stage is always large enough to never evict, then there
+    really is not any overhead, to the double layer. But in the (likely? 16gb RAM tho...) case that
+    sometimes stuff will have to be evicted to disk, then I am completely unprepared with the current
+    system. So ye, when I have the experience from implementing double layer for the Tex_Allocator,
+    I will add it to the other Allocator. I am sure I will learn some shit from doing it here, and
+    doing another iteration for the other allocator will be doubly good anyway.
+
+        - 31 Oct 2023, Sol
+*/
 Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info) {
     ASSERT(info->upload_cap % (info->upload_bit_granularity * 64) == 0,
             "upload_cap \% upload_bit_granularity * 64 must be equivalent to 0");

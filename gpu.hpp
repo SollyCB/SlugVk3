@@ -378,6 +378,9 @@ void destroy_sampler_allocator(Sampler_Allocator *alloc);
 // so many half dead fields: when allocation traversals to stage allocations, you want the uri right there;
 // when you do uploads, you want the VkImage right there.
 // The struct is not HUGE, but it really feels like it can be smaller...
+//
+// UPDATE: I am going to redo this struct as SOA. I have a tiny little prelim layout, but it will be converted
+// as I write the actual implementation code, as this is just common sense.
 struct Tex_Allocation {
     Alloc_State state;
     u32 width;
@@ -390,6 +393,15 @@ struct Tex_Allocation {
     VkImage image;
 
     u8 pad[14]; // @Test Idk if this is completely correct
+};
+struct Tex_Alloc_Size {
+    u32 width;
+    u32 height;
+    u64 stage_offset;
+};
+struct Tex_Allocation { // @Redo redo in SOA
+    u32 state;
+    u32 sizes;
 };
 struct Tex_Allocator { // @Todo Pack this. Its laid out neatly for development.
     // Allocations
