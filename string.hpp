@@ -26,7 +26,7 @@ struct String_Buffer {
     u32 len;
     u32 cap;
 };
-inline static String_Buffer create_str_buf(u32 size, bool temp) {
+inline static String_Buffer create_string_buffer(u32 size, bool temp) {
     String_Buffer ret;
     ret.len = 0;
     size = align(size, 16); // Just in case of some simd
@@ -37,11 +37,11 @@ inline static String_Buffer create_str_buf(u32 size, bool temp) {
         ret.buf = (char*)malloc_h(size, 16); // static predict heap
     return ret;
 }
-inline static void destroy_str_buf(String_Buffer *buf) {
+inline static void destroy_string_buffer(String_Buffer *buf) {
     free_h(buf->buf);
     *buf = {};
 }
-inline static String str_buf_get_string(String_Buffer *buf, String *str) {
+inline static String string_buffer_get_string(String_Buffer *buf, String *str) {
     String ret = {};
     ret.len = str->len;
     ret.str = (const char*)(buf->buf + buf->len);
@@ -53,7 +53,7 @@ inline static String str_buf_get_string(String_Buffer *buf, String *str) {
 
     return ret;
 }
-inline static String str_buf_get_string(String_Buffer *buf, const char *cstr) {
+inline static String string_buffer_get_string(String_Buffer *buf, const char *cstr) {
     String ret = {};
     ret.len = strlen(cstr);
     ret.str = (const char*)(buf->buf + buf->len);

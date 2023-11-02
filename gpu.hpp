@@ -372,30 +372,26 @@ struct Sampler_Allocator {
 Sampler_Allocator create_sampler_allocator(u32 sampler_cap);
 void destroy_sampler_allocator(Sampler_Allocator *alloc);
 
-// @Todo @StructSize
-// I REALLY do not like how big this struct is... It is not the worst thing in the world (as the more expensive
-// traversals will be done using the bit masks which mirror the allocation structs), but is lame as there are
-// so many half dead fields: when allocation traversals to stage allocations, you want the uri right there;
-// when you do uploads, you want the VkImage right there.
-// The struct is not HUGE, but it really feels like it can be smaller...
-//
-// UPDATE: I am going to redo this struct as SOA. I have a tiny little prelim layout, but it will be converted
-// as I write the actual implementation code, as this is just common sense.
-struct Tex_Allocator {};
+struct Texture {
+    String uri;
+    u64 stage_offset;
+    u64 upload_offset;
 
-struct Tex_Allocator_Create_Info {
-    u64 stage_cap;
-    u64 upload_cap;
-    VkBuffer stage;
-    void *stage_ptr;
-    VkDeviceMemory upload;
+    u64 size;
+    u64 alignment;
+    VkImage img;
 
-    u32 stage_bit_granularity = 256; // Upload cap must be a multiple of 64 of this number
-    u32 upload_bit_granularity = 256; // Upload cap must be a multiple of 64 of this number
-    u32 alloc_cap; // How many allocations can exist in the allocator
+    u32 width;
+    u32 height;
+    u32 state;
+    u32 n_channels;
 };
-Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info);
-void destroy_tex_allocator(Tex_Allocator *alloc);
+struct Tex_Bind_Info {
+    VkImage img;
+    u64 alignment;
+    u64 size;
+};
+struct Tex_Allocator {};
     /* End Texture Allocation */
 
     /* Model Loading */
