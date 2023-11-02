@@ -1,7 +1,9 @@
 #include "image.hpp"
 #include "allocator.hpp"
 
-#define STBI_MALLOC(sz) malloc_t(sz, 8)
+// Temp allocator must be aligned before calling load_image().
+// Alignment is set to 1 to ensure that the temp allocator is never realigned after being aligned to a different size
+#define STBI_MALLOC(sz) malloc_t(sz, 1)
 #define STBI_FREE(sz)
 #define STBI_REALLOC(p, newsz)
 #define STB_IMAGE_IMPLEMENTATION;

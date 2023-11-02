@@ -1932,243 +1932,250 @@ bool upload_queue_submit(Allocator *alloc) {
     doing another iteration for the other allocator will be doubly good anyway.
 
         - 31 Oct 2023, Sol
+
+    UPDATE:
+    I have written upload code for tex allocator. Ended up with one branching + cache unfriendly loop.
+    Everything else is super tight and super clean. Big improvement, as long as their is not some
+    large unforeseen cost int setting up the data before this function.
 */
-Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info) {
-    ASSERT(info->upload_cap % (info->upload_bit_granularity * 64) == 0,
-            "upload_cap \% upload_bit_granularity * 64 must be equivalent to 0");
-    ASSERT(info->stage_cap % (info->stage_bit_granularity * 64) == 0,
-            "stage_cap \% stage_bit_granularity * 64 must be equivalent to 0");
+struct Alloc_Size_Info {
+    u64 offset;
+    u64 size;
+    u32 state; // idx of corresponding allocation state
+};
+struct Tex_Copy_Info {
+    u32 width;
+    u32 height;
+    u64 stage_offset;
+    VkImage img;
+};
+struct Texture {
+    u64 stage_offset;
+    u64 upload_offset;
+    u64 size;
+    VkImage img;
 
-    Tex_Allocator ret = {};
-    ret.stage_cap = info->stage_cap;
-    ret.upload_cap = info->upload_cap;
-    ret.stage = info->stage;
-    ret.stage_ptr = info->stage_ptr;
-    ret.upload = info->upload;
+    u32 width;
+    u32 height;
+};
+bool tex_staging_queue_submit(Tex_Allocator *alloc) {
+    u32 g = alloc->stage_bit_granularity;
+    u64 adj_size = (alloc->staging_queue / g) + 1;
+    u32 free_block = find_contiguous_free(
+                        alloc->stage_mask_count,
+                        alloc->stage_masks,
+                        alloc->stage_cursor,
+                        adj_size);
 
-    ret.alloc_cap = info->alloc_cap;
-    ret.allocs = (Tex_Allocation*)malloc_h(sizeof(Tex_Allocation) * ret.alloc_cap, 8);
+    bool evict = false;
+    if (free_block == Max_u32) {
+        free_block = find_contiguous_free(
+                        alloc->stage_mask_count,
+                        alloc->stage_masks,
+                        0, // search from beginning of allocator
+                        adj_size);
+        if (free_block == Max_u32) {
+            evict = true;
 
-    // @Note These things could be temp allocated as I will probably never need this many at once.
-    // But compared to actual memory footprint of the data that it represents, I might as well just
-    // have them for the lifetime of the allocator...
-    ret.regions = (VkBufferImageCopy2*)malloc_h(sizeof(VkBufferImageCopy2) * ret.alloc_cap, 8);
-    ret.img_barrs = (VkImageMemoryBarrier*)malloc_h(sizeof(VkImageMemoryBarrier) * ret.alloc_cap, 8);
+            // Do evictions
+            for(u32 i = 0; i < alloc->staged_drawn_count; ++i) {
+                adj_size = (alloc->staged_drawn_sizes[i].size / g) + 1;
+                adj_offset = alloc->staged_drawn_sizes[i].stage_offset / g;
+                make_free(alloc->stage_mask_count, alloc->stage_masks, adj_offset, adj_size);
+            }
 
-    ret.stage_bit_granularity = info->stage_bit_granularity;
+            adj_size = (alloc->staging_queue / g) + 1; // reset adj_size as it is overwritten in the loop above
+            free_block = find_contiguous_free(
+                                alloc->stage_mask_count,
+                                alloc->stage_masks,
+                                alloc->stage_bit_cursor,
+                                adj_size);
 
-    u64 c = ret.upload_cap;
-    u64 g = ret.upload_bit_granularity;
-    ret.upload_mask_count = c / (g * 64);
-    ret.upload_masks = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 8);
-    memset(ret.upload_masks, 0, sizeof(u64) * ret.upload_mask_count);
+            if (free_block == Max_u32) {
+                alloc->bit_cursor = 0; // reset to allocator start
+                free_block = find_contiguous_free(
+                                alloc->stage_mask_count,
+                                alloc->stage_masks,
+                                alloc->stage_bit_cursor,
+                                adj_size);
 
-    c = ret.stage_cap;
-    g = ret.stage_bit_granularity;
-    ret.stage_mask_count = c / (g * 64);
-    ret.stage_masks = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count, 8);
-    memset(ret.stage_masks, 0, sizeof(u64) * ret.stage_mask_count);
-
-    ret.str_buf = create_str_buf(1024); // @Note This is probably too small, just update with the assert
-
-    Gpu *gpu = get_gpu_instance();
-    // Choose the most optimal alignment
-    if (gpu->info.props.limits.nonCoherentAtomSize % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 ||
-        gpu->info.props.limits.optimalBufferCopyOffsetAlignment % gpu->info.props.limits.nonCoherentAtomSize == 0)
-    {
-        if (gpu->info.props.limits.nonCoherentAtomSize > gpu->info.props.limits.optimalBufferCopyOffsetAlignment)
-            ret.alignment = gpu->info.props.limits.nonCoherentAtomSize;
-        else
-            ret.alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
+                if (free_block == Max_u32)
+                    return false;
+            }
+        }
     }
-    ret.staging_queue = Max_u64;
 
-    if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
-        ret.flags |= (u8)Flags::UNIFIED_MEM;
-        // Could early return here, as the transfer queue info is not needed if memory
-        // is unified...
+    make_full(alloc->stage_mask_count, alloc->stage_masks, free_block, adj_size);
+    alloc->stage_bit_cursor = free_block + adj_size; // point cursor at the end of the most recent allocation
+
+    if (evict) {
+        for(u32 i = 0; i < alloc->staged_drawn_count; ++i) {
+            adj_size = (alloc->staged_drawn_sizes[i].size / g) + 1;
+            adj_offset = alloc->staged_drawn_sizes[i].stage_offset / g;
+
+            // Cache unfriendly | Branching
+            if (!is_range_free(alloc->stage_mask_count, alloc->stage_masks, adj_offset, adj_size)) {
+                alloc->allocation_states[alloc->staged_drawn_sizes[i].state] ^= Alloc_State_Bits::STAGED;
+                alloc->staged_drawn_sizes[i] = alloc->staged_drawn_sizes[alloc->staged_drawn_count - 1];
+                alloc->staged_drawn_count--;
+            }
+        }
     }
-    if (gpu->transfer_queue_index == gpu->graphics_queue_index) {
-        ret.flags |= (u8)Flags::UNIFIED_TRANSFER;
 
-     // skip creating transfer resources, no transfers happen in the allocator if the
-     // transfer queue is not discrete. The buffer image copy is submitted with other commands
-     // which use the graphics queue.
-        return ret;
-    }
+    align_temp(alloc->optimal_cpy_alignment); // align allocator before loading img
+    Image img = load_image(alloc->to_stage_uris[0]);
+    u8 *img_mem_start = img.data;
 
-    VkSemaphoreCreateInfo semaphore_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    auto check = vkCreateSemaphore(
-            gpu->device,
-            &semaphore_info,
-            ALLOCATION_CALLBACKS,
-            &ret.upload_semaphore);
-    DEBUG_OBJ_CREATION(vkCreateSemaphore, check);
+    u64 stage_offset = free_block * g;
+    u64 tmp = stage_offset;
+    alloc->stage_offsets[0] = tmp;
+    tmp += align(img.height * img.width, alloc->optimal_copy_alignment);
 
-    VkCommandPoolCreateInfo cmd_pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    cmd_pool_info.queueFamilyIndex = gpu->transfer_queue_index;
-    check = vkCreateCommandPool(
-                gpu->device,
-                &cmd_pool_info,
-                ALLOCATION_CALLBACKS,
-                &ret.cmd_pool);
-    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
-
-    VkCommandBufferAllocateInfo cmd_alloc_info = {
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    cmd_alloc_info.commandPool = ret.cmd_pool;
-    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmd_alloc_info.commandBufferCount = 1;
-    vkAllocateCommandBuffers(gpu->device, &cmd_alloc_info, &ret.upload_cmd);
-
-    return ret;
-}
-void destroy_tex_allocator(Tex_Allocator *alloc) {
-    VkDevice device = get_gpu_instance()->device;
-    for(u32 i = 0; i < alloc->alloc_count; ++i)
-        if (alloc->allocs[i].image)
-            vkDestroyImage(device, image, ALLOCATION_CALLBACKS);
-
-    if (alloc->cmd_pool)
-        vkDestroyCommandPool(device, alloc->cmd_pool, ALLOCATION_CALLBACKS);
-    if (alloc->upload_semaphore)
-        vkDestroySemaphore(device, alloc->upload_semaphore, ALLOCATION_CALLBACKS);
-
-    destroy_str_buf(&alloc->str_buf);
-
-    free_h(alloc->allocs);
-    free_h(alloc->stage_masks);
-    free_h(alloc->upload_masks);
-    free_h(alloc->img_barrs);
-    free_h(alloc->regions);
-}
-// Upload textures as a list in order to keep textures grouped when doing the pseudo caching (see below notes)
-Tex_Allocation* tex_add(Tex_Allocator *alloc, u32 count, String *uris) {
-    ASSERT(alloc->alloc_count + count <= alloc->alloc_cap, "Tex Allocator Overflow");
-    if (alloc->alloc_count + count > alloc->alloc_cap)
-        return NULL;
-
-    Tex_Allocation *ret = alloc->allocs[alloc->alloc_count];
-
-    u64 to_add = 0;
     u64 mark = get_mark_temp();
-    u8 **img_ptrs = malloc_t(sizeof(u64) * count, 8);
+    for(u32 i = 1; i < alloc->to_stage_count; ++i) {
+        align_temp(alloc->optimal_cpy_alignment); // align allocator before img load
+        img = load_image(alloc->to_stage_uris[i]);
+        alloc->stage_offsets[i] = tmp;
+        tmp += align(img.height * img.width, alloc->optimal_copy_alignment);
+    }
 
-    Image img;
-    VkResult check;
-    VkMemoryRequirements mem_req;
-    VkImageCreateInfo img_create_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    // load_image() writes to the temp allocator, therefore each allocation is contiguous in memory,
+    // so by aligning each allocation in the above loop, the data can all be copied out to the staging
+    // buffer in one memcpy call.
+    alloc->staging_queue = align(alloc->staging_queue, alloc->optimal_cpy_alignment);
+    memcpy(alloc->stage_ptr + stage_offset, img_mem_start, alloc->staging_queue);
 
-    Settings *settings = get_global_settings();
-    Gpu *gpu = get_gpu_instance();
-    for(u32 i = 0; i < count; ++i) {
-        // @Note Kind of lame to read the file into memory, but it is only temp allocation,
-        // and idk how much more expensive it is to get the image info without reading it in...?
-        // It might be better to copy it into staging memory, just so it is there. And then if
-        // the staging allocator is full, just empty it and continue...? But then this seems like
-        // even more overhead for probably little benefit. But idk, maybe it would be better, but
-        // it seems like it would only be helpful if the staging buffer is never filled by all
-        // added textures. But then again, this laptop has 16gb ram, so I can actually see that
-        // being a completely reasonable possibility... Fine I will do it (see code below loop.)
-        //     - 30 Oct, 2023 | Sol
-        ret[i].uri = str_buf_get_string(alloc->str_buf, uri);
-        img = load_image(ret[i].uri);
-        img_ptrs[i] = img.data;
-        ret[i].width = img.width;
-        ret[i].height = img.height;
-        ret[i].state |= (Alloc_State)Alloc_State_Bits::SEEN;
-        to_add += align(ret[i].height * ret[i].width, alloc->alignment)
+    alloc->bytes_staged += staging_queue;
+    reset_to_mark_temp(mark);
 
-        img_create_info.imageType = VK_IMAGE_TYPE_2D;
-        img_create_info.extent = {.width = ret[i].width, .height = ret[i].height, .depth = 1};
-        img_create_info.arrayLayers = 1;
-        img_create_info.samples = settings->tex_samples;
-        img_create_info.mipLevels = settings->tex_mip_levels;
-        img_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        img_create_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
-        img_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        switch(n_channels) {
-        case 1:
-            img_create_info.format = VK_FORMAT_R8_SRGB;
-            break;
-        case 2:
-            img_create_info.format = VK_FORMAT_R8G8_SRGB;
-            break;
-        case 3:
-            img_create_info.format = VK_FORMAT_R8G8B8_SRGB;
-            break;
-        case 4:
-            img_create_info.format = VK_FORMAT_R8G8B8A8_SRGB;
-            break;
-        default:
-            ASSERT(false, "Invalid n_channels");
-            break;
-        }
-        check = vkCreateImage(gpu->device, &img_create_info, ALLOCATION_CALLBACKS, &ret[i].image);
-        DEBUG_OBJ_CREATION(vkCreateImage, check);
+    simd_find_and_update_flags_u8(
+            alloc->allocation_count,
+            alloc->allocation_states,
+            (Alloc_State)Alloc_State_Bits::TO_STAGE,
+            (Alloc_State)Alloc_State_Bits::TO_STAGE,
+            (Alloc_State)Alloc_State_Bits::STAGED);
 
-        vkGetImageMemoryRequirements(gpu->device, ret[i].image, &mem_req);
-        ret[i].size = mem_req->size;
+    alloc->to_stage_count = 0;
+    alloc->staging_queue = Max_u32; // Indicate it is safe to use stage queue again
+    return true;
+}
+bool tex_upload_queue_add(Tex_Allocator *alloc) {
+    // Have to create (for upload code):
+    //     bytes to allocate (sum of img sizes, each aligned),
+    //     array {
+    //         width;
+    //         height;
+    //         stage_offset;
+    //     },
+    //     array {
+    //         img_size;
+    //         img;
+    //     },
+}
+bool tex_upload_queue_submit(Tex_Allocator *alloc) {
+    u32 g = alloc->upload_bit_granularity;
+    u64 adj_size = (alloc->upload_queue / g) + 1;
+    u32 free_block = find_contiguous_free(
+                        alloc->upload_mask_count,
+                        alloc->upload_masks,
+                        alloc->upload_cursor,
+                        adj_size);
 
-        // Choose the most optimal alignment (I think I can just assume optimal buffer copy here but I am not 100%
-        if (mem_req.alignment % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 ||
-            gpu->info.props.limits.optimalBufferCopyOffsetAlignment % mem_req.alignment == 0)
-        {
-            if (mem_req.alignment > gpu->info.props.limits.optimalBufferCopyOffsetAlignment)
-                ret[i].alignment = mem_req.alignment;
-            else
-                ret[i].alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
-        } else {
-            ret[i].alignment = mem_req.alignment;
+    bool evict = false;
+    if (free_block == Max_u32) {
+        free_block = find_contiguous_free(
+                        alloc->upload_mask_count,
+                        alloc->upload_masks,
+                        0, // search from beginning of allocator
+                        adj_size);
+        if (free_block == Max_u32) {
+            evict = true;
+
+            // Do evictions
+            for(u32 i = 0; i < alloc->uploaded_drawn_count; ++i) {
+                adj_size = (alloc->uploaded_drawn_sizes[i].size / g) + 1;
+                adj_offset = alloc->uploaded_drawn_sizes[i].upload_offset / g;
+                make_free(alloc->upload_mask_count, alloc->upload_masks, adj_offset, adj_size);
+            }
+
+            adj_size = (alloc->upload_queue / g) + 1; // reset adj_size as it is overwritten in the loop above
+            free_block = find_contiguous_free(
+                                alloc->upload_mask_count,
+                                alloc->upload_masks,
+                                alloc->upload_bit_cursor,
+                                adj_size);
+
+            if (free_block == Max_u32) {
+                alloc->bit_cursor = 0; // reset to allocator start
+                free_block = find_contiguous_free(
+                                alloc->upload_mask_count,
+                                alloc->upload_masks,
+                                alloc->upload_bit_cursor,
+                                adj_size);
+
+                if (free_block == Max_u32)
+                    return false;
+            }
         }
     }
 
-    // @Note Assume that we are in a 'tex adding stage' of the program, so nothing should really be
-    // staged in the typical sense, only in this pseudo cached state created by adding a texture.
-    // We just fill up the stage until it is full, assuming that the most important textures are
-    // loaded first. When full, stop staging.
-    alloc->bytes_staged = align(bytes_staged, alloc->alignment);
-    to_add = align(to_add, alloc->alignment); // This should be unnecessary, as its the sum of aligned sizes
-    if (alloc->bytes_staged + to_add <= alloc->stage_cap)
-        for(u32 i = 0; i < count; ++i) {
-            memcpy(
-                alloc->stage_ptr + alloc->bytes_staged,
-                img_ptrs[i],
-                ret[i].height * ret[i].width);
+    u64 upload_offset = free_block * g; // g must be aligned to optimal copy alignment
+    VkDevice device = get_gpu_instance()->device;
+    for(u32 i = 0; i < alloc->to_upload_count; ++i) {
+        vkBindImageMemory(device, alloc->bind_infos[i].img, upload_offset);
+        alloc->upload_offsets[i] = upload_offset;
 
-            ret[i].state |= (Alloc_State)Alloc_State_Bits::STAGED;
-            ret[i].stage_offset = alloc->bytes_staged;
+        upload_offset += alloc->to_upload_img_sizes[i]; // .size is already aligned for optimal copy
+    }
 
-            alloc->bytes_staged += align(ret[i].height * ret[i].width, alloc->alignment);
+    make_full(alloc->upload_mask_count, alloc->upload_masks, free_block, adj_size);
+    alloc->upload_bit_cursor = free_block + adj_size; // point cursor at the end of the most recent allocation
+
+    if (evict) {
+        for(u32 i = 0; i < alloc->uploaded_drawn_count; ++i) {
+            adj_size = (alloc->uploaded_drawn_sizes[i].size / g) + 1;
+            adj_offset = alloc->uploaded_drawn_sizes[i].upload_offset / g;
+
+            // Cache unfriendly | Branching
+            if (!is_range_free(alloc->upload_mask_count, alloc->upload_masks, adj_offset, adj_size)) {
+                alloc->allocation_states[alloc->uploaded_drawn_sizes[i].state] ^= Alloc_State_Bits::UPLOADED;
+                alloc->uploaded_drawn_sizes[i] = alloc->uploaded_drawn_sizes[alloc->uploaded_drawn_count - 1];
+                alloc->uploaded_drawn_count--;
+            }
         }
+    }
 
-    alloc->alloc_count += count;
-    reset_to_mark_temp(mark);
-    return ret;
-}
-// Staging queue functions, upload queue functions. I do want to do double level queueing.
-// Keeping stuff together is good. The allocator itself can fragment, but work like reading textures into memory
-// is best grouped together. Plus this way can be more easily multithreaded, as items from the queue can be
-// easily delegated. - 31 Oct 2023, Sol
-bool tex_staging_queue_begin(Tex_Allocator *alloc) {
-    if (alloc->staging_queue != Max_u32)
-        return false;
-    alloc->staging_queue = 0;
+    for(u32 i = 0; i < alloc->to_upload_count; ++i) {
+        alloc->regions[i].bufferOffset = alloc->to_upload_cpy_sizes[i].stage_offset;
+        alloc->regions[i].bufferRowLength = alloc->to_upload_cpy_sizes[i].width;
+        alloc->regions[i].bufferImageHeight = alloc->to_upload_cpy_sizes[i].height;
+        alloc->regions[i].imageSubresource = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .mipLevel = 0,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+        alloc->regions[i].imageOffset = {.x = 0, .y = 0, .z = 0};
+        alloc->regions[i].imageExtent = {
+            .width = alloc->to_upload_cpy_sizes[i].width,
+            .height = alloc->to_upload_cpy_sizes[i].height,
+            .depth = 1,
+        };
+        alloc->uploaded_sizes[alloc->uploaded_count] = alloc->to_upload_cpy_sizes[i];
+        alloc->uploaded_count++;
+    }
+
+    simd_find_and_update_flags_u8(
+            alloc->allocation_count,
+            alloc->allocation_states,
+            (Alloc_State)Alloc_State_Bits::TO_UPLOAD,
+            (Alloc_State)Alloc_State_Bits::TO_UPLOAD,
+            (Alloc_State)Alloc_State_Bits::UPLOADED);
+
+    alloc->to_upload_count = 0;
+    alloc->upload_queue = Max_u32; // Indicate it is safe to use upload queue again
     return true;
 }
-bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *allocation) {
-    if (alloc->staging_queue > alloc->stage_cap)
-        return false;
-
-    allocation->state &= ~(Alloc_State)Alloc_State_Bits::DRAWN;
-    allocation->state |= (Alloc_State)Alloc_State_Bits::TO_STAGE;
-    u8 tmp = allocation->state & (Alloc_State)Alloc_State_Bits::STAGED;
-    allocation->state ^= tmp >> 1; // clear TO_STAGE bit if STAGED is set.
-
-    return true;
-}
-bool tex_staging_queue_submit(Tex_Allocator *alloc) {}
-        /* End Texture Allocator */
 
         /* Sampler Allocator */
 Sampler_Allocator create_sampler_allocator(u32 cap, float anisotropy) {

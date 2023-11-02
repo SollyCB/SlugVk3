@@ -381,72 +381,8 @@ void destroy_sampler_allocator(Sampler_Allocator *alloc);
 //
 // UPDATE: I am going to redo this struct as SOA. I have a tiny little prelim layout, but it will be converted
 // as I write the actual implementation code, as this is just common sense.
-struct Tex_Allocation {
-    Alloc_State state;
-    u32 width;
-    u32 height;
-    String uri;
-    u64 stage_offset;
-    u64 upload_offset;
-    u64 size;
-    u64 alignment; // memreq.alignment
-    VkImage image;
+struct Tex_Allocator {};
 
-    u8 pad[14]; // @Test Idk if this is completely correct
-};
-struct Tex_Alloc_Size {
-    u32 width;
-    u32 height;
-    u64 stage_offset;
-};
-struct Tex_Allocation { // @Redo redo in SOA
-    u32 state;
-    u32 sizes;
-};
-struct Tex_Allocator { // @Todo Pack this. Its laid out neatly for development.
-    // Allocations
-    u32 alloc_count;
-    u32 alloc_cap;
-    Tex_Allocation *allocs;
-
-    // Bit Masks - Staging
-    u32 stage_bit_granularity;
-    u32 stage_mask_count;
-    u32 stage_bit_cursor;
-    u64 *stage_masks;
-
-    // General - Staging
-    u64 bytes_staged;
-    u64 stage_cap;
-    u64 staging_queue;
-    VkBuffer stage;
-    void *stage_ptr;
-
-    // Bit Masks - Upload
-    u32 upload_bit_granularity;
-    u32 upload_mask_count;
-    u32 upload_bit_cursor;
-    u64 *upload_masks;
-
-    // General - Upload
-    u64 bytes_uploaded;
-    u64 upload_cap;
-    u64 upload_queue;
-    VkDeviceMemory upload;
-
-    // Transfer
-    VkBufferImageCopy2 *regions;
-    VkImageMemoryBarrier2 *img_barrs;
-    VkCopyBufferToImageInfo2 copy_info;
-    VkSemaphore upload_semaphore;
-    VkCommandBuffer upload_cmd;
-
-    // Miscellaneous
-    u64 alignment; // nonCoherentAtomSize
-    u8 flags;
-    VkCommandPool cmd_pool; // Why not ??
-    String_Buffer str_buf;
-};
 struct Tex_Allocator_Create_Info {
     u64 stage_cap;
     u64 upload_cap;

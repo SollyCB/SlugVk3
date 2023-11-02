@@ -25,7 +25,7 @@ struct Linear_Allocator {
 
         /* Every function in this section applies to the two global allocators. */
 
-// Call for instances of the global allocators. 
+// Call for instances of the global allocators.
 // These exist for the lifetime of the program.
 Heap_Allocator   *get_instance_heap();
 Linear_Allocator *get_instance_temp();
@@ -53,6 +53,13 @@ inline void free_h(void *ptr) { // Free a heap allocation
 }
 
 // Manipulate temp allocator
+inline static u64 get_used_temp() {
+    return get_instance_temp->used;
+}
+inline static void align_temp(u64 size) {
+    Linear_Allocator *temp = get_instance_temp();
+    temp->used = align(temp->used, size);
+}
 static inline void reset_temp() {
     get_instance_temp()->used = 0;
 }
