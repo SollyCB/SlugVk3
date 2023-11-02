@@ -250,7 +250,7 @@ enum class Alloc_State_Bits : u8 {
 };
 typedef u8 Alloc_State;
 struct Allocation {
-    Alloc_State state;
+    Alloc_State_Bits state;
 
     u64 stage_offset;
     u64 size;
@@ -391,7 +391,50 @@ struct Tex_Bind_Info {
     u64 alignment;
     u64 size;
 };
-struct Tex_Allocator {};
+struct Tex_Allocator {
+    u32 stage_cursor;
+    u32 upload_cursor;
+    u32 allocation_cap;
+    u32 allocation_count;
+    u32 to_stage_count;
+    u32 to_upload_count;
+
+    u32 stage_bit_granularity;
+    u32 upload_bit_granularity;
+    u32 stage_mask_count;
+    u32 upload_mask_count;
+    u64 *stage_masks;
+    u64 *upload_masks;
+    String *to_stage_uris;
+
+    Texture *textures;
+    Tex_Bind_Info *bind_infos;
+    u8 *allocation_states;
+    u64 **to_update_stage_offsets;
+    u64 **to_update_upload_offsets;
+
+    u64 stage_cap;
+    u64 upload_cap;
+    u64 staging_queue;
+    u64 upload_queue;
+    VkBuffer stage;
+    void *stage_ptr;
+    VkDeviceMemory upload;
+
+    String_Buffer string_buffer;
+    u64 optimal_copy_alignment;
+    VkBufferImageCopy *regions;
+};
+struct Tex_Allocator_Create_Info {
+    u32 stage_bit_granularity;
+    u32 upload_bit_granularity;
+    u32 allocation_cap;
+    u64 stage_byte_cap;
+    u64 upload_byte_cap;
+    VkBuffer stage;
+    void *stage_ptr;
+    VkDeviceMemory upload;
+};
     /* End Texture Allocation */
 
     /* Model Loading */

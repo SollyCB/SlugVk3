@@ -79,7 +79,7 @@ inline static Vec4 simd_acos_vec4(Vec4 *vec4) {
 } */
 
 // Assumes 'to_check' aligned 16; Assumes safe to deref 'to_check + count + 15'
-void simd_find_and_update_flags_u8(u32 count, u8 *to_update, u8 find_flags, u8 clear_flags, u8 set_flags) {
+inline static void simd_find_and_update_flags_u8(u32 count, u8 *to_update, u8 find_flags, u8 clear_flags, u8 set_flags) {
     __m128i a = _mm_load_si128((__m128i*)(to_update));
     __m128i b = _mm_set1_epi8(find_flags);
     // @Note @Todo Seems like this could be done in one less instruction
@@ -110,7 +110,7 @@ void simd_find_and_update_flags_u8(u32 count, u8 *to_update, u8 find_flags, u8 c
 }
 
 // Assumes 'to_check' aligned 16; Assumes safe to deref 'to_check + count + 15'
-u32 simd_find_flags_u8(u32 count, u8 *to_check, u8 flags, u32 *indices) {
+inline static u32 simd_find_flags_u8(u32 count, u8 *to_check, u8 flags, u32 *indices) {
     __m128i a = _mm_load_si128((__m128i*)(to_check));
     __m128i b = _mm_set1_epi8(flags);
     // @Note @Todo Seems like this could be done in one less instruction

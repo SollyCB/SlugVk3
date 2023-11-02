@@ -2,6 +2,7 @@
 #define SOL_IMAGE_HPP_INCLUDE_GUARD_
 
 #include "typedef.h"
+#include "string.hpp"
 
 struct Image {
     u32 width;
@@ -9,6 +10,6 @@ struct Image {
     u32 n_channels;
     u8 *data;
 };
-Image load_image(String file_name);
+Image load_image(String *file_name);
 
 #endif // include guard

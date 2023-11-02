@@ -50,6 +50,7 @@ add_executable(Slug
     gpu.cpp
     gltf.cpp
     string.cpp
+    image.cpp
 
     external/tlsf.cpp
 

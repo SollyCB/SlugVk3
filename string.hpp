@@ -26,7 +26,7 @@ struct String_Buffer {
     u32 len;
     u32 cap;
 };
-inline static String_Buffer create_string_buffer(u32 size, bool temp) {
+inline static String_Buffer create_string_buffer(u32 size, bool temp = false) {
     String_Buffer ret;
     ret.len = 0;
     size = align(size, 16); // Just in case of some simd
@@ -47,9 +47,10 @@ inline static String string_buffer_get_string(String_Buffer *buf, String *str) {
     ret.str = (const char*)(buf->buf + buf->len);
 
     buf->len += ret.len + 1; // +1 for null byte
-    ASSERT(buf->len <= ret.cap, "String Buffer Overflow");
+    ASSERT(buf->len <= buf->cap, "String Buffer Overflow");
     memcpy((char*)ret.str, str->str, ret.len); // copy null byte
-    ret.str[ret.len] = '\0';
+    char *tmp = (char*)ret.str;
+    tmp[ret.len] = '\0';
 
     return ret;
 }
@@ -59,7 +60,7 @@ inline static String string_buffer_get_string(String_Buffer *buf, const char *cs
     ret.str = (const char*)(buf->buf + buf->len);
 
     buf->len += ret.len + 1; // +1 for null byte
-    ASSERT(buf->len <= ret.cap, "String Buffer Overflow");
+    ASSERT(buf->len <= buf->cap, "String Buffer Overflow");
     memcpy((char*)ret.str, cstr, ret.len + 1); // copy null byte
 
     return ret;
