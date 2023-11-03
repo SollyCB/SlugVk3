@@ -21,6 +21,7 @@
 struct Settings {
     VkSampleCountFlagBits tex_samples = VK_SAMPLE_COUNT_1_BIT;
     u32 tex_mip_levels = 1;
+    float anisotropy;
 };
 static Settings global_settings = {};
 inline static Settings* get_global_settings() { return &global_settings; }
@@ -37,7 +38,7 @@ static constexpr u32 UNIFORM_BUFFER_COUNT   = 1;
 // Host memory sizes - large enough to not get a warning about allocation size being too small
 static constexpr u64 VERTEX_STAGE_SIZE      = 1048576;
 static constexpr u64 INDEX_STAGE_SIZE       = 1048576;
-static constexpr u64 TEXTURE_STAGE_SIZE     = 1048576;
+static constexpr u64 TEXTURE_STAGE_SIZE     = 1048576 * 4;
 static constexpr u64 UNIFORM_BUFFER_SIZE    = 1048576;
 
 static constexpr float VERTEX_DEVICE_SIZE   = 1048576;
@@ -296,23 +297,21 @@ struct Allocator { // @Todo Setup this type's functions to use the flags state s
     void *stage_ptr;
 
     // Upload
+    u32 to_upload_count;
     u64 upload_queue;
     u64 upload_cap;
     u64 bytes_uploaded;
     VkBuffer upload;
 
     // Transfer Info
-    VkBufferCopy2 *regions;
-    VkCopyBufferInfo2 copy_info;
-    VkMemoryBarrier2 mem_barr;
-    VkSemaphore upload_semaphore;
-    VkCommandBuffer upload_cmd;
-    //VkBufferMemoryBarrier2 buf_barr;
+    VkCommandPool graphics_pool;
+    VkCommandPool transfer_pool;
+    VkCommandBuffer graphics_cmd;
+    VkCommandBuffer transfer_cmd;
 
     // Miscellaneous
     u64 alignment;
     u8 flags;
-    VkCommandPool cmd_pool; // Why not ??
 };
 struct Allocator_Create_Info {
     u64 stage_cap;
@@ -357,7 +356,6 @@ struct Sampler { // This is potentially a bad name
     VkSampler sampler;
 };
 struct Sampler_Allocator {
-    float anisotropy;
     u32 device_cap;
 
     u32 cap;
@@ -369,10 +367,12 @@ struct Sampler_Allocator {
     u8 *weights;
 };
 // Set to cap to zero to let the allocator decide a size
-Sampler_Allocator create_sampler_allocator(u32 sampler_cap);
+Sampler_Allocator create_sampler_allocator(u32 sampler_cap, float anisotropy);
 void destroy_sampler_allocator(Sampler_Allocator *alloc);
+u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
+VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash);
 
-struct Texture {
+struct Tex_Allocation {
     String uri;
     u64 stage_offset;
     u64 upload_offset;
@@ -396,6 +396,8 @@ struct Tex_Allocator {
     u32 upload_cursor;
     u32 allocation_cap;
     u32 allocation_count;
+    u32 to_stage_cap;
+    u32 to_upload_cap;
     u32 to_stage_count;
     u32 to_upload_count;
 
@@ -407,7 +409,7 @@ struct Tex_Allocator {
     u64 *upload_masks;
     String *to_stage_uris;
 
-    Texture *textures;
+    Tex_Allocation *textures;
     Tex_Bind_Info *bind_infos;
     u8 *allocation_states;
     u64 **to_update_stage_offsets;
@@ -423,18 +425,38 @@ struct Tex_Allocator {
 
     String_Buffer string_buffer;
     u64 optimal_copy_alignment;
+
     VkBufferImageCopy *regions;
+    VkCommandPool graphics_pool;
+    VkCommandPool transfer_pool;
+    VkCommandBuffer graphics_cmd;
+    VkCommandBuffer transfer_cmd;
 };
 struct Tex_Allocator_Create_Info {
     u32 stage_bit_granularity;
     u32 upload_bit_granularity;
     u32 allocation_cap;
+    u32 to_stage_allocation_cap;
+    u32 to_upload_allocation_cap;
     u64 stage_byte_cap;
     u64 upload_byte_cap;
     VkBuffer stage;
     void *stage_ptr;
     VkDeviceMemory upload;
 };
+Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info);
+void destroy_tex_allocator(Tex_Allocator *alloc);
+
+Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri);
+
+bool tex_staging_queue_begin(Tex_Allocator *alloc);
+bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex);
+bool tex_staging_queue_submit(Tex_Allocator *alloc);
+
+bool tex_upload_queue_begin(Tex_Allocator *alloc);
+bool tex_upload_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex);
+bool tex_upload_queue_submit(Tex_Allocator *alloc);
+
     /* End Texture Allocation */
 
     /* Model Loading */
@@ -442,6 +464,7 @@ struct Model_Allocators {
     Allocator index;
     Allocator vert;
     Tex_Allocator tex;
+    Sampler_Allocator sampler;
 };
 Model_Allocators init_allocators();
 void shutdown_allocators(Model_Allocators *allocs);
@@ -458,6 +481,10 @@ struct Trs {
     Vec4 rot;
     Vec3 scale;
 };
+struct Texture {
+    Tex_Allocation *allocation;
+    u64 sampler_key;
+};
 struct Material {
     float base_factors[4];
     float metal_factor;
@@ -470,11 +497,11 @@ struct Material {
     // and the material...?? I will experiment I guess??
 
     // Texture indices
-    Texture *tex_base;
-    Texture *tex_pbr;
-    Texture *tex_norm;
-    Texture *tex_occlusion;
-    Texture *tex_emissive;
+    Texture tex_base;
+    Texture tex_pbr;
+    Texture tex_norm;
+    Texture tex_occlusion;
+    Texture tex_emissive;
     // @Todo Alpha mode
 };
 struct Primitive {

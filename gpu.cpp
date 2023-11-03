@@ -1263,7 +1263,9 @@ static u32 find_contiguous_free(u32 count, u64 *bits, u32 offset, u32 req_count)
     count -= ll_idx;
 
     u64 restore = bits[0];
-    bits[0] |= 0xffffffffffffffff >> (64 - bit_idx);
+    u64 mask = 0x01;
+    mask <<= bit_idx;
+    bits[0] |= mask - 1;
 
     u32 total_count = 0;
     for(u32 i = 0; i < count; ++i) {
@@ -1289,8 +1291,9 @@ static u32 find_contiguous_free(u32 count, u64 *bits, u32 offset, u32 req_count)
                 bits[0] = restore;
                 return idx + adj_idx;
             }
-            else
+            else {
                 continue;
+            }
         }
         u32 tz = count_trailing_zeros_u64(~tmp);
         tmp >>= tz;
@@ -1555,7 +1558,6 @@ Allocator create_allocator(Allocator_Create_Info *info) {
 
     ret.alloc_cap = info->alloc_cap;
     ret.allocs = (Allocation*)malloc_h(sizeof(Allocation) * ret.alloc_cap, 8);
-    ret.regions = (VkBufferCopy2*)malloc_h(sizeof(VkBufferCopy2) * ret.alloc_cap, 8);
 
     ret.bit_granularity = info->bit_granularity;
 
@@ -1582,49 +1584,33 @@ Allocator create_allocator(Allocator_Create_Info *info) {
         // Could early return here, as the transfer queue info is not needed if memory
         // is unified...
     }
-    if (gpu->transfer_queue_index == gpu->graphics_queue_index) {
-        ret.flags |= (u8)Flags::UNIFIED_TRANSFER;
 
-     // skip creating transfer resources, no transfers happen in the allocator if the
-     // transfer queue is not discrete. The buffer copy is submitted with other commands
-     // which use the graphics queue.
+    VkCommandPoolCreateInfo cmd_pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    cmd_pool_info.queueFamilyIndex = gpu->graphics_queue_index;
+    auto check = vkCreateCommandPool( gpu->device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.graphics_pool);
+    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
+
+    if (gpu->transfer_queue_index == gpu->graphics_queue_index) {
+        cmd_pool_info.queueFamilyIndex = gpu->transfer_queue_index;
+        check = vkCreateCommandPool( gpu->device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.transfer_pool);
+
+        ret.flags |= (u8)Flags::UNIFIED_TRANSFER;
         return ret;
     }
 
-    VkSemaphoreCreateInfo semaphore_info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    auto check = vkCreateSemaphore(
-            gpu->device,
-            &semaphore_info,
-            ALLOCATION_CALLBACKS,
-            &ret.upload_semaphore);
-    DEBUG_OBJ_CREATION(vkCreateSemaphore, check);
-
-    VkCommandPoolCreateInfo cmd_pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    cmd_pool_info.queueFamilyIndex = gpu->transfer_queue_index;
-    check = vkCreateCommandPool(
-                gpu->device,
-                &cmd_pool_info,
-                ALLOCATION_CALLBACKS,
-                &ret.cmd_pool);
-    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
-
-    VkCommandBufferAllocateInfo cmd_alloc_info = {
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    cmd_alloc_info.commandPool = ret.cmd_pool;
-    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmd_alloc_info.commandBufferCount = 1;
-    vkAllocateCommandBuffers(gpu->device, &cmd_alloc_info, &ret.upload_cmd);
 
     return ret;
 }
 void destroy_allocator(Allocator *alloc) {
     free_h(alloc->masks);
     free_h(alloc->allocs);
-    free_h(alloc->regions);
 
-    VkDevice device = get_gpu_instance()->device;
-    vkDestroyCommandPool(device, alloc->cmd_pool, ALLOCATION_CALLBACKS);
-    vkDestroySemaphore(device, alloc->upload_semaphore, ALLOCATION_CALLBACKS);
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+    vkDestroyCommandPool(device, alloc->graphics_pool, ALLOCATION_CALLBACKS);
+    if (gpu->transfer_queue_index != gpu->graphics_queue_index)
+        vkDestroyCommandPool(device, alloc->transfer_pool, ALLOCATION_CALLBACKS);
 
     *alloc = {};
 }
@@ -1659,6 +1645,10 @@ Allocation* staging_queue_submit(Allocator *alloc) {
 
     ret->size = alloc->staging_queue - alloc->bytes_staged;
 
+    #if 0
+    println("Vertex Attribute Allocation Size: %u", alloc->staging_queue);
+    #endif
+
     alloc->bytes_staged += alloc->staging_queue;
     alloc->alloc_count++;
     alloc->staging_queue = Max_u64;
@@ -1683,6 +1673,7 @@ VkBuffer upload_queue_add(Allocator *alloc, Allocation *allocation) {
     {
         allocation->state = Alloc_State_Bits::TO_UPLOAD;
         alloc->upload_queue += allocation->size;
+        alloc->to_upload_count++;
         break;
     }
     case Alloc_State_Bits::DRAWN:
@@ -1780,15 +1771,19 @@ bool upload_queue_submit(Allocator *alloc) {
     u32 region_count = 0;
     u64 upload_offset = free_block * g;
 
+    VkBufferCopy2 *regions = (VkBufferCopy2*)malloc_t(sizeof(VkBufferCopy2) * alloc->to_upload_count, 8);
     if (evict) { // We can loop tighter if there weren't evictions
         for(u32 i = 0; i < alloc->alloc_count; ++i) {
+            if (region_count == alloc->to_upload_count)
+                break;
+
             switch(alloc->allocs[i].state) {
             case Alloc_State_Bits::TO_UPLOAD:
             {
-                alloc->regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
-                alloc->regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
-                alloc->regions[region_count].dstOffset = upload_offset;
-                alloc->regions[region_count].size = alloc->allocs[i].size;
+                regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+                regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
+                regions[region_count].dstOffset = upload_offset;
+                regions[region_count].size = alloc->allocs[i].size;
 
                 alloc->allocs[i].state = Alloc_State_Bits::UPLOADED;
                 alloc->allocs[i].upload_offset = upload_offset;
@@ -1814,13 +1809,16 @@ bool upload_queue_submit(Allocator *alloc) {
         }
     } else { // Static predict no evictions to further optimise this path
         for(u32 i = 0; i < alloc->alloc_count; ++i) {
+            if (region_count == alloc->to_upload_count)
+                break;
+
             switch(alloc->allocs[i].state) {
             case Alloc_State_Bits::TO_UPLOAD:
             {
-                alloc->regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
-                alloc->regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
-                alloc->regions[region_count].dstOffset = upload_offset;
-                alloc->regions[region_count].size = alloc->allocs[i].size;
+                regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+                regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
+                regions[region_count].dstOffset = upload_offset;
+                regions[region_count].size = alloc->allocs[i].size;
 
                 alloc->allocs[i].state = Alloc_State_Bits::UPLOADED;
                 alloc->allocs[i].upload_offset = upload_offset;
@@ -1836,58 +1834,84 @@ bool upload_queue_submit(Allocator *alloc) {
     }
     alloc->bit_cursor = (upload_offset / g) + 1; // Point cursor at the end of the final upload region
 
-    alloc->copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2};
-    alloc->copy_info.srcBuffer = alloc->stage;
-    alloc->copy_info.dstBuffer = alloc->upload;
-    alloc->copy_info.regionCount = region_count;
-    alloc->copy_info.pRegions = alloc->regions;
+    VkCopyBufferInfo2 copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2};
+    copy_info.srcBuffer = alloc->stage;
+    copy_info.dstBuffer = alloc->upload;
+    copy_info.regionCount = region_count;
+    copy_info.pRegions = regions;
 
     Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmd_alloc_info.commandPool = alloc->graphics_pool;
+    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    cmd_alloc_info.commandBufferCount = 1;
+    auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmd);
+    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+
+    if (alloc->flags & (u8)Flags::UNIFIED_TRANSFER == 0) {
+        cmd_alloc_info.commandPool = alloc->transfer_pool;
+        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
+        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+    }
+
+    VkCommandBufferInheritanceInfo inheritance = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    VkCommandBufferBeginInfo cmd_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    cmd_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    cmd_begin_info.pInheritanceInfo = &inheritance;
 
     // Submit copies later with other commands that use the graphics queue
     if (alloc->flags & (u8)Flags::UNIFIED_TRANSFER) {
-        alloc->mem_barr = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-        alloc->mem_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
-        alloc->mem_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
-        alloc->mem_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
-        alloc->mem_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
+        vkBeginCommandBuffer(alloc->graphics_cmd, &cmd_begin_info);
+
+        VkMemoryBarrier2 mem_barr = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mem_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
+        mem_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
+        mem_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
+        mem_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
+
+        VkDependencyInfo dep = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &mem_barr;
+
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+
+        vkEndCommandBuffer(alloc->graphics_cmd);
 
     // Submit copies now since transfer queue is discrete
     } else {
+        vkBeginCommandBuffer(alloc->transfer_cmd, &cmd_begin_info);
+
+        vkCmdCopyBuffer2(alloc->transfer_cmd, &copy_info);
+
         VkBufferMemoryBarrier2 buf_barr = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
         buf_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
         buf_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
         buf_barr.srcQueueFamilyIndex = gpu->transfer_queue_index;
         buf_barr.dstQueueFamilyIndex = gpu->graphics_queue_index;
         buf_barr.buffer = alloc->upload;
+        buf_barr.offset = 0;
+        buf_barr.size = VK_WHOLE_SIZE;
 
         VkDependencyInfo dep_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dep_info.bufferMemoryBarrierCount = 1;
         dep_info.pBufferMemoryBarriers = &buf_barr;
 
-        VkCommandBufferBeginInfo cmd_begin = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        vkBeginCommandBuffer(alloc->upload_cmd, &cmd_begin);
+        vkCmdPipelineBarrier2(alloc->transfer_cmd, &dep_info);
 
-            vkCmdCopyBuffer2(alloc->upload_cmd, &alloc->copy_info);
-            vkCmdPipelineBarrier2(alloc->upload_cmd, &dep_info);
+        vkEndCommandBuffer(alloc->transfer_cmd);
 
-        vkEndCommandBuffer(alloc->upload_cmd);
+        vkBeginCommandBuffer(alloc->graphics_cmd, &cmd_begin_info);
 
-        VkSemaphoreSubmitInfo signal_info = {VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
-        signal_info.semaphore = alloc->upload_semaphore;
-        signal_info.stageMask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        buf_barr.srcStageMask = 0x0;
+        buf_barr.srcAccessMask = 0x0;
+        buf_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
+        buf_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
 
-        VkCommandBufferSubmitInfo cmd_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
-        cmd_info.commandBuffer = alloc->upload_cmd;
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep_info);
 
-        VkSubmitInfo2 submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
-        submit_info.commandBufferInfoCount = 1;
-        submit_info.pCommandBufferInfos = &cmd_info;
-        submit_info.signalSemaphoreInfoCount = 1;
-        submit_info.pSignalSemaphoreInfos = &signal_info;
-
-        auto check = vkQueueSubmit2(gpu->transfer_queue, 1, &submit_info, NULL);
-        DEBUG_OBJ_CREATION(vkQueueSubmit2, check);
+        vkEndCommandBuffer(alloc->graphics_cmd);
     }
 
     alloc->upload_queue = Max_u64;
@@ -1955,10 +1979,12 @@ bool upload_queue_submit(Allocator *alloc) {
 
         - 2 Nov 2023, Sol
 */
-Tex_Allocator create_texture_allocator(Tex_Allocator_Create_Info *info) {
+Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info) {
     Tex_Allocator ret = {};
     ret.allocation_cap = info->allocation_cap;
     ret.stage_cap = info->stage_byte_cap;
+    ret.to_stage_cap = info->to_stage_allocation_cap;
+    ret.to_upload_cap = info->to_upload_allocation_cap;
     ret.upload_cap = info->upload_byte_cap;
     ret.stage = info->stage;
     ret.stage_ptr = info->stage_ptr;
@@ -1968,78 +1994,130 @@ Tex_Allocator create_texture_allocator(Tex_Allocator_Create_Info *info) {
     ASSERT(info->upload_byte_cap % info->upload_bit_granularity == 0, "");
     ret.stage_bit_granularity = info->stage_bit_granularity;
     ret.upload_bit_granularity = info->upload_bit_granularity;
-    ret.stage_mask_count = ret.stage_cap / ret.stage_bit_granularity;
-    ret.upload_mask_count = ret.upload_cap / ret.upload_bit_granularity;
-    ret.stage_masks = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count, 8);
-    ret.upload_masks = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 8);
 
-    ret.string_buffer = create_string_buffer(1024);
-    ret.to_stage_uris = (String*)malloc_h(sizeof(String) * ret.allocation_cap, 8);
-    ret.to_update_stage_offsets = (u64**)malloc_h(sizeof(u64*) *  ret.allocation_cap, 8);
-    ret.to_update_upload_offsets = (u64**)malloc_h(sizeof(u64*) * ret.allocation_cap, 8);
-    ret.bind_infos = (Tex_Bind_Info*)malloc_h(sizeof(Tex_Bind_Info) * ret.allocation_cap, 8);
-    ret.textures = (Texture*)malloc_h(sizeof(Texture) * ret.allocation_cap, 8);
-    ret.allocation_states = (Alloc_State*)malloc_h(sizeof(Alloc_State) * ret.allocation_cap, 8);
-    ret.regions = (VkBufferImageCopy*)malloc_h(sizeof(VkBufferImageCopy) * ret.allocation_cap, 8);
+    ret.stage_mask_count = ret.stage_cap / (ret.stage_bit_granularity * 64);
+    ret.upload_mask_count = ret.upload_cap / (ret.upload_bit_granularity * 64);
+    println("stage_mask_count %u", ret.stage_mask_count);
+
+    ret.stage_masks              = (u64*)               malloc_h(sizeof(u64)               * ret.stage_mask_count, 8);
+    ret.upload_masks             = (u64*)               malloc_h(sizeof(u64)               * ret.upload_mask_count, 8);
+
+    memset(ret.stage_masks, 0, sizeof(u64) * ret.stage_mask_count);
+    memset(ret.upload_masks, 0, sizeof(u64) * ret.upload_mask_count);
+
+    ret.string_buffer            = create_string_buffer(1024);
+    ret.textures                 = (Tex_Allocation*)    malloc_h(sizeof(Tex_Allocation)    * ret.allocation_cap, 8);
+    ret.allocation_states        = (Alloc_State*)       malloc_h(sizeof(Alloc_State)       * ret.allocation_cap, 8);
+
+    ret.to_stage_uris            = (String*)            malloc_h(sizeof(String)            * ret.to_stage_cap,   8);
+    ret.to_update_stage_offsets  = (u64**)              malloc_h(sizeof(u64*)              * ret.to_stage_cap,   8);
+    ret.to_update_upload_offsets = (u64**)              malloc_h(sizeof(u64*)              * ret.to_upload_cap,  8);
+
+    ret.bind_infos               = (Tex_Bind_Info*)     malloc_h(sizeof(Tex_Bind_Info)     * ret.to_upload_cap,  8);
+    ret.regions                  = (VkBufferImageCopy*) malloc_h(sizeof(VkBufferImageCopy) * ret.to_upload_cap,  8);
+
+    println("Tex_Allocator Memory Footprint:");
+    println("               string_buffer: %u", 1024);
+    println("                 stage_masks: %u", sizeof(u64) * ret.stage_mask_count);
+    println("                upload_masks: %u", sizeof(u64) * ret.upload_mask_count);
+    println("                    textures: %u", sizeof(Tex_Allocation)    * ret.allocation_cap);
+    println("           allocation_states: %u", sizeof(Alloc_State)       * ret.allocation_cap);
+
+    println("               to_stage_uris: %u", sizeof(String)            * ret.to_stage_cap);
+    println("     to_update_stage_offsets: %u", sizeof(u64*)              * ret.to_stage_cap);
+    println("    to_update_upload_offsets: %u", sizeof(u64*)              * ret.to_upload_cap);
+    println("                  bind_infos: %u", sizeof(Tex_Bind_Info)     * ret.to_upload_cap);
+    println("                     regions: %u", sizeof(VkBufferImageCopy) * ret.to_upload_cap);
+
+    u64 total_mem_footprint = 0;
+
+    total_mem_footprint += 1024;
+
+    total_mem_footprint += sizeof(u64) * ret.stage_mask_count;
+    total_mem_footprint += sizeof(u64) * ret.upload_mask_count;
+
+    total_mem_footprint += sizeof(Tex_Allocation)    * ret.allocation_cap;
+    total_mem_footprint += sizeof(Alloc_State)       * ret.allocation_cap;
+
+    total_mem_footprint += sizeof(String)            * ret.to_stage_cap;
+    total_mem_footprint += sizeof(u64*)              * ret.to_stage_cap;
+    total_mem_footprint += sizeof(u64*)              * ret.to_upload_cap;
+    total_mem_footprint += sizeof(Tex_Bind_Info)     * ret.to_upload_cap;
+    total_mem_footprint += sizeof(VkBufferImageCopy) * ret.to_upload_cap;
+
+    println("    Total Memory Footprint: %u", total_mem_footprint);
 
     Gpu *gpu = get_gpu_instance();
     ret.optimal_copy_alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
 
+    VkDevice device = gpu->device;
+    VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = gpu->graphics_queue_index;
+    auto check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &ret.graphics_pool);
+
+    if (gpu->graphics_queue_index != gpu->transfer_queue_index) {
+        pool_info.queueFamilyIndex = gpu->transfer_queue_index;
+        check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &ret.transfer_pool);
+    }
+
     return ret;
 }
-void destroy_texture_allocator(Tex_Allocator *alloc) {
+void destroy_tex_allocator(Tex_Allocator *alloc) {
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    vkDestroyCommandPool(device, alloc->graphics_pool, ALLOCATION_CALLBACKS);
+    if (gpu->transfer_queue_index != gpu->graphics_queue_index)
+        vkDestroyCommandPool(device, alloc->transfer_pool, ALLOCATION_CALLBACKS);
+
+    for(u32 i = 0; i < alloc->allocation_count; ++i)
+        vkDestroyImage(device, alloc->textures[i].img, ALLOCATION_CALLBACKS);
+
     destroy_string_buffer(&alloc->string_buffer);
-    free_h(alloc->to_update_stage_offsets);
-    free_h(alloc->to_update_upload_offsets);
-    free_h(alloc->bind_infos);
+
+    free_h(alloc->stage_masks);
+    free_h(alloc->upload_masks);
     free_h(alloc->textures);
     free_h(alloc->allocation_states);
+
+    free_h(alloc->to_stage_uris);
+    free_h(alloc->to_update_stage_offsets);
+    free_h(alloc->to_update_upload_offsets);
+
+    free_h(alloc->bind_infos);
     free_h(alloc->regions);
+
     *alloc = {};
 }
 
-Texture* tex_add(Tex_Allocator *alloc, String *uri) {
-    ASSERT(alloc->allocation_cap == alloc->allocation_count, "Tex Allocator Overflow");
+Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri) {
+    ASSERT(alloc->allocation_cap != alloc->allocation_count, "Tex Allocator Overflow");
     if (alloc->allocation_cap == alloc->allocation_count)
         return NULL;
 
-    Texture *tex = &alloc->textures[alloc->allocation_count];
+    Tex_Allocation *tex = &alloc->textures[alloc->allocation_count];
     tex->state = alloc->allocation_count;
 
     u64 mark = get_mark_temp();
+    println("Image Uri: %c", uri->str);
     Image img = load_image(uri);
     tex->uri = string_buffer_get_string(&alloc->string_buffer, uri);
     tex->width = img.width;
     tex->height = img.height;
+    println("img.width, img.height : %u, %u", img.width, img.height);
     tex->n_channels = img.n_channels;
 
     VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
-    info.extent = {.width = img.width, .height = img.height, .depth = 0};
+    info.extent = {.width = img.width, .height = img.height, .depth = 1};
     info.mipLevels = 1;
     info.arrayLayers = 1;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    switch(img.n_channels) {
-    case 1:
-        info.format = VK_FORMAT_R8_SRGB;
-        break;
-    case 2:
-        info.format = VK_FORMAT_R8G8_SRGB;
-        break;
-    case 3:
-        info.format = VK_FORMAT_R8G8B8_SRGB;
-        break;
-    case 4:
-        info.format = VK_FORMAT_R8G8B8A8_SRGB;
-        break;
-    default:
-        ASSERT(false, "Invalid Image Channel Count");
-        return NULL;
-    }
+    info.format = VK_FORMAT_R8G8B8A8_SRGB;
 
     VkDevice device = get_gpu_instance()->device;
     auto check = vkCreateImage(device, &info, ALLOCATION_CALLBACKS, &tex->img);
@@ -2053,10 +2131,19 @@ Texture* tex_add(Tex_Allocator *alloc, String *uri) {
     // If there is enough space in the staging buffer, then copy in the image data since it is already in memory.
     // Add first used textures first, as here they are sort of cached.
     u32 g = alloc->stage_bit_granularity;
-    u32 adj_size = (align(tex->width * tex->height, alloc->optimal_copy_alignment) / g) + 1;
+
+    // should not need to worry about the divide rounding down and cutting off size, as g should be aligned to
+    // the optimal copy offset also, so remainder is 0.
+    u32 adj_size = align(tex->width * tex->height * 4, alloc->optimal_copy_alignment) / g;
     u32 free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, alloc->stage_cursor, adj_size);
+
+    #if 0
+    println("Image Size %u", tex->width * tex->height * 4);
+    println("Free Block Bit Index = %u", free_block);
+    #endif
+
     if (free_block != Max_u32) {
-        memcpy((u8*)alloc->stage_ptr + (free_block * g), img.data, img.width * img.height);
+        memcpy((u8*)alloc->stage_ptr + (free_block * g), img.data, img.width * img.height * 4);
         make_full(alloc->stage_mask_count, alloc->stage_masks, free_block, adj_size);
         // Mark these allocations as drawn to allow them to be evicted.
         alloc->allocation_states[alloc->allocation_count] |= (Alloc_State)Alloc_State_Bits::STAGED;
@@ -2070,20 +2157,20 @@ Texture* tex_add(Tex_Allocator *alloc, String *uri) {
     return tex;
 }
 bool tex_staging_queue_begin(Tex_Allocator *alloc) {
-    if (alloc->staging_queue != Max_u32)
+    if (alloc->staging_queue != Max_u64)
         return false;
     alloc->staging_queue = 0;
     return true;
 }
-bool tex_staging_queue_add(Tex_Allocator *alloc, Texture *tex) {
+bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex) {
     if (alloc->allocation_states[tex->state] & (Alloc_State)Alloc_State_Bits::STAGED) {
         alloc->allocation_states[tex->state] &= ~(Alloc_State)Alloc_State_Bits::DRAWN;
         return true;
     }
 
-    u64 size = align(tex->width * tex->height, alloc->optimal_copy_alignment);
+    u64 size = align(tex->width * tex->height * 4, alloc->optimal_copy_alignment);
     alloc->staging_queue = align(alloc->staging_queue, alloc->optimal_copy_alignment);
-    if (alloc->staging_queue + size > alloc->stage_cap)
+    if (alloc->staging_queue + size > alloc->stage_cap || alloc->to_stage_cap == alloc->to_stage_count)
         return false;
 
     alloc->staging_queue += size;
@@ -2126,7 +2213,7 @@ bool tex_staging_queue_submit(Tex_Allocator *alloc) {
             // @Note although this looks pretty cache unfriendly, in reality allocations should be drawn together
             // and uploaded together, so the indices in 'indices' should actually be a tight group.
             for(u32 i = 0; i < drawn_staged_count; ++i) {
-                adj_size = (align(alloc->textures[indices[i]].width * alloc->textures[indices[i]].height,
+                adj_size = (align(alloc->textures[indices[i]].width * alloc->textures[indices[i]].height * 4,
                             alloc->optimal_copy_alignment) / g) + 1;
                 adj_offset = alloc->textures[indices[i]].stage_offset / g;
                 make_free(alloc->stage_mask_count, alloc->stage_masks, adj_offset, adj_size);
@@ -2162,7 +2249,7 @@ bool tex_staging_queue_submit(Tex_Allocator *alloc) {
     // This also means that the overwritten ranges should contain tight allocations, so the branch should be
     // relatively predictable (nothing for while, a few hits, nothing to loop end).
     for(u32 i = 0; i < drawn_staged_count; ++i) {
-        adj_size = (align(alloc->textures[indices[i]].width * alloc->textures[indices[i]].height,
+        adj_size = (align(alloc->textures[indices[i]].width * alloc->textures[indices[i]].height * 4,
                     alloc->optimal_copy_alignment) / g) + 1;
         adj_offset = alloc->textures[indices[i]].stage_offset / g;
 
@@ -2204,24 +2291,24 @@ bool tex_staging_queue_submit(Tex_Allocator *alloc) {
             (Alloc_State)Alloc_State_Bits::STAGED);
 
     alloc->to_stage_count = 0;
-    alloc->staging_queue = Max_u32; // Indicate it is safe to use stage queue again
+    alloc->staging_queue = Max_u64; // Indicate it is safe to use stage queue again
     return true;
 }
 bool tex_upload_queue_begin(Tex_Allocator *alloc) {
-    if (alloc->upload_queue != Max_u32)
+    if (alloc->upload_queue != Max_u64)
         return false;
 
     alloc->upload_queue = 0;
     return true;
 }
-bool tex_upload_queue_add(Tex_Allocator *alloc, Texture *tex) {
+bool tex_upload_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex) {
     if (alloc->allocation_states[tex->state] & (Alloc_State)Alloc_State_Bits::UPLOADED) {
         alloc->allocation_states[tex->state] &= ~(Alloc_State)Alloc_State_Bits::DRAWN;
         return true;
     }
 
     alloc->upload_queue = align(alloc->upload_queue, tex->alignment);
-    if (alloc->upload_queue + tex->size > alloc->upload_cap)
+    if (alloc->upload_queue + tex->size > alloc->upload_cap || alloc->to_upload_cap == alloc->to_upload_count)
         return false;
 
     alloc->upload_queue += tex->size;
@@ -2250,7 +2337,7 @@ bool tex_upload_queue_add(Tex_Allocator *alloc, Texture *tex) {
     alloc->to_upload_count++;
     return true;
 }
-void recreate_images(Tex_Allocator *alloc); // Defined below submit func
+static void recreate_images(Tex_Allocator *alloc); // Defined below submit func
 bool tex_upload_queue_submit(Tex_Allocator *alloc) {
 
     // Find textures in drawn + uploaded state (used further below without branch, so find once here, I can't really
@@ -2313,7 +2400,8 @@ bool tex_upload_queue_submit(Tex_Allocator *alloc) {
     }
 
     u64 upload_offset = free_block * g; // g must be aligned to a size which fulfills any alignment requirement
-    VkDevice device = get_gpu_instance()->device;
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
     VkBindImageMemoryInfo *bind_infos =
         (VkBindImageMemoryInfo*)malloc_t(sizeof(VkBindImageMemoryInfo) * alloc->allocation_count, 8);
     for(u32 i = 0; i < alloc->to_upload_count; ++i) {
@@ -2341,8 +2429,22 @@ bool tex_upload_queue_submit(Tex_Allocator *alloc) {
     // This also means that the overwritten ranges should contain tight allocations, so the branch should be
     // relatively predictable (nothing for while, a few hits, nothing to loop end).
     for(u32 i = 0; i < drawn_uploaded_count; ++i) {
-        // @Note This could be optimized better by separating out 'Texture' data so
-        // that it is packed better for this check. The way it is, some useless memory will be being loaded.
+        // @Note This could be optimized better by separating out 'Texture' data into some other storage so
+        // that it is packed better for this check. The way it is, lots of useless memory will be being loaded.
+        // Something like this would be more efficient:
+        /*
+            struct Tex_Range {
+                u64 offset;
+                u64 size;
+            };
+        */
+        //
+        // This loop and the one in the above section which marks drawn ranges are the only really ugly sections
+        // of this allocator now. There is a double deref when updating offsets, but that is not soo bad I think.
+        // That double deref would the second port of call. But right now this loop and the one mentioned above
+        // are a really gripe. I would very much like to make a better thing for this... Tbf it isnt awful,
+        // as these indices will be increasing (they are not random), and the drawn + uploaded textures should be
+        // close in memory, but still.
         adj_size = (alloc->textures[indices[i]].size / g) + 1;
         adj_offset = alloc->textures[indices[i]].upload_offset / g;
 
@@ -2358,28 +2460,167 @@ bool tex_upload_queue_submit(Tex_Allocator *alloc) {
             (Alloc_State)Alloc_State_Bits::UPLOADED);
 
     //
-    // @Todo Create image memory barriers; check transfer requirements; do transfer + copy if necessary
+    // @Todo I really need to learn about buffer image copies, the sync example comments
+    // make it seem like I can use one image for multiple textures, so then I can do buffer copies
+    // with single copy commands, but I cannot tell if this is the case: I can't figure out how
+    // you would do this? Because you can specify image copy regions in a buffer copy, but then
+    // in order to use the image, you would then need to use offsets, but I cannot see where
+    // these offsets can be used. Plus I do not know what effects optimal tiling has etc...
     //
 
+    // @Note Should this be changed to record barriers into secondary command buffers rather than spitting
+    // out the barrier info?
+
+    VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmd_alloc_info.commandPool = alloc->graphics_pool;
+    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    cmd_alloc_info.commandBufferCount = 1;
+
+    auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmd);
+    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+
+    u32 transfer_queue_idx = gpu->transfer_queue_index;
+    u32 graphics_queue_idx = gpu->graphics_queue_index;
+
+    if (transfer_queue_idx != graphics_queue_idx) {
+        cmd_alloc_info.commandPool = alloc->transfer_pool;
+        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
+        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+    }
+
+    VkImageMemoryBarrier2 *img_barrs =
+        (VkImageMemoryBarrier2*)malloc_t(sizeof(VkImageMemoryBarrier2) * alloc->to_upload_count, 8);
+
+    // Transition for buffer copy
+    for(u32 i = 0; i < alloc->to_upload_count; ++i) {
+        img_barrs[i] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        img_barrs[i].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
+        img_barrs[i].dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
+        img_barrs[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        img_barrs[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        img_barrs[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        img_barrs[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        img_barrs[i].image = alloc->bind_infos[i].img;
+        img_barrs[i].subresourceRange = {
+            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+    }
+
+    // Record copy commands + transitions
+    VkCommandBufferInheritanceInfo inheritance = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    begin_info.pInheritanceInfo = &inheritance;
+
+    VkDependencyInfo dep = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = alloc->to_upload_count;
+    dep.pImageMemoryBarriers = img_barrs;
+
+    if (transfer_queue_idx == graphics_queue_idx) {
+
+        vkBeginCommandBuffer(alloc->graphics_cmd, &begin_info);
+
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+
+        for(u32 i = 0; i < alloc->to_upload_count; ++i)
+            vkCmdCopyBufferToImage(
+                    alloc->graphics_cmd,
+                    alloc->stage,
+                    alloc->bind_infos[i].img,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &alloc->regions[i]); // @Note Can multiple textures be stored in one img?
+
+        // Transition for reading in shader
+        for(u32 i = 0; i < alloc->to_upload_count; ++i) {
+            img_barrs[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR,
+            img_barrs[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR,
+            img_barrs[i].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
+            img_barrs[i].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT_KHR;
+            img_barrs[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            img_barrs[i].newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+        }
+
+        // Shader read transition
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+
+        vkEndCommandBuffer(alloc->graphics_cmd);
+
+    } else {
+
+        vkBeginCommandBuffer(alloc->transfer_cmd, &begin_info);
+
+        // Copy to transition
+        vkCmdPipelineBarrier2(alloc->transfer_cmd, &dep);
+
+        for(u32 i = 0; i < alloc->to_upload_count; ++i)
+            vkCmdCopyBufferToImage(
+                    alloc->transfer_cmd,
+                    alloc->stage,
+                    alloc->bind_infos[i].img,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &alloc->regions[i]); // @Note Can multiple textures be stored in one img?
+
+        // Transition for reading in shader + begin queue transfer
+        for(u32 i = 0; i < alloc->to_upload_count; ++i) {
+            img_barrs[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR,
+            img_barrs[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR,
+            img_barrs[i].dstStageMask = 0x0;
+            img_barrs[i].dstAccessMask = 0x0;
+            img_barrs[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            img_barrs[i].newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+            img_barrs[i].srcQueueFamilyIndex = transfer_queue_idx;
+            img_barrs[i].dstQueueFamilyIndex = graphics_queue_idx;
+        }
+
+        // Shader read transition + queue transfer
+        vkCmdPipelineBarrier2(alloc->transfer_cmd, &dep);
+
+        vkEndCommandBuffer(alloc->transfer_cmd);
+
+        // Record queue ownership transfer barrier finalisation
+        vkBeginCommandBuffer(alloc->graphics_cmd, &begin_info);
+
+        // Complete shader read transition + queue transfer
+        for(u32 i = 0; i < alloc->to_upload_count; ++i) {
+            img_barrs[i].srcStageMask = 0x0;
+            img_barrs[i].srcAccessMask = 0x0;
+            img_barrs[i].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
+            img_barrs[i].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT_KHR;
+            img_barrs[i].srcQueueFamilyIndex = transfer_queue_idx;
+            img_barrs[i].dstQueueFamilyIndex = graphics_queue_idx;
+        }
+
+        // Shader read transition + queue transfer
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+
+        vkEndCommandBuffer(alloc->graphics_cmd);
+    }
+
     alloc->to_upload_count = 0;
-    alloc->upload_queue = Max_u32; // Indicate it is safe to use upload queue again
+    alloc->upload_queue = Max_u64; // Indicate it is safe to use upload queue again
     return true;
 }
 void recreate_images(Tex_Allocator *alloc) {
     VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     VkDevice device = get_gpu_instance()->device;
     VkResult check;
-    Texture *tex;
+    Tex_Allocation *tex;
     for(u32 i = 0; i < alloc->allocation_count; ++i) {
         tex = &alloc->textures[i];
 
         info.imageType = VK_IMAGE_TYPE_2D;
-        info.extent = {.width = tex->width, .height = tex->height, .depth = 0};
+        info.extent = {.width = tex->width, .height = tex->height, .depth = 1};
         info.mipLevels = 1;
         info.arrayLayers = 1;
         info.samples = VK_SAMPLE_COUNT_1_BIT;
         info.tiling = VK_IMAGE_TILING_OPTIMAL;
-        info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+        info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
         switch(tex->n_channels) {
@@ -2407,7 +2648,7 @@ void recreate_images(Tex_Allocator *alloc) {
 }
 
         /* Sampler Allocator */
-Sampler_Allocator create_sampler_allocator(u32 cap, float anisotropy) {
+Sampler_Allocator create_sampler_allocator(u32 cap) {
     Sampler_Allocator ret = {};
 
     u64 device_cap = get_gpu_instance()->info.props.limits.maxSamplerAllocationCount;
@@ -2416,7 +2657,6 @@ Sampler_Allocator create_sampler_allocator(u32 cap, float anisotropy) {
     else
         ret.cap = align(device_cap, 16); // malloc'd size must be aligned to 16 for correct_weights() simd
 
-    ret.anisotropy = anisotropy;
     ret.device_cap = device_cap;
     ret.map = HashMap<u64, Sampler>::get(ret.cap);
 
@@ -2466,14 +2706,15 @@ VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
 
     correct_weights(alloc->count, alloc->weights, alloc->hashes, h_idx, 5, 1);
     Sampler *info = alloc->map.find_hash(hash);
+    float anisotropy = get_global_settings()->anisotropy;
     if (!info->sampler) {
         VkSamplerCreateInfo create_info = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         create_info.magFilter = info->mag_filter;
         create_info.minFilter = info->min_filter;
         create_info.addressModeU = info->wrap_s;
         create_info.addressModeV = info->wrap_t;
-        create_info.anisotropyEnable = alloc->anisotropy > 0 ? VK_TRUE : VK_FALSE;
-        create_info.maxAnisotropy = alloc->anisotropy;
+        create_info.anisotropyEnable = anisotropy > 0 ? VK_TRUE : VK_FALSE;
+        create_info.maxAnisotropy = anisotropy;
 
         VkDevice device = get_gpu_instance()->device;
         if (alloc->active == alloc->device_cap) {
@@ -2516,13 +2757,38 @@ Model_Allocators init_allocators() {
     allocator_info.upload = gpu->memory.index_buf_device;
     Allocator index_allocator = create_allocator(&allocator_info);
 
-    Model_Allocators ret = {.index = index_allocator, .vert = vertex_allocator};
+    Tex_Allocator_Create_Info tex_allocator_info = {};
+    tex_allocator_info.allocation_cap = 256;
+    tex_allocator_info.stage_byte_cap = gpu::TEXTURE_STAGE_SIZE;
+    tex_allocator_info.upload_byte_cap = gpu::TEXTURE_DEVICE_SIZE;
+    tex_allocator_info.stage = gpu->memory.texture_bufs_stage[0];
+    tex_allocator_info.stage_ptr = gpu->memory.tex_ptrs[0];
+    tex_allocator_info.upload = gpu->memory.texture_mem_device;
+
+    tex_allocator_info.stage_bit_granularity = 256;
+    tex_allocator_info.upload_bit_granularity = 256;
+
+    tex_allocator_info.to_stage_allocation_cap =  128;
+    tex_allocator_info.to_upload_allocation_cap = 128;;
+
+    Tex_Allocator tex_allocator = create_tex_allocator(&tex_allocator_info);
+
+    Sampler_Allocator sampler = create_sampler_allocator(0);
+
+    Model_Allocators ret = {
+        .index = index_allocator,
+        .vert = vertex_allocator,
+        .tex = tex_allocator,
+        .sampler = sampler,
+    };
+
     return ret;
 }
 void shutdown_allocators(Model_Allocators *allocs) {
     destroy_allocator(&allocs->index);
     destroy_allocator(&allocs->vert);
-    // destroy tex
+    destroy_tex_allocator(&allocs->tex);
+    destroy_sampler_allocator(&allocs->sampler);
 }
 
 /*
@@ -2566,12 +2832,13 @@ struct Buffer_View {
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir) {
     u64 mark = get_mark_temp();
 
-    char tmp_uri[127];
-    memcpy(tmp_uri, dir->str, dir->len);
-    memcpy(&tmp_uri[0] + dir->len, model_name->str, model_name->len);
-    tmp_uri[dir->len + model_name->len] = '\0';
+    String tmp_uri;
+    char uri_buffer[127];
+    memcpy(uri_buffer, dir->str, dir->len);
+    memcpy(&uri_buffer[0] + dir->len, model_name->str, model_name->len);
+    uri_buffer[dir->len + model_name->len] = '\0';
 
-    Gltf gltf = parse_gltf(tmp_uri);
+    Gltf gltf = parse_gltf(uri_buffer);
 
     Gltf_Mesh *gltf_mesh;
     Gltf_Mesh_Primitive *gltf_prim;
@@ -2703,10 +2970,10 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     ASSERT(gltf_buffer_get_count(&gltf) == 1, "Too Many Buffers");
     Gltf_Buffer *gltf_buf = gltf.buffers;
 
-    memcpy(tmp_uri, dir->str, dir->len);
-    strcpy(&tmp_uri[0] + dir->len, gltf_buf->uri);
+    memcpy(uri_buffer, dir->str, dir->len);
+    strcpy(&uri_buffer[0] + dir->len, gltf_buf->uri);
 
-    const u8 *buf = file_read_bin_temp_large(tmp_uri, gltf_buf->byte_length);
+    const u8 *buf = file_read_bin_temp_large(uri_buffer, gltf_buf->byte_length);
 
     Gltf_Buffer_View *gltf_view = gltf.buffer_views;
     void *ptr;
@@ -2775,12 +3042,13 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 
-    #if 0
+    #if 1
     // Load Material Data
     Gltf_Material *gltf_mat = gltf.materials;
     Gltf_Texture *gltf_tex;
     Gltf_Sampler *gltf_sampler;
     Gltf_Image *gltf_image;
+    Sampler sampler_info;
     for(u32 i = 0; i < mat_count; ++i) {
 
         ret.mats[i].base_factors[0] = gltf_mat->base_color_factor[0];
@@ -2801,6 +3069,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         // @Todo alpha settings
         //
 
+        // *** Older comment: ***
         // Texture method:
         //     Add textures to an array.
         //     Material stores the index to the texture. As textures are quite expensive,
@@ -2811,73 +3080,97 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         //
         //     I like the vertex data being handled by the model fine, but textures should
         //     work differently.
-        memcpy(tmp_uri, dir->str, dir->len);
+        memcpy(uri_buffer, dir->str, dir->len);
 
 
         // base
-        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->base_color_texture_index);
-        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
-        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
+        if (gltf_mat->base_color_texture_index != -1) {
+            gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->base_color_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
 
-        ret.mats[i].tex_base = tex_add(allocs->tex, cstr_to_string(tmp_uri));
-        ret.mats[i].tex_base->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-        ret.mats[i].tex_base->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-        ret.mats[i].tex_base->mag_filter = (VkFilter)gltf_sampler->mag_filter;
-        ret.mats[i].tex_base->min_filter = (VkFilter)gltf_sampler->min_filter;
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+            ret.mats[i].tex_base.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            ret.mats[i].tex_base.allocation = tex_add(&allocs->tex, &tmp_uri);
+        }
 
 
         // metallic roughness
-        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->metallic_roughness_texture_index);
-        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
-        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
+        if (gltf_mat->metallic_roughness_texture_index != -1) {
+            gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->metallic_roughness_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
 
-        ret.mats[i].tex_pbr = tex_add(allocs->tex, cstr_to_string(tmp_uri));
-        ret.mats[i].tex_pbr->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-        ret.mats[i].tex_pbr->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-        ret.mats[i].tex_pbr->mag_filter = (VkFilter)gltf_sampler->mag_filter;
-        ret.mats[i].tex_pbr->min_filter = (VkFilter)gltf_sampler->min_filter;
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+            ret.mats[i].tex_pbr.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            ret.mats[i].tex_pbr.allocation = tex_add(&allocs->tex, &tmp_uri);
+        }
 
 
         // normal
-        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->normal_texture_index);
-        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
-        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
+        if (gltf_mat->normal_texture_index != -1) {
+            gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->normal_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
 
-        ret.mats[i].tex_norm = tex_add(allocs->tex, cstr_to_string(tmp_uri));
-        ret.mats[i].tex_norm->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-        ret.mats[i].tex_norm->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-        ret.mats[i].tex_norm->mag_filter = (VkFilter)gltf_sampler->mag_filter;
-        ret.mats[i].tex_norm->min_filter = (VkFilter)gltf_sampler->min_filter;
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+            ret.mats[i].tex_norm.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            ret.mats[i].tex_norm.allocation = tex_add(&allocs->tex, &tmp_uri);
+        }
 
 
         // occlusion
-        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->occlusion_texture_index);
-        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
-        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
+        if (gltf_mat->occlusion_texture_index != -1) {
+            gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->occlusion_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
 
-        ret.mats[i].tex_occlusion = tex_add(allocs->tex, cstr_to_string(tmp_uri));
-        ret.mats[i].tex_occlusion->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-        ret.mats[i].tex_occlusion->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-        ret.mats[i].tex_occlusion->mag_filter = (VkFilter)gltf_sampler->mag_filter;
-        ret.mats[i].tex_occlusion->min_filter = (VkFilter)gltf_sampler->min_filter;
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+            ret.mats[i].tex_occlusion.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            ret.mats[i].tex_occlusion.allocation = tex_add(&allocs->tex, &tmp_uri);
+        }
 
 
         // emissive
-        gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->emissive_texture_index);
-        gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-        gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
-        strcpy(&tmp_uri[0] + dir->len, gltf_image->uri);
+        if (gltf_mat->emissive_texture_index != -1) {
+            gltf_tex = gltf_texture_by_index(&gltf, gltf_mat->emissive_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image = gltf_image_by_index(&gltf, gltf_tex->source_image);
 
-        ret.mats[i].tex_emissive = tex_add(allocs->tex, cstr_to_string(tmp_uri));
-        ret.mats[i].tex_emissive->wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-        ret.mats[i].tex_emissive->wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-        ret.mats[i].tex_emissive->mag_filter = (VkFilter)gltf_sampler->mag_filter;
-        ret.mats[i].tex_emissive->min_filter = (VkFilter)gltf_sampler->min_filter;
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
 
+            sampler_info.wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+            ret.mats[i].tex_emissive.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            ret.mats[i].tex_emissive.allocation = tex_add(&allocs->tex, &tmp_uri);
+        }
 
         gltf_mat = (Gltf_Material*)((u8*)gltf_mat + gltf_mat->stride);
     }
