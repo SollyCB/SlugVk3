@@ -3,13 +3,14 @@
 
 #include "typedef.h"
 #include "string.hpp"
+#include "stb_image.h"
 
 struct Image {
     u32 width;
     u32 height;
-    u32 n_channels;
     u8 *data;
 };
 Image load_image(String *file_name);
+inline static void free_image(Image *image) { stbi_image_free(image->data); }
 
 #endif // include guard

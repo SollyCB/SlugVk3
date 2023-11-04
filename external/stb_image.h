@@ -1,3 +1,13 @@
+/*                                              ** WARNING **
+
+   The below define false disabled zexpand and gif_load_main functions. Their realloc usages were causing compile
+   errors. As I am not using them now and do not intend to use them in the future, I took the easy route. Just grep
+   for the define.
+
+*/
+
+#define SOL_DISABLED_STBI_FUNC false
+
 /* stb_image - v2.28 - public domain image loader - http://nothings.org/stb
                                   no warranty implied; use at your own risk
 
@@ -4258,6 +4268,7 @@ stbi_inline static int stbi__zhuffman_decode(stbi__zbuf *a, stbi__zhuffman *z)
 
 static int stbi__zexpand(stbi__zbuf *z, char *zout, int n)  // need to make room for n bytes
 {
+    #if SOL_DISABLED_STBI_FUNC
    char *q;
    unsigned int cur, limit, old_limit;
    z->zout = zout;
@@ -4276,6 +4287,8 @@ static int stbi__zexpand(stbi__zbuf *z, char *zout, int n)  // need to make room
    z->zout       = q + cur;
    z->zout_end   = q + limit;
    return 1;
+   #endif
+   return -1;
 }
 
 static const int stbi__zlength_base[31] = {
@@ -6961,6 +6974,7 @@ static void *stbi__load_gif_main_outofmem(stbi__gif *g, stbi_uc *out, int **dela
 
 static void *stbi__load_gif_main(stbi__context *s, int **delays, int *x, int *y, int *z, int *comp, int req_comp)
 {
+#if SOL_DISABLED_STBI_FUNC
    if (stbi__gif_test(s)) {
       int layers = 0;
       stbi_uc *u = 0;
@@ -7042,6 +7056,8 @@ static void *stbi__load_gif_main(stbi__context *s, int **delays, int *x, int *y,
    } else {
       return stbi__errpuc("not GIF", "Image was not as a gif type.");
    }
+#endif
+   return NULL;
 }
 
 static void *stbi__gif_load(stbi__context *s, int *x, int *y, int *comp, int req_comp, stbi__result_info *ri)

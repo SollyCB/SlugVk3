@@ -42,18 +42,29 @@ int main() {
     // Load Models
     gpu::model::Model_Allocators model_allocs = gpu::model::init_allocators();
 
-    String model_dir = cstr_to_string("models/cesium-man/");
+    String model_dirs[] = {
+        cstr_to_string("models/cube-static/"),
+        cstr_to_string("models/cesium-man/"),
+    };
+    String model_files[] = {
+        cstr_to_string("Cube.gltf"),
+        cstr_to_string("CesiumMan.gltf"),
+    };
 
-    String model_files[] = {cstr_to_string("CesiumMan.gltf")};
+    u32 model_count = 2;
+    gpu::model::Static_Model *models =
+        (gpu::model::Static_Model*)malloc_h(sizeof(gpu::model::Static_Model) * model_count, 8);
 
-    gpu::model::Static_Model model =
-        load_static_model(&model_allocs, &model_files[0], &model_dir);
+    for(u32 i = 0; i < model_count; ++i)
+        models[i] = load_static_model(&model_allocs, &model_files[i], &model_dirs[i]);
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);
     }
 
-    free_static_model(&model);
+    for(u32 i = 0; i < model_count; ++i)
+        free_static_model(&models[i]);
+    free_h(models);
 
     gpu::model::shutdown_allocators(&model_allocs);
     gpu::destroy_descriptor_sets(&basic_set_allocation);

@@ -384,7 +384,6 @@ struct Tex_Allocation {
     u32 width;
     u32 height;
     u32 state;
-    u32 n_channels;
 };
 struct Tex_Bind_Info {
     VkImage img;

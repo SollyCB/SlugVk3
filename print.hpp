@@ -22,12 +22,13 @@ static inline s32 print_parse_signed_int(const char *str, u32 len, char *buf, s6
     if (num < 0) {
         buf[0] = '-';
         buf++;
+        end++;
         num = -num;
     }
 
     char c;
     u8 val;
-    while(num >= 0) {
+    while(num > 0) {
         val = num % 10;
         num /= 10;
         switch(val) {
@@ -92,8 +93,7 @@ static inline s32 print_parse_signed_int(const char *str, u32 len, char *buf, s6
     for(int i = 0; i < end; ++i) {
         buf[i] = rev[(end - 1) - i];
     }
-    
-    return end + 1;
+    return end;
 }
 static inline s32 print_parse_unsigned_int(const char *str, u32 len, char *buf, u64 num) {
     u32 end = 0;
@@ -191,7 +191,7 @@ static void println(const char* str, ...) {
 
     u64 len = strlen(str);
     s32 size;
-    
+
     s64 s;
     u64 u;
     const char *cstr;
@@ -223,7 +223,7 @@ static void println(const char* str, ...) {
             continue;
         }
         skip = false;
-        
+
         i++;
         switch(str[i]) {
         case 's':
@@ -268,7 +268,7 @@ static void print(const char* str, ...) {
 
     u64 len = strlen(str);
     s32 size;
-    
+
     s64 s;
     u64 u;
     const char *cstr;
@@ -300,7 +300,7 @@ static void print(const char* str, ...) {
             continue;
         }
         skip = false;
-        
+
         i++;
         switch(str[i]) {
         case 's':
@@ -334,5 +334,85 @@ static void print(const char* str, ...) {
     buf[buf_index] = '\0';
     printf("%s", buf);
 }
+
+#if DEBUG
+static void dbg_println(const char* str, ...) {
+    va_list args;
+    va_start(args, str);
+
+    char buf[PRINT_FORMATTER_BUF_LEN];
+    u32 buf_index = 0;
+
+    u64 len = strlen(str);
+    s32 size;
+
+    s64 s;
+    u64 u;
+    const char *cstr;
+
+    bool skip = false;
+    for(int i = 0; i < len; ++i) {
+
+        if (str[i] == '\\' && skip) {
+            buf[buf_index] = '\\';
+            skip = false;
+            buf_index++;
+            continue;
+        }
+        if (str[i] == '\\') {
+            skip = true;
+            buf_index++;
+            continue;
+        }
+        if (str[i] != '%') {
+            buf[buf_index] = str[i];
+            buf_index++;
+            skip = false;
+            continue;
+        }
+        if (str[i] == '%' && skip) {
+            buf[buf_index] = '%';
+            buf_index++;
+            skip = false;
+            continue;
+        }
+        skip = false;
+
+        i++;
+        switch(str[i]) {
+        case 's':
+        {
+            s = va_arg(args, s64);
+            size = print_parse_signed_int(str + i, len - i, buf + buf_index, s);
+            buf_index += size;
+            break;
+        }
+        case 'u':
+        {
+            u = va_arg(args, u64);
+            size = print_parse_unsigned_int(str + i, len - i, buf + buf_index, u);
+            buf_index += size;
+            break;
+        }
+        case 'c':
+        {
+            cstr = va_arg(args, const char*);
+            size = print_parse_string(str + i, len - i, buf + buf_index, cstr);
+            buf_index += size;
+            break;
+        }
+        default:
+            assert(false && "Cannot understand print statement");
+        } // switch str[i]
+    }
+
+    va_end(args);
+
+    buf[buf_index] = '\0';
+    printf("%s\n", buf);
+}
+#else
+#define dbg_println(const char* str, ...)
+#endif
 
 #endif // include guard

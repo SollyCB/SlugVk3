@@ -2099,17 +2099,10 @@ Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri) {
     Tex_Allocation *tex = &alloc->textures[alloc->allocation_count];
     tex->state = alloc->allocation_count;
 
-    u64 mark = get_mark_temp();
-
-    // println("Image Uri: %c", uri->str);
-
     Image img = load_image(uri);
     tex->uri = string_buffer_get_string(&alloc->string_buffer, uri);
     tex->width = img.width;
     tex->height = img.height;
-    tex->n_channels = img.n_channels;
-
-    //println("img.width, img.height : %u, %u", img.width, img.height);
 
     VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
@@ -2154,7 +2147,7 @@ Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri) {
         alloc->stage_cursor = free_block + adj_size;
     }
 
-    reset_to_mark_temp(mark);
+    free_image(&img);
     alloc->allocation_states[alloc->allocation_count] = (Alloc_State)Alloc_State_Bits::SEEN;
     alloc->allocation_count++;
     return tex;
@@ -2625,24 +2618,7 @@ void recreate_images(Tex_Allocator *alloc) {
         info.tiling = VK_IMAGE_TILING_OPTIMAL;
         info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-        switch(tex->n_channels) {
-        case 1:
-            info.format = VK_FORMAT_R8_SRGB;
-            break;
-        case 2:
-            info.format = VK_FORMAT_R8G8_SRGB;
-            break;
-        case 3:
-            info.format = VK_FORMAT_R8G8B8_SRGB;
-            break;
-        case 4:
-            info.format = VK_FORMAT_R8G8B8A8_SRGB;
-            break;
-        default:
-            ASSERT(false, "Invalid Image Channel Count");
-            return;
-        }
+        info.format = VK_FORMAT_R8G8B8A8_SRGB;
 
         vkDestroyImage(device, tex->img, ALLOCATION_CALLBACKS);
         check = vkCreateImage(device, &info, ALLOCATION_CALLBACKS, &tex->img);

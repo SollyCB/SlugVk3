@@ -92,7 +92,7 @@ u8 *malloc_t(u64 size, u64 alignment) {
     Linear_Allocator *allocator = get_instance_temp();
     size = align(size, alignment);
 
-    // pad 
+    // pad
     allocator->used = align(allocator->used, alignment);
 
     u8 *ret = allocator->memory + allocator->used;

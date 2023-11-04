@@ -42,6 +42,7 @@ void kill_temp_allocator();
 u8 *malloc_h(u64 size, u64 alignment); // Make heap allocation
 u8 *realloc_h(u8 *ptr, u64 new_size);  // Reallocate a heap allocation
 u8 *malloc_t(u64 size, u64 alignment); // Make a temporary allocation
+u8 *realloc_t(u8 *ptr, u64 new_size, u64 alignment);  // Reallocate a temporary allocation
 
 inline void free_h(void *ptr) { // Free a heap allocation
     u64 size = tlsf_block_size(ptr);
