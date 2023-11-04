@@ -38,7 +38,7 @@ static constexpr u32 UNIFORM_BUFFER_COUNT   = 1;
 // Host memory sizes - large enough to not get a warning about allocation size being too small
 static constexpr u64 VERTEX_STAGE_SIZE      = 1048576;
 static constexpr u64 INDEX_STAGE_SIZE       = 1048576;
-static constexpr u64 TEXTURE_STAGE_SIZE     = 1048576 * 4;
+static constexpr u64 TEXTURE_STAGE_SIZE     = 1048576 * 8;
 static constexpr u64 UNIFORM_BUFFER_SIZE    = 1048576;
 
 static constexpr float VERTEX_DEVICE_SIZE   = 1048576;

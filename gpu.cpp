@@ -1256,77 +1256,74 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 
         /* Begin Allocator Helper Algorithms */
 static u32 find_contiguous_free(u32 count, u64 *bits, u32 offset, u32 req_count) {
-    u32 ll_idx = offset >> 6;
-    u32 adj_idx = ll_idx * 64;
-    u32 bit_idx = offset & 63;
-    bits += ll_idx;
-    count -= ll_idx;
-
-    u64 restore = bits[0];
+    u32 restore = bits[offset >> 6];
     u64 mask = 0x01;
-    mask <<= bit_idx;
-    bits[0] |= mask - 1;
+    mask <<= offset & 63;
+    bits[offset >> 6] |= mask - 1;
 
-    u32 total_count = 0;
-    for(u32 i = 0; i < count; ++i) {
-        total_count += pop_count64(~bits[i]);
-    }
-    if (total_count < req_count) {
-        bits[0] = restore;
-        return Max_u32;
-    }
+    u32 tz = 0;
+    u32 inc = (offset >> 6) << 6;
+    u32 tail = 0;
+    u32 shift = 0;
 
-    u32 bit_count = 0;
-    u32 idx = 0;
-    for(u32 i = 0; i < count; ++i) {
-        u64 tmp = bits[i];
-        if (tmp == Max_u64) {
-            bit_count = 0;
-            idx = (i + 1) * 64;
+    for(u32 i = offset >> 6; i < count; ++i)
+        tz += pop_count64(~bits[i]);
+
+    if (tz < req_count)
+        goto not_found;
+
+    for(u32 i = offset >> 6; i < count; ++i) {
+        if (bits[i] == 0) {
+            tail += 64;
+            if (tail >= req_count)
+                goto found;
+            else
+                continue;
+        } else if (bits[i] == Max_u64) {
+            inc += 64;
             continue;
         }
-        if (!tmp) {
-            bit_count += 64;
-            if (bit_count >= req_count) {
-                bits[0] = restore;
-                return idx + adj_idx;
-            }
-            else {
-                continue;
-            }
-        }
-        u32 tz = count_trailing_zeros_u64(~tmp);
-        tmp >>= tz;
-        u32 shift = tz;
-        while(tmp) {
-            tz = count_trailing_zeros_u64(tmp);
-            if (tz + bit_count >= req_count) {
-                bits[0] = restore;
-                return idx + adj_idx;
-            }
 
-            tmp >>= tz;
+        mask = bits[i];
+        tz = count_trailing_zeros_u64(mask);
+        if (tz + tail >= req_count)
+            goto found;
+
+        tail = count_leading_zeros_u64(mask);
+
+        mask >>= tz;
+        shift = tz;
+        inc = (i << 6) + shift;
+
+        tz = count_trailing_zeros_u64(~mask);
+        mask >>= tz;
+        shift += tz;
+        inc += tz;
+        mask |= 0x8000000000000000 >> (shift - 1);
+
+        while(shift < 64 - tail) {
+            tz = count_trailing_zeros_u64(mask);
+            if (tz >= req_count)
+                goto found;
+
+            mask >>= tz;
             shift += tz;
-            tz = count_trailing_zeros_u64(~tmp);
-            tmp >>= tz;
+            inc += tz;
+
+            tz = count_trailing_zeros_u64(~mask);
+            mask >>= tz;
             shift += tz;
-            idx = shift + (64 * i);
-            bit_count = 0;
+            inc += tz;
         }
-        tz = count_leading_zeros_u64(bits[i]);
-        idx = (i * 64) + (64 - tz);
-        if (tz >= req_count) {
-            bits[0] = restore;
-            return idx + adj_idx;
-        }
-        else {
-            bit_count += tz;
-        }
-        shift = 0;
     }
 
-    bits[0] = restore;
+    not_found: // goto label
+    bits[offset >> 6] = restore;
     return Max_u32;
+
+    found: // goto label
+    bits[offset >> 6] = restore;
+    return inc;
 }
 inline static void make_full(u32 count, u64 *bits, u32 offset, u32 range) {
     u64 mask = 0xffffffffffffffff;
@@ -1997,7 +1994,8 @@ Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info) {
 
     ret.stage_mask_count = ret.stage_cap / (ret.stage_bit_granularity * 64);
     ret.upload_mask_count = ret.upload_cap / (ret.upload_bit_granularity * 64);
-    println("stage_mask_count %u", ret.stage_mask_count);
+
+    //println("stage_mask_count %u", ret.stage_mask_count);
 
     ret.stage_masks              = (u64*)               malloc_h(sizeof(u64)               * ret.stage_mask_count, 8);
     ret.upload_masks             = (u64*)               malloc_h(sizeof(u64)               * ret.upload_mask_count, 8);
@@ -2016,6 +2014,7 @@ Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info) {
     ret.bind_infos               = (Tex_Bind_Info*)     malloc_h(sizeof(Tex_Bind_Info)     * ret.to_upload_cap,  8);
     ret.regions                  = (VkBufferImageCopy*) malloc_h(sizeof(VkBufferImageCopy) * ret.to_upload_cap,  8);
 
+    #if 0
     println("Tex_Allocator Memory Footprint:");
     println("               string_buffer: %u", 1024);
     println("                 stage_masks: %u", sizeof(u64) * ret.stage_mask_count);
@@ -2046,6 +2045,7 @@ Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info) {
     total_mem_footprint += sizeof(VkBufferImageCopy) * ret.to_upload_cap;
 
     println("    Total Memory Footprint: %u", total_mem_footprint);
+    #endif
 
     Gpu *gpu = get_gpu_instance();
     ret.optimal_copy_alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
@@ -2100,13 +2100,16 @@ Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri) {
     tex->state = alloc->allocation_count;
 
     u64 mark = get_mark_temp();
-    println("Image Uri: %c", uri->str);
+
+    // println("Image Uri: %c", uri->str);
+
     Image img = load_image(uri);
     tex->uri = string_buffer_get_string(&alloc->string_buffer, uri);
     tex->width = img.width;
     tex->height = img.height;
-    println("img.width, img.height : %u, %u", img.width, img.height);
     tex->n_channels = img.n_channels;
+
+    //println("img.width, img.height : %u, %u", img.width, img.height);
 
     VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
@@ -2139,7 +2142,7 @@ Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri) {
 
     #if 0
     println("Image Size %u", tex->width * tex->height * 4);
-    println("Free Block Bit Index = %u", free_block);
+    println("Free Block Byte Index = %u", free_block * 256);
     #endif
 
     if (free_block != Max_u32) {
@@ -3324,5 +3327,5 @@ void DestroyDebugUtilsMessengerEXT(
     if (func != nullptr)
         return func(instance, messenger, pAllocator);
 }
-} // namespace Gpu
 #endif
+} // namespace Gpu
