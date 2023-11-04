@@ -459,15 +459,6 @@ bool tex_upload_queue_submit(Tex_Allocator *alloc);
     /* End Texture Allocation */
 
     /* Model Loading */
-struct Model_Allocators {
-    Allocator index;
-    Allocator vert;
-    Tex_Allocator tex;
-    Sampler_Allocator sampler;
-};
-Model_Allocators init_allocators();
-void shutdown_allocators(Model_Allocators *allocs);
-
 struct Node;
 struct Skin {
     u32 joint_count;
@@ -586,8 +577,37 @@ struct Static_Model {
     Allocation *tex_alloc;
 };
 
+struct Model_Allocators {
+    Allocator index;
+    Allocator vert;
+    Tex_Allocator tex;
+    Sampler_Allocator sampler;
+};
+Model_Allocators init_allocators();
+void shutdown_allocators(Model_Allocators *allocs);
+
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
 void free_static_model(Static_Model *model);
+
+struct Static_Model_Map {
+    u32 cap;
+    u32 count;
+    u8 *weights;
+    u64 *hashes;
+    // @Test Will have to see if the hashmap is the best storage for models. I dont know totally what the
+    // use case is yet. I can see scenarios where u are both doing a look up and a trawl. The point of the
+    // map is to allow arranging the weights really quickly and keeping the model synced to the weight without
+    // much overhead: just have to move a few u64s around, much faster than moving the model structs themselves.
+    HashMap<u64, Static_Model> map;
+    Model_Allocators allocators;
+};
+// @Note This calls model::init_allocators(). This could be updated for greated flexibility between maps.
+Static_Model_Map create_static_model_map(u32 cap);
+void destroy_static_model_map(Static_Model_Map *map);
+
+u64 add_static_model(Static_Model_Map *map, const char *name, Static_Model *model);
+Static_Model* get_static_model_by_name(Static_Model_Map *map, const char *name);
+Static_Model* get_static_model_by_hash(Static_Model_Map *map, u64 hash);
 
 } // namespace model
 

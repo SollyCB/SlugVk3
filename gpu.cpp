@@ -2651,6 +2651,22 @@ void destroy_sampler_allocator(Sampler_Allocator *alloc) {
     free_h(alloc->weights);
     alloc->map.kill();
 }
+/*
+   Sampler Map Implementation:
+
+   Keep a list of keys and weights. The weights are sorted from highest to lowest. When a sampler is add to the
+   map, if a sampler which matches it is already in the map, then its weight is increased (in order to reflect
+   how commonly this sampler is referenced by models). When a sampler is called up with get_sampler(), its weight
+   is increased, and all other weights are decreased (prevent all weights slowly becoming max). After these two
+   operations, the weight is moved to its appropriate place in the array. The corresponding key is then also
+   moved to corresponding position in its array.
+
+   If the number of active samplers is equivalent to the device's active sampler capacity, and the sampler being
+   requested is inactive, the sampler with the lowest weight in the weights array which also contains an active
+   sampler has its top bit cleared (the rest of the bits are preserved) to reflect its inactive status. A new sampler
+   can then be created, and this weight is marked as having an active sampler linked to it (its top bit is set).
+
+*/
 u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
     //
     // @Note Ik that the hash will change when the sampler handle in the 'Sampler' type
@@ -2714,7 +2730,6 @@ VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
         /* End Sampler Allocation */
 
             /* Model Loading */
-
 Model_Allocators init_allocators() {
     Gpu *gpu = get_gpu_instance();
 
@@ -2770,33 +2785,6 @@ void shutdown_allocators(Model_Allocators *allocs) {
     destroy_sampler_allocator(&allocs->sampler);
 }
 
-/*
-
-    Model Allocation System:
-
-    Loading Models:
-        Call 'begin()' on an allocator to prepare the allocator for queued allocations.
-        Call 'queue()' to increase the size of the current allocation and get a ptr to
-        write to the queued size.
-        Call 'stage()' to get a pointer to the final total allocation.
-
-    Uploading Models:
-        When a model wants to be drawn, its checks the state of its allocations. If they
-        are not uploaded, it calls 'upload()' with its allocation. The allocation's state
-        is updated indicated it needs to be uploaded.
-        When the allocation is uploaded, its state is updated to reflect this. It also updates
-        its 'upload_offset' field with the offset of the allocation in the device buffer.
-        When an allocation's state demonstrates that it has been uploaded, the model can loop
-        its respective members in order to update their offsets relative to the allocation's
-        place in the device buffer.
-
-    Evicting Models:
-        When memory is running low in the device buffer, allocations can be evicted. This
-        can only happen to allocations whose state == DRAWN. When an allocation is evicted,
-        its state will return to STAGED, and its 'prev_offset' field will be set to its
-        'upload_offset' field. This memory is guaranteed to have been overwritten.
-
-*/
 enum class Data_Type : u32 {
     NONE = 0,
     VERTEX = 1,
@@ -3161,10 +3149,80 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 void free_static_model(Static_Model *model) {
     free_h(model->meshes[0].primitives);
     free_h(model->meshes[0].pl_infos);
-    //free_h(model->nodes);
     free_h(model->meshes);
     free_h(model->mats);
+    //free_h(model->nodes);
 }
+
+    /* Model Map */
+Static_Model_Map create_static_model_map(u32 cap) {
+    Static_Model_Map ret = {};
+    ret.cap = cap;
+    ret.weights = malloc_h(cap, 16); // align 16 for simd
+    ret.hashes = (u64*)malloc_h(sizeof(u64) * cap, 16);
+    ret.map = HashMap<u64, Static_Model>::get(cap);
+    ret.allocators = init_allocators();
+    return ret;
+}
+void destroy_static_model_map(Static_Model_Map *map) {
+    free_h(map->weights);
+    free_h(map->hashes);
+    map->map.kill();
+    shutdown_allocators(&map->allocators);
+    *map = {};
+}
+
+u64 add_static_model(Static_Model_Map *map, const char *name, Static_Model *model) {
+    if (map->cap == map->count)
+        return Max_u64;
+
+    u64 hash = calculate_hash(name);
+    u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
+    if (h_idx != Max_u32) {
+        correct_weights(map->count, map->weights, map->hashes, h_idx, 1, 0);
+        return hash;
+    }
+
+    ASSERT(map->count <= map->cap, "");
+    if (map->count >= map->cap)
+        return Max_u64;
+
+    map->map.insert_hash(hash, model);
+    map->hashes[map->count] = hash;
+    map->count++;
+
+    return hash;
+}
+Static_Model* get_static_model_by_name(Static_Model_Map *map, const char *name) {
+    u64 hash = calculate_hash(name);
+    u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
+
+    ASSERT(h_idx != Max_u32, "Invalid Model Hash");
+    if (h_idx == Max_u32)
+        return NULL;
+
+    // @Test Find good increase + decrease weights
+    correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
+    Static_Model *model = map->map.find_hash(hash);
+
+    ASSERT(model, "HashMap Failed To Find Model Hash");
+    return model;
+}
+Static_Model* get_static_model_by_hash(Static_Model_Map *map, u64 hash) {
+    u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
+
+    ASSERT(h_idx != Max_u32, "Invalid Model Hash");
+    if (h_idx == Max_u32)
+        return NULL;
+
+    // @Test Find good increase + decrease weights
+    correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
+    Static_Model *model = map->map.find_hash(hash);
+
+    ASSERT(model, "HashMap Failed To Find Model Hash");
+    return model;
+}
+
 #endif
 
 // functions like this are such a waste of time to write...
