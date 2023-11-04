@@ -3193,8 +3193,11 @@ u64 add_static_model(Static_Model_Map *map, const char *name, Static_Model *mode
 
     return hash;
 }
-Static_Model* get_static_model_by_name(Static_Model_Map *map, const char *name) {
+Static_Model* get_model_by_name(Static_Model_Map *map, const char *name) {
     u64 hash = calculate_hash(name);
+    return get_model_by_hash(map, hash);
+}
+Static_Model* get_model_by_hash(Static_Model_Map *map, u64 hash) {
     u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
 
     ASSERT(h_idx != Max_u32, "Invalid Model Hash");
@@ -3208,20 +3211,22 @@ Static_Model* get_static_model_by_name(Static_Model_Map *map, const char *name) 
     ASSERT(model, "HashMap Failed To Find Model Hash");
     return model;
 }
-Static_Model* get_static_model_by_hash(Static_Model_Map *map, u64 hash) {
-    u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
 
-    ASSERT(h_idx != Max_u32, "Invalid Model Hash");
-    if (h_idx == Max_u32)
-        return NULL;
-
-    // @Test Find good increase + decrease weights
-    correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
-    Static_Model *model = map->map.find_hash(hash);
-
-    ASSERT(model, "HashMap Failed To Find Model Hash");
-    return model;
+// @Unimplemented
+bool stage_queue_model_by_name(Static_Model_Map *map, const char *name) {
+    u64 hash = calculate_hash(name);
+    return stage_queue_model_by_hash(map, hash);
 }
+bool stage_queue_model_by_hash(Static_Model_Map *map, u64 hash) {}
+bool submit_static_staging_queue(Static_Model_Map *map) {}
+
+// @Unimplemented
+bool upload_queue_model_by_name(Static_Model_Map *map, const char *name) {
+    u64 hash = calculate_hash(name);
+    return upload_queue_model_by_hash(map, hash);
+}
+bool upload_queue_model_by_hash(Static_Model_Map *map, u64 hash) {}
+bool submit_upload_queue(Static_Model_Map *map) {}
 
 #endif
 

@@ -598,6 +598,15 @@ struct Static_Model_Map {
     // use case is yet. I can see scenarios where u are both doing a look up and a trawl. The point of the
     // map is to allow arranging the weights really quickly and keeping the model synced to the weight without
     // much overhead: just have to move a few u64s around, much faster than moving the model structs themselves.
+    //
+    // It very well may be the case that I do not want to map models at all, but instead should store specific
+    // groups of models in specific arrays, according to what point the pipeline they will be utilised. But
+    // in this case, perhaps it is best to still use the map, but to keep the maps small. As it could well
+    // be the case that I want to generally use these models together, but not always. For instance, you
+    // may have a bunch of player models and any one can be needed at any time. In which case you want to be able
+    // to call it up. This could just as easily be accomplished with an array and indices, but I cannot know for
+    // sure that calling up by name wont be useful. So for now I will use the hash map (it would be trivial to
+    // switch it to indices so whatever for now).
     HashMap<u64, Static_Model> map;
     Model_Allocators allocators;
 };
@@ -605,9 +614,20 @@ struct Static_Model_Map {
 Static_Model_Map create_static_model_map(u32 cap);
 void destroy_static_model_map(Static_Model_Map *map);
 
+// @Todo Overload with animated models
 u64 add_static_model(Static_Model_Map *map, const char *name, Static_Model *model);
-Static_Model* get_static_model_by_name(Static_Model_Map *map, const char *name);
-Static_Model* get_static_model_by_hash(Static_Model_Map *map, u64 hash);
+Static_Model* get_model_by_name(Static_Model_Map *map, const char *name);
+Static_Model* get_model_by_hash(Static_Model_Map *map, u64 hash);
+
+// @Unimplemented
+bool stage_queue_model_by_hash(Static_Model_Map *map, u64 hash);
+bool stage_queue_model_by_name(Static_Model_Map *map, const char *name);
+bool submit_staging_queue(Static_Model_Map *map);
+
+// @Unimplemented
+bool upload_queue_model_by_hash(Static_Model_Map *map, u64 hash);
+bool upload_queue_model_by_name(Static_Model_Map *map, const char *name);
+bool submit_upload_queue(Static_Model_Map *map);
 
 } // namespace model
 
