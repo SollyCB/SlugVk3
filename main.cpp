@@ -36,36 +36,42 @@ int main() {
         cstr_to_string("shaders/basic.vert.spv"),
         cstr_to_string("shaders/basic.frag.spv"),
     };
-    gpu::Set_Allocate_Info set_allocate_info = insert_shader_set("basic", 2, basic_shader_files, &shader_map);
+    String shader_set_names[] = {
+        cstr_to_string("basic"),
+    };
+    gpu::Set_Allocate_Info set_allocate_info =
+        insert_shader_set(&shader_set_names[0], 2, basic_shader_files, &shader_map);
     gpu::Descriptor_Allocation basic_set_allocation = gpu::create_descriptor_sets(1, &set_allocate_info);
 
     // Load Models
-    gpu::model::Model_Allocators model_allocs = gpu::model::init_allocators();
-
-    String model_dirs[] = {
+    u32 model_count = 2;
+    String model_dirs[model_count] = {
         cstr_to_string("models/cube-static/"),
         cstr_to_string("models/cesium-man/"),
     };
-    String model_files[] = {
+    String model_files[model_count] = {
         cstr_to_string("Cube.gltf"),
         cstr_to_string("CesiumMan.gltf"),
     };
+    String model_names[model_count] = {
+        cstr_to_string("static_cube"),
+        cstr_to_string("cesium_man"),
+    };
 
-    u32 model_count = 2;
-    gpu::model::Static_Model *models =
-        (gpu::model::Static_Model*)malloc_h(sizeof(gpu::model::Static_Model) * model_count, 8);
+    gpu::model::Model_Allocators model_allocs = gpu::model::init_allocators();
+    gpu::model::Static_Model_Map model_map = gpu::model::create_static_model_map(model_count, &model_allocs);
 
-    for(u32 i = 0; i < model_count; ++i)
-        models[i] = load_static_model(&model_allocs, &model_files[i], &model_dirs[i]);
+    gpu::model::Static_Model model;
+    for(u32 i = 0; i < model_count; ++i) {
+        model = gpu::model::load_static_model(&model_allocs, &model_files[i], &model_dirs[i]);
+        gpu::model::add_static_model(&model_map, &model_names[i], &model);
+    }
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);
     }
 
-    for(u32 i = 0; i < model_count; ++i)
-        free_static_model(&models[i]);
-    free_h(models);
-
+    gpu::model::destroy_static_model_map(&model_map);
     gpu::model::shutdown_allocators(&model_allocs);
     gpu::destroy_descriptor_sets(&basic_set_allocation);
     gpu::destroy_shader_map(&shader_map);

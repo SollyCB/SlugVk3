@@ -43,7 +43,7 @@ static constexpr u64 UNIFORM_BUFFER_SIZE    = 1048576;
 
 static constexpr float VERTEX_DEVICE_SIZE   = 1048576;
 static constexpr float INDEX_DEVICE_SIZE    = 1048576;
-static constexpr float TEXTURE_DEVICE_SIZE  = 1048576;
+static constexpr float TEXTURE_DEVICE_SIZE  = 1048576 * 8;
 
 struct Gpu_Memory {
     VkDeviceMemory depth_mem[DEPTH_ATTACHMENT_COUNT];
@@ -208,8 +208,8 @@ struct Set_Allocate_Info {
 };
 Shader_Map create_shader_map(u32 size);
 void destroy_shader_map(Shader_Map *map);
-Set_Allocate_Info insert_shader_set(const char *set_name, u32 count, String *files, Shader_Map *map);
-Shader_Set* get_shader_set(const char *set_name, Shader_Map *map);
+Set_Allocate_Info insert_shader_set(String *set_name, u32 count, String *files, Shader_Map *map);
+Shader_Set* get_shader_set(String *set_name, Shader_Map *map);
 
 
 // Descriptors
@@ -277,7 +277,7 @@ enum class Flags : u8 {
    my toes wet with a simpler system, rather than jumping to max. This would be a pretty trivial update,
    since it is just the same as now but double layered.
 */
-struct Allocator { // @Todo Setup this type's functions to use the flags state system
+struct Allocator {
     // Bit Mask
     u32 bit_granularity;
     u32 mask_count;
@@ -310,6 +310,7 @@ struct Allocator { // @Todo Setup this type's functions to use the flags state s
     VkCommandBuffer transfer_cmd;
 
     // Miscellaneous
+    u64 upload_check;
     u64 alignment;
     u8 flags;
 };
@@ -430,6 +431,10 @@ struct Tex_Allocator {
     VkCommandPool transfer_pool;
     VkCommandBuffer graphics_cmd;
     VkCommandBuffer transfer_cmd;
+
+    // Miscellaneous
+    u64 *hashes;
+    u64 upload_check;
 };
 struct Tex_Allocator_Create_Info {
     u32 stage_bit_granularity;
@@ -449,12 +454,14 @@ void destroy_tex_allocator(Tex_Allocator *alloc);
 Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri);
 
 bool tex_staging_queue_begin(Tex_Allocator *alloc);
-bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex);
+bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex, bool upload_check = false);
 bool tex_staging_queue_submit(Tex_Allocator *alloc);
+void tex_staging_queue_reset(Tex_Allocator *alloc);
 
 bool tex_upload_queue_begin(Tex_Allocator *alloc);
 bool tex_upload_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex);
 bool tex_upload_queue_submit(Tex_Allocator *alloc);
+void tex_upload_queue_reset(Tex_Allocator *alloc);
 
     /* End Texture Allocation */
 
@@ -572,9 +579,8 @@ struct Static_Model {
     Mesh *meshes;
     Material *mats;
 
-    Allocation *index_alloc;
-    Allocation *vert_alloc;
-    Allocation *tex_alloc;
+    Allocation *index_allocation;
+    Allocation *vert_allocation;
 };
 
 struct Model_Allocators {
@@ -589,11 +595,35 @@ void shutdown_allocators(Model_Allocators *allocs);
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
 void free_static_model(Static_Model *model);
 
+enum class Result {
+    SUCCESS = 0,
+    VERTEX_STAGING_QUEUE_IN_USE = 1,
+    VERTEX_UPLOAD_QUEUE_IN_USE  = 2,
+    INDEX_STAGING_QUEUE_IN_USE  = 3,
+    INDEX_UPLOAD_QUEUE_IN_USE   = 4,
+    TEX_STAGING_QUEUE_IN_USE    = 5,
+    TEX_UPLOAD_QUEUE_IN_USE     = 6,
+    VERTEX_STAGING_QUEUE_FULL   = 7,
+    VERTEX_UPLOAD_QUEUE_FULL    = 8,
+    VERTEX_STAGING_BUFFER_FULL  = 9,
+    VERTEX_UPLOAD_BUFFER_FULL   = 10,
+    INDEX_STAGING_QUEUE_FULL    = 11,
+    INDEX_UPLOAD_QUEUE_FULL     = 12,
+    INDEX_STAGING_BUFFER_FULL   = 13,
+    INDEX_UPLOAD_BUFFER_FULL    = 14,
+    TEX_STAGING_QUEUE_FULL      = 15,
+    TEX_UPLOAD_QUEUE_FULL       = 16,
+    TEX_STAGING_BUFFER_FULL     = 17,
+    TEX_UPLOAD_MEMORY_FULL      = 18,
+    MODEL_HASH_NOT_FOUND        = 19,
+};
 struct Static_Model_Map {
     u32 cap;
     u32 count;
+    u32 queued_count;
     u8 *weights;
     u64 *hashes;
+    u64 *queued;
     // @Test Will have to see if the hashmap is the best storage for models. I dont know totally what the
     // use case is yet. I can see scenarios where u are both doing a look up and a trawl. The point of the
     // map is to allow arranging the weights really quickly and keeping the model synced to the weight without
@@ -609,13 +639,21 @@ struct Static_Model_Map {
     // switch it to indices so whatever for now).
     HashMap<u64, Static_Model> map;
     Model_Allocators allocators;
+
+    // Secondary command buffers containing the transfer/transition/barrier/copy commands.
+    VkCommandBuffer vertex_graphics_cmd;
+    VkCommandBuffer vertex_transfer_cmd;
+    VkCommandBuffer index_graphics_cmd;
+    VkCommandBuffer index_transfer_cmd;
+    VkCommandBuffer tex_graphics_cmd;
+    VkCommandBuffer tex_transfer_cmd;
 };
 // @Note This calls model::init_allocators(). This could be updated for greated flexibility between maps.
-Static_Model_Map create_static_model_map(u32 cap);
+Static_Model_Map create_static_model_map(u32 cap, Model_Allocators *allocs);
 void destroy_static_model_map(Static_Model_Map *map);
 
 // @Todo Overload with animated models
-u64 add_static_model(Static_Model_Map *map, const char *name, Static_Model *model);
+u64 add_static_model(Static_Model_Map *map, String *name, Static_Model *model);
 Static_Model* get_model_by_name(Static_Model_Map *map, const char *name);
 Static_Model* get_model_by_hash(Static_Model_Map *map, u64 hash);
 

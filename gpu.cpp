@@ -998,7 +998,7 @@ void destroy_shader_map(Shader_Map *map) {
     }
     map->map.kill();
 }
-Set_Allocate_Info insert_shader_set(const char *set_name, u32 count, String *files, Shader_Map *map) {
+Set_Allocate_Info insert_shader_set(String *set_name, u32 count, String *files, Shader_Map *map) {
     // Create Shaders
     Shader_Info shader_info = create_shaders(count, files);
     Shader *shaders = shader_info.shaders;
@@ -1035,7 +1035,7 @@ Set_Allocate_Info insert_shader_set(const char *set_name, u32 count, String *fil
     return ret;
 }
 
-Shader_Set* get_shader_set(const char *set_name, Shader_Map *map) {
+Shader_Set* get_shader_set(String *set_name, Shader_Map *map) {
     u64 hash = get_string_hash(set_name);
     return map->map.find_hash(hash);
 }
@@ -1704,6 +1704,9 @@ bool upload_queue_submit(Allocator *alloc) {
     // so then you trade a dirty loop with a switch potentially for cache hits???
     // Idk the best solution off the top of my head.
     //
+    // UPDATE: A really easy solution would be to move the states into their own array, as in the tex allocator.
+    // Then search these states and only visit the indices that we actually need to visit. This will be a super easy
+    // thing to add, but I will do it another time. I am bored of working on these allocators for now. - 4 Nov 2023 Sol
 
     // Test large enough block from cursor without evicting
     adj_size = (alloc->upload_queue / g) + 1;
@@ -1767,66 +1770,43 @@ bool upload_queue_submit(Allocator *alloc) {
 
     u32 region_count = 0;
     u64 upload_offset = free_block * g;
+    u64 upload_begin = upload_offset; // save value for cmd copy info
+    u64 upload_end;
 
     VkBufferCopy2 *regions = (VkBufferCopy2*)malloc_t(sizeof(VkBufferCopy2) * alloc->to_upload_count, 8);
-    if (evict) { // We can loop tighter if there weren't evictions
-        for(u32 i = 0; i < alloc->alloc_count; ++i) {
-            if (region_count == alloc->to_upload_count)
-                break;
+    for(u32 i = 0; i < alloc->alloc_count; ++i) {
+        if (region_count == alloc->to_upload_count)
+            break;
 
-            switch(alloc->allocs[i].state) {
-            case Alloc_State_Bits::TO_UPLOAD:
-            {
-                regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
-                regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
-                regions[region_count].dstOffset = upload_offset;
-                regions[region_count].size = alloc->allocs[i].size;
+        switch(alloc->allocs[i].state) {
+        case Alloc_State_Bits::TO_UPLOAD:
+        {
+            regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+            regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
+            regions[region_count].dstOffset = upload_offset;
+            regions[region_count].size = alloc->allocs[i].size;
 
-                alloc->allocs[i].state = Alloc_State_Bits::UPLOADED;
-                alloc->allocs[i].upload_offset = upload_offset;
+            alloc->allocs[i].state = Alloc_State_Bits::UPLOADED;
+            alloc->allocs[i].upload_offset = upload_offset;
+            upload_end = alloc->allocs[i].size + upload_offset;
 
-                upload_offset += alloc->allocs[i].size;
-                region_count++;
-                break;
-            }
-            case Alloc_State_Bits::DRAWN:
-            {
-                // Only set the state of drawn allocations to staged if they were actually overwritten.
-                adj_size = (alloc->allocs[i].size / g) + 1;
-                adj_offset = alloc->allocs[i].upload_offset / g;
-                if (!is_range_free(alloc->mask_count, alloc->masks, adj_offset, adj_size)) {
-                    alloc->allocs[i].state = Alloc_State_Bits::STAGED;
-                    //alloc->allocs[i].prev_offset = alloc->allocs[i].upload_offset;
-                }
-                break;
-            }
-            default:
-                break;
-            }
+            upload_offset += alloc->allocs[i].size;
+            region_count++;
+            break;
         }
-    } else { // Static predict no evictions to further optimise this path
-        for(u32 i = 0; i < alloc->alloc_count; ++i) {
-            if (region_count == alloc->to_upload_count)
-                break;
-
-            switch(alloc->allocs[i].state) {
-            case Alloc_State_Bits::TO_UPLOAD:
-            {
-                regions[region_count] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
-                regions[region_count].srcOffset = alloc->allocs[i].stage_offset;
-                regions[region_count].dstOffset = upload_offset;
-                regions[region_count].size = alloc->allocs[i].size;
-
-                alloc->allocs[i].state = Alloc_State_Bits::UPLOADED;
-                alloc->allocs[i].upload_offset = upload_offset;
-
-                upload_offset += alloc->allocs[i].size;
-                region_count++;
-                break;
+        case Alloc_State_Bits::DRAWN:
+        {
+            // Only set the state of drawn allocations to staged if they were actually overwritten.
+            adj_size = (alloc->allocs[i].size / g) + 1;
+            adj_offset = alloc->allocs[i].upload_offset / g;
+            if (!is_range_free(alloc->mask_count, alloc->masks, adj_offset, adj_size)) {
+                alloc->allocs[i].state = Alloc_State_Bits::STAGED;
+                //alloc->allocs[i].prev_offset = alloc->allocs[i].upload_offset;
             }
-            default:
-                break;
-            }
+            break;
+        }
+        default:
+            break;
         }
     }
     alloc->bit_cursor = (upload_offset / g) + 1; // Point cursor at the end of the final upload region
@@ -1888,8 +1868,8 @@ bool upload_queue_submit(Allocator *alloc) {
         buf_barr.srcQueueFamilyIndex = gpu->transfer_queue_index;
         buf_barr.dstQueueFamilyIndex = gpu->graphics_queue_index;
         buf_barr.buffer = alloc->upload;
-        buf_barr.offset = 0;
-        buf_barr.size = VK_WHOLE_SIZE;
+        buf_barr.offset = upload_begin;
+        buf_barr.size = align(upload_end, gpu->info.props.limits.nonCoherentAtomSize);
 
         VkDependencyInfo dep_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dep_info.bufferMemoryBarrierCount = 1;
@@ -2006,6 +1986,7 @@ Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info) {
     ret.string_buffer            = create_string_buffer(1024);
     ret.textures                 = (Tex_Allocation*)    malloc_h(sizeof(Tex_Allocation)    * ret.allocation_cap, 8);
     ret.allocation_states        = (Alloc_State*)       malloc_h(sizeof(Alloc_State)       * ret.allocation_cap, 8);
+    ret.hashes                   = (u64*)               malloc_h(sizeof(u64)               * ret.allocation_cap, 8);
 
     ret.to_stage_uris            = (String*)            malloc_h(sizeof(String)            * ret.to_stage_cap,   8);
     ret.to_update_stage_offsets  = (u64**)              malloc_h(sizeof(u64*)              * ret.to_stage_cap,   8);
@@ -2080,6 +2061,7 @@ void destroy_tex_allocator(Tex_Allocator *alloc) {
     free_h(alloc->upload_masks);
     free_h(alloc->textures);
     free_h(alloc->allocation_states);
+    free_h(alloc->hashes);
 
     free_h(alloc->to_stage_uris);
     free_h(alloc->to_update_stage_offsets);
@@ -2090,8 +2072,31 @@ void destroy_tex_allocator(Tex_Allocator *alloc) {
 
     *alloc = {};
 }
+/*
+   @Note I need to properly consider how to multithread these allocators. For instance, if a texture is used by
+   muliple models, then you only want that tex allocation to be active in one allocator. There is no benefit to
+   having this memory available to all threads as it is not actually read by them, only the gpu. So perhaps I have
+   just one texture allocator, which manages the free block masks and the unique texture hashes (there is no
+   benefit to multithreading those aspects, as the whole point of the them is that they are zero overhead to
+   traverse). Then when a submit function is called on the allocator, it can send the work of actually opening
+   image files, memcpying data, recording upload commands etc to a thread pool. Then no synchronisation is
+   required, as all the upload offsets can be determined by the main thread cheaply. Just have to dispatch the
+   thread saying "take this data, put it here, dont worry about anyone else".
 
+   Sounds good lol, this should actually be really easy to implement when I come to multithreading!
+   I did not think a plan for multithreading such a significant section of the engine would come so easily.
+   Hopefully there is nothing unforeseen...
+
+   - 5 Nov 2023 Sol.
+*/
 Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri) {
+    // The same texture might be used by multiple things, therefore we must track unique ones.
+    // No point storing copies of the same texture.
+    u64 hash = get_string_hash(uri);
+    for(u32 i = 0; i < alloc->allocation_count; ++i)
+        if (hash == alloc->hashes[i])
+            return &alloc->textures[i];
+
     ASSERT(alloc->allocation_cap != alloc->allocation_count, "Tex Allocator Overflow");
     if (alloc->allocation_cap == alloc->allocation_count)
         return NULL;
@@ -2158,7 +2163,7 @@ bool tex_staging_queue_begin(Tex_Allocator *alloc) {
     alloc->staging_queue = 0;
     return true;
 }
-bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex) {
+bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex, bool upload_check) {
     if (alloc->allocation_states[tex->state] & (Alloc_State)Alloc_State_Bits::STAGED) {
         alloc->allocation_states[tex->state] &= ~(Alloc_State)Alloc_State_Bits::DRAWN;
         return true;
@@ -2168,6 +2173,17 @@ bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex) {
     alloc->staging_queue = align(alloc->staging_queue, alloc->optimal_copy_alignment);
     if (alloc->staging_queue + size > alloc->stage_cap || alloc->to_stage_cap == alloc->to_stage_count)
         return false;
+
+    if (upload_check) {
+        if (align(alloc->upload_check, tex->alignment) + tex->size > alloc->upload_cap ||
+            alloc->to_stage_cap == alloc->to_upload_cap)
+        {
+            return false;
+        } else {
+            alloc->upload_check = align(alloc->upload_check, tex->alignment);
+            alloc->upload_check += tex->size;
+        }
+    }
 
     alloc->staging_queue += size;
     alloc->to_stage_uris[alloc->to_stage_count] = tex->uri;
@@ -2288,6 +2304,7 @@ bool tex_staging_queue_submit(Tex_Allocator *alloc) {
 
     alloc->to_stage_count = 0;
     alloc->staging_queue = Max_u64; // Indicate it is safe to use stage queue again
+    alloc->upload_check = 0;
     return true;
 }
 bool tex_upload_queue_begin(Tex_Allocator *alloc) {
@@ -2968,8 +2985,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
         gltf_view = (Gltf_Buffer_View*)((u8*)gltf_view + gltf_view->stride);
     }
-    ret.index_alloc = staging_queue_submit(&allocs->index);
-    ret.vert_alloc = staging_queue_submit(&allocs->vert);
+    ret.index_allocation = staging_queue_submit(&allocs->index);
+    ret.vert_allocation = staging_queue_submit(&allocs->vert);
 
     // 3. Loop primitives - set offsets
     gltf_mesh = gltf.meshes;
@@ -3155,28 +3172,34 @@ void free_static_model(Static_Model *model) {
 }
 
     /* Model Map */
-Static_Model_Map create_static_model_map(u32 cap) {
+Static_Model_Map create_static_model_map(u32 cap, Model_Allocators *allocs) {
     Static_Model_Map ret = {};
     ret.cap = cap;
     ret.weights = malloc_h(cap, 16); // align 16 for simd
     ret.hashes = (u64*)malloc_h(sizeof(u64) * cap, 16);
     ret.map = HashMap<u64, Static_Model>::get(cap);
-    ret.allocators = init_allocators();
+    ret.allocators = *allocs;
     return ret;
 }
 void destroy_static_model_map(Static_Model_Map *map) {
+    auto iter = map->map.iter();
+    auto next = iter.next();
+    while(next) {
+        free_static_model(&next->value);
+        next = iter.next();
+    }
+
     free_h(map->weights);
     free_h(map->hashes);
     map->map.kill();
-    shutdown_allocators(&map->allocators);
     *map = {};
 }
 
-u64 add_static_model(Static_Model_Map *map, const char *name, Static_Model *model) {
+u64 add_static_model(Static_Model_Map *map, String *name, Static_Model *model) {
     if (map->cap == map->count)
         return Max_u64;
 
-    u64 hash = calculate_hash(name);
+    u64 hash = get_string_hash(name);
     u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
     if (h_idx != Max_u32) {
         correct_weights(map->count, map->weights, map->hashes, h_idx, 1, 0);
@@ -3212,21 +3235,181 @@ Static_Model* get_model_by_hash(Static_Model_Map *map, u64 hash) {
     return model;
 }
 
-// @Unimplemented
-bool stage_queue_model_by_name(Static_Model_Map *map, const char *name) {
-    u64 hash = calculate_hash(name);
-    return stage_queue_model_by_hash(map, hash);
-}
-bool stage_queue_model_by_hash(Static_Model_Map *map, u64 hash) {}
-bool submit_static_staging_queue(Static_Model_Map *map) {}
+/*
+                                        ** Model Map API Explanation **
+    map_queue_model(), map_submit_queue():
+        Adds model to staging queue, but checks if the queue size is too large to upload: this allows submit_queue()
+        to call the upload queue functions without complications (such as knowing which models are uploaded and which
+        are staged and how to deal with this), so if you are going to draw fewer models than would overflow the upload
+        cap you can use it to streamline upload. These functions update the internal map queue.
 
+    map_queue_model_stage(), map_queue_model_upload() (plus other functions which specify 'stage' or 'upload' etc):
+        More granular control over what happens to the models. It may be the case that you have some large group
+        of models that you know you will spend a bunch of time drawing, but that to upload them all at once would
+        overflow. These functions allow staging this large group and then incrementally uploading them. These
+        functions do not update the internal map queue.
+
+    *** @Note THESE SYSTEMS CANNOT BE USED SIMULTANEOUSLY (obviously). ***
+        If map_queue_model() is using the allocator queues, you can only use more granular functions after having
+        called the allocator submission functions AND submitting the allocator command buffers.
+        In the case of submit_models_stage(), technically this releases the queue for use, however its use case
+        is if you have a large number of allocations to incrementally upload, therefore really the queue should
+        not be used by queue_model() and submit_queue() before all the upload work is also complete.
+
+*/
 // @Unimplemented
-bool upload_queue_model_by_name(Static_Model_Map *map, const char *name) {
-    u64 hash = calculate_hash(name);
-    return upload_queue_model_by_hash(map, hash);
+bool map_queue_model_stage(Static_Model_Map *map, u64 hash) {return false;}
+bool map_queue_model_upload(Static_Model_Map *map, u64 hash) {return false;}
+bool map_submit_models_stage(Static_Model_Map *map) {return false;}
+bool map_submit_models_upload(Static_Model_Map *map) {return false;}
+
+Result map_queue_model(Static_Model_Map *map, u64 hash) {
+    //
+    // @Note This function assumes that if the queue is in use (no need to call begin_queue) then it is safe to
+    // add to the queue.
+    //
+    if (map->allocators.vert.upload_queue == Max_u64)
+        upload_queue_begin(&map->allocators.vert);
+    if (map->allocators.index.upload_queue == Max_u64)
+        upload_queue_begin(&map->allocators.index);
+
+    u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
+    ASSERT(h_idx != Max_u32, "Invalid Model Hash");
+    if (h_idx == Max_u32)
+        return NULL;
+    // @Test Find good increase + decrease weights
+    correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
+
+    Static_Model *model = map->map.find_hash(hash);
+    ASSERT(model, "HashMap Failed To Find Model");
+    // @Note @Todo Returning the same error code for different reasons probably isn't great.
+    if (!model)
+        return Result::MODEL_HASH_NOT_FOUND;
+
+    // @Note @Todo Currently vertex data is small enough that I do not need to worry about it being evicted to disk:
+    // when a model is loaded, it just lives in staging memory for the program lifetime. Therefore we add straight
+    // to upload queue. Return false if the upload queue is full.
+    if (!upload_queue_add(&map->allocators.vert, model->vert_allocation))
+        return Result::VERTEX_UPLOAD_QUEUE_FULL;
+    if (!upload_queue_add(&map->allocators.index, model->index_allocation))
+        return Result::INDEX_UPLOAD_QUEUE_FULL;
+
+    if (map->allocators.tex.staging_queue == Max_u64)
+        tex_staging_queue_begin(&map->allocators.tex);
+
+    // Stage queue materials' textures
+    for(u32 i = 0; i < model->mat_count; ++i) {
+        // @Note @Todo The return codes here could be improved, as since upload_check == true,
+        // tex_staging_queue_add() can return false when the upload queue would be full were everything in the
+        // staging queue submitted to the upload queue. Hence the return code TEX_STAGING_QUEUE_FULL is misleading.
+        // Although really it is not a big deal, as I cannot see one truly being more useful than the other.
+        // (It would only be useful if then the decision were made to instead begin calling the more granular
+        // staging functions for the map instead after reacting to the return code. But the overhead of switching
+        // paths seems to defeat the purpose of not having used that in the first place if the risk of overflow
+        // was present.)
+        if (model->mats[i].tex_base.allocation)
+            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_base.allocation, true))
+                return Result::TEX_STAGING_QUEUE_FULL;
+        if (model->mats[i].tex_pbr.allocation)
+            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_pbr.allocation, true))
+                return Result::TEX_STAGING_QUEUE_FULL;
+        if (model->mats[i].tex_norm.allocation)
+            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_norm.allocation, true))
+                return Result::TEX_STAGING_QUEUE_FULL;
+        if (model->mats[i].tex_occlusion.allocation)
+            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_occlusion.allocation, true))
+                return Result::TEX_STAGING_QUEUE_FULL;
+        if (model->mats[i].tex_emissive.allocation)
+            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_emissive.allocation, true))
+                return Result::TEX_STAGING_QUEUE_FULL;
+    }
+
+    map->queued[map->queued_count] = hash;
+    map->queued_count++;
+    return Result::SUCCESS;
 }
-bool upload_queue_model_by_hash(Static_Model_Map *map, u64 hash) {}
-bool submit_upload_queue(Static_Model_Map *map) {}
+Result map_submit_queue(Static_Model_Map *map) {
+    /*
+                    *** THESE RETURN CODES INDICATE AN ERROR, THEY SHOULD NEVER OCCUR ***
+
+        TEX_UPLOAD_QUEUE_FULL:
+            map_queue_model() MUST ensure that any size in the staging queue will also fit in the upload queue.
+
+        TEX_UPLOAD_QUEUE_IN_USE:
+            All queues MUST be available when this function is called.
+
+        See 'Model Map API Explanation' (above, greppable) for more info.
+
+    */
+    bool check;
+
+    if (!upload_queue_submit(&map->allocators.vert))
+        return Result::VERTEX_UPLOAD_BUFFER_FULL;
+    if (!upload_queue_submit(&map->allocators.index))
+        return Result::INDEX_UPLOAD_BUFFER_FULL;
+
+    // Complete staging pipeline
+    if (!tex_staging_queue_submit(&map->allocators.tex))
+        return Result::TEX_STAGING_BUFFER_FULL;
+
+    if (!tex_upload_queue_begin(&map->allocators.tex)) {
+        ASSERT(false, "See Comment At Beginning Of Function");
+        return Result::TEX_UPLOAD_QUEUE_IN_USE;
+    }
+
+    // Upload materials' textures
+    Static_Model *model;
+    for(u32 i = 0; i < map->queued_count; ++i) {
+        model = map->map.find_hash(map->queued[i]);
+        ASSERT(model, "HashMap Failed To Find Model");
+        for(u32 i = 0; i < model->mat_count; ++i) {
+            if (model->mats[i].tex_base.allocation)
+                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_base.allocation)) {
+                    ASSERT(false, "See Comment At Beginning Of Function");
+                    return Result::TEX_UPLOAD_QUEUE_FULL;
+                }
+            if (model->mats[i].tex_pbr.allocation)
+                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_pbr.allocation)) {
+                    ASSERT(false, "See Comment At Beginning Of Function");
+                    return Result::TEX_UPLOAD_QUEUE_FULL;
+                }
+            if (model->mats[i].tex_norm.allocation)
+                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_norm.allocation)) {
+                    ASSERT(false, "See Comment At Beginning Of Function");
+                    return Result::TEX_UPLOAD_QUEUE_FULL;
+                }
+            if (model->mats[i].tex_occlusion.allocation)
+                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_occlusion.allocation)) {
+                    ASSERT(false, "See Comment At Beginning Of Function");
+                    return Result::TEX_UPLOAD_QUEUE_FULL;
+                }
+            if (model->mats[i].tex_emissive.allocation)
+                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_emissive.allocation)) {
+                    ASSERT(false, "See Comment At Beginning Of Function");
+                    return Result::TEX_UPLOAD_QUEUE_FULL;
+                }
+        }
+    }
+    if (!tex_upload_queue_submit(&map->allocators.tex))
+        return Result::TEX_UPLOAD_MEMORY_FULL;
+
+    // Make them a bit easier to get a hold of
+    map->vertex_graphics_cmd = map->allocators.vert.graphics_cmd;
+    map->vertex_transfer_cmd = map->allocators.vert.transfer_cmd;
+    map->index_graphics_cmd = map->allocators.index.graphics_cmd;
+    map->index_transfer_cmd = map->allocators.index.transfer_cmd;
+    map->tex_graphics_cmd = map->allocators.vert.graphics_cmd;
+    map->tex_transfer_cmd = map->allocators.index.transfer_cmd;
+
+    map->queued_count = 0;
+    return Result::SUCCESS;
+}
+
+// Name Overloads
+Result map_queue_model(Static_Model_Map *map, const char *name) {
+    u64 hash = calculate_hash(name);
+    return map_queue_model(map, hash);
+}
 
 #endif
 

@@ -29,8 +29,8 @@ inline uint64_t calculate_hash(const char *value, size_t seed) {
     return wyhash(value, strlen(value), seed, _wyp);
 }
 
-inline u64 get_string_hash(const char *cstr) {
-    return wyhash(cstr, strlen(cstr), 0, _wyp);
+inline u64 get_string_hash(String *string) {
+    return wyhash(string->str, string->len, 0, _wyp);
 }
 
 inline uint64_t hash_bytes(void *data, size_t len, size_t seed = 0) {
