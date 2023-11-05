@@ -247,6 +247,7 @@ enum class Alloc_State_Bits : u8 {
     STAGED    = 0x04,
     TO_UPLOAD = 0x08,
     UPLOADED  = 0x10,
+    CACHED    = 0x20,
     DRAWN     = 0x80,
 };
 typedef u8 Alloc_State;

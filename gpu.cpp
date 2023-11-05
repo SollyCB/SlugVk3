@@ -1631,7 +1631,6 @@ void* staging_queue_add(Allocator *alloc, u64 size, u64 *offset) {
     return (u8*)alloc->stage_ptr + *offset;
 }
 Allocation* staging_queue_submit(Allocator *alloc) {
-
     alloc->staging_queue = align(alloc->staging_queue, alloc->alignment);
     if (alloc->staging_queue + alloc->bytes_staged > alloc->stage_cap)
         return NULL;
@@ -3263,7 +3262,7 @@ bool map_queue_model_upload(Static_Model_Map *map, u64 hash) {return false;}
 bool map_submit_models_stage(Static_Model_Map *map) {return false;}
 bool map_submit_models_upload(Static_Model_Map *map) {return false;}
 
-Result map_queue_model(Static_Model_Map *map, u64 hash) {
+Result map_queue_model(Static_Model_Map *map, u64 hash, bool adjust_weights) {
     //
     // @Note This function assumes that if the queue is in use (no need to call begin_queue) then it is safe to
     // add to the queue.
@@ -3273,12 +3272,14 @@ Result map_queue_model(Static_Model_Map *map, u64 hash) {
     if (map->allocators.index.upload_queue == Max_u64)
         upload_queue_begin(&map->allocators.index);
 
-    u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
-    ASSERT(h_idx != Max_u32, "Invalid Model Hash");
-    if (h_idx == Max_u32)
-        return NULL;
-    // @Test Find good increase + decrease weights
-    correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
+    if (adjust_weights) {
+        u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
+        ASSERT(h_idx != Max_u32, "Invalid Model Hash");
+        if (h_idx == Max_u32)
+            return NULL;
+        // @Test Find good increase + decrease weights
+        correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
+    }
 
     Static_Model *model = map->map.find_hash(hash);
     ASSERT(model, "HashMap Failed To Find Model");
@@ -3328,21 +3329,82 @@ Result map_queue_model(Static_Model_Map *map, u64 hash) {
     map->queued_count++;
     return Result::SUCCESS;
 }
+/*
+    Model Map Caching System:
+        Each allocation in the model map has a weight. After all models have been added to a map,
+        these models are staged and uploaded to video memory in order of weight, while the sizes
+        staged and uploaded are less than their respective caps. Therefore, in memory, the models
+        with the greatest weights have their resources at the lowest addresses in their allocators'
+        respective memory. These weights are initially set by the programmer. When a model is added
+        to the stage/upload queue after this initial phase, if they are not already cached in the
+        allocator, they must be added to the allocators' queues. The map calls submit functions, on
+        the allocators. If a call fails, the map will initiate the following pseudo code:
+
+                while(!find_contiguous_free(allocator.masks)) {
+                    make_free(range_of_cached_allocation_with_lowest_weight);
+                }
+                submit_queue(allocator); // resubmit the queue now that there is sufficient free memory
+
+        then, when submitting the upload, space is made for the allocation which has been queued at the
+        end of the allocator if its weight is too low for caching, while allocations with high enough
+        weights for caching are uploaded in the order of their weights at the lowest addresses.
+
+        The benefits of this system:
+
+        It alleviates fragmentation as allocations are removed in a way that at least keeps RANGES
+        of weights contiguous: the weights will fluctuate, and it is highly likely that at times
+        there will be allocations with high weights at much higher addresses than they should be.
+        This is where fragmentation occurs, as these allocations are not removed, while those around
+        them are, interrupting contiguous blocks. However, as the above algorithm runs, the
+        number and size of contiguous blocks will increase, until eventually there is sufficient
+        size for the queue submission. In this case, all the values with the highest weights will be
+        reuploaded to memory, with a trend towards the higher weights being at lower addresses,
+        ordered by their weights, now with weights that are ever closer to their true values.
+
+        The cache being significantly overwritten and reuploaded really should not happen as long as
+        the initial weights, and increase and decrease sizes are set to effective values, to allow
+        models to rise and fall in priority with their usage, but without wild fluctuations. For instance,
+        shooting an automatic weapon should not cause a muzzle flash texture to reach a crazy high priority
+        due to a short burst of rapid usage. Generally, allocations should be found in the cache, there should
+        only be small fluctuations of overwrite and reupload in the tail of the allocator, so the above loop
+        should never run for very many iterations, and the amount of data actually being uploaded on a queue
+        submission should be low.
+*/
 Result map_submit_queue(Static_Model_Map *map) {
-    /*
-                    *** THESE RETURN CODES INDICATE AN ERROR, THEY SHOULD NEVER OCCUR ***
+/*
+                *** THESE RETURN CODES INDICATE AN ERROR, THEY SHOULD NEVER OCCUR ***
 
-        TEX_UPLOAD_QUEUE_FULL:
-            map_queue_model() MUST ensure that any size in the staging queue will also fit in the upload queue.
+    TEX_UPLOAD_QUEUE_FULL:
+        map_queue_model() MUST ensure that any size in the staging queue will also fit in the upload queue.
 
-        TEX_UPLOAD_QUEUE_IN_USE:
-            All queues MUST be available when this function is called.
+    TEX_UPLOAD_QUEUE_IN_USE:
+        All queues MUST be available when this function is called.
 
-        See 'Model Map API Explanation' (above, greppable) for more info.
+    See 'Model Map API Explanation' (above, greppable) for more info.
 
-    */
+*/
+
+
+//bool map_queue_model_stage(Static_Model_Map *map, u64 hash) {return false;}
+//bool map_queue_model_upload(Static_Model_Map *map, u64 hash) {return false;}
+//bool map_submit_models_stage(Static_Model_Map *map) {return false;}
+//bool map_submit_models_upload(Static_Model_Map *map) {return false;}
+
+    // If there is space in the allocators, stuff in the allocations with the greatest weights to increase the
+    // chances of them not having to be reloaded from memory.
+    #if MODEL_MAP_CACHING
+    u32 cached_count = 0;
+    Static_Model *model;
+    for(u32 i = 0; i < map->count; ++i) {
+        model = map->map.find_hash(hashes[i]);
+        // Do not adjust weights when refreshing model for cache purposes
+        if (!map_queue_model_stage(map, model, false))
+            break;
+        cached_count++;
+    }
+    #endif
+
     bool check;
-
     if (!upload_queue_submit(&map->allocators.vert))
         return Result::VERTEX_UPLOAD_BUFFER_FULL;
     if (!upload_queue_submit(&map->allocators.index))
@@ -3358,7 +3420,6 @@ Result map_submit_queue(Static_Model_Map *map) {
     }
 
     // Upload materials' textures
-    Static_Model *model;
     for(u32 i = 0; i < map->queued_count; ++i) {
         model = map->map.find_hash(map->queued[i]);
         ASSERT(model, "HashMap Failed To Find Model");
