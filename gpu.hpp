@@ -419,6 +419,7 @@ struct Tex_Allocator {
     u64 stage_cap;
     u64 upload_cap;
     u64 staging_queue;
+    u64 staging_cache;
     u64 upload_queue;
     VkBuffer stage;
     void *stage_ptr;
@@ -457,7 +458,7 @@ Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri);
 bool tex_staging_queue_begin(Tex_Allocator *alloc);
 bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex, bool upload_check = false);
 bool tex_staging_queue_submit(Tex_Allocator *alloc);
-void tex_staging_queue_reset(Tex_Allocator *alloc);
+void tex_staging_queue_pop(Tex_Allocator *alloc);
 
 bool tex_upload_queue_begin(Tex_Allocator *alloc);
 bool tex_upload_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex);
@@ -565,8 +566,8 @@ struct Model {
     Skin *skins;
     Material *mats;
 
-    Allocation *index_alloc;
-    Allocation *vert_alloc;
+    Allocation *index_allocation;
+    Allocation *vertex_allocation;
     Allocation *tex_allocations;
 
     void *animation_data; // @Wip
@@ -586,7 +587,7 @@ struct Static_Model {
 
 struct Model_Allocators {
     Allocator index;
-    Allocator vert;
+    Allocator vertex;
     Tex_Allocator tex;
     Sampler_Allocator sampler;
 };

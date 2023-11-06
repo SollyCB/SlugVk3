@@ -2191,6 +2191,10 @@ bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex, bool uploa
     alloc->to_stage_count++;
     return true;
 }
+// Takes the index of the last allocation in the queue added as a cache, and evicts in reverse order from this index
+// while there is insufficient free size for non cached queued allocations
+void tex_staging_queue_evict_cache(Tex_Allocator *alloc, u32 index) {
+}
 bool tex_staging_queue_submit(Tex_Allocator *alloc) {
     // Find textures in drawn + uploaded state (used further below without branch, so find once here, I can't really
     // see anywhere better in the function to put this, but it does seem weird right at function start...)
@@ -3267,10 +3271,56 @@ Result map_queue_model(Static_Model_Map *map, u64 hash, bool adjust_weights) {
     // @Note This function assumes that if the queue is in use (no need to call begin_queue) then it is safe to
     // add to the queue.
     //
-    if (map->allocators.vert.upload_queue == Max_u64)
-        upload_queue_begin(&map->allocators.vert);
-    if (map->allocators.index.upload_queue == Max_u64)
+
+    // Stuff the queue with the highest weight model allocations.
+    Static_Model *model;
+    if (map->allocators.index.upload_queue == Max_u64) { // If one allocator's queue is free, they must all be free.
+        ASSERT(map->allocators.vertex.upload_queue == Max_u64, "See Above Comment");
+        ASSERT(map->allocators.tex.staging_queue == Max_u64, "See Above Comment");
         upload_queue_begin(&map->allocators.index);
+        for(u32 i = 0; i < map->count; ++i) {
+            model = map->map.find_hash(map->hashes[i]);
+            if (!upload_queue_add(map->allocators.index, model->index_allocation))
+                break;
+        }
+        upload_queue_begin(&map->allocators.vert);
+        for(u32 i = 0; i < map->count; ++i) {
+            model = map->map.find_hash(map->hashes[i]);
+            if (!upload_queue_add(map->allocators.vert->vert_allocation))
+                break;
+        }
+        tex_staging_queue_begin(&map->allocators.tex);
+        for(u32 i = 0; i < model->mat_count; ++i) {
+            // @Note @Todo The return codes here could be improved, as since upload_check == true,
+            // tex_staging_queue_add() can return false when the upload queue would be full were everything in the
+            // staging queue submitted to the upload queue. Hence the return code TEX_STAGING_QUEUE_FULL is misleading.
+            // Although really it is not a big deal, as I cannot see one truly being more useful than the other.
+            // (It would only be useful if then the decision were made to instead begin calling the more granular
+            // staging functions for the map instead after reacting to the return code. But the overhead of switching
+            // paths seems to defeat the purpose of not having used that in the first place if the risk of overflow
+            // was present.)
+            if (model->mats[i].tex_base.allocation) {
+                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_base.allocation, true))
+                    break;
+            }
+            if (model->mats[i].tex_pbr.allocation) {
+                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_pbr.allocation, true))
+                    break;
+            }
+            if (model->mats[i].tex_norm.allocation) {
+                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_norm.allocation, true))
+                    break;
+            }
+            if (model->mats[i].tex_occlusion.allocation) {
+                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_occlusion.allocation, true))
+                    break;
+            }
+            if (model->mats[i].tex_emissive.allocation) {
+                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_emissive.allocation, true))
+                    break;
+            }
+        }
+    }
 
     if (adjust_weights) {
         u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
@@ -3281,9 +3331,8 @@ Result map_queue_model(Static_Model_Map *map, u64 hash, bool adjust_weights) {
         correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
     }
 
-    Static_Model *model = map->map.find_hash(hash);
+    model = map->map.find_hash(hash);
     ASSERT(model, "HashMap Failed To Find Model");
-    // @Note @Todo Returning the same error code for different reasons probably isn't great.
     if (!model)
         return Result::MODEL_HASH_NOT_FOUND;
 
@@ -3294,9 +3343,6 @@ Result map_queue_model(Static_Model_Map *map, u64 hash, bool adjust_weights) {
         return Result::VERTEX_UPLOAD_QUEUE_FULL;
     if (!upload_queue_add(&map->allocators.index, model->index_allocation))
         return Result::INDEX_UPLOAD_QUEUE_FULL;
-
-    if (map->allocators.tex.staging_queue == Max_u64)
-        tex_staging_queue_begin(&map->allocators.tex);
 
     // Stage queue materials' textures
     for(u32 i = 0; i < model->mat_count; ++i) {
@@ -3396,11 +3442,6 @@ Result map_submit_queue(Static_Model_Map *map) {
     u32 cached_count = 0;
     Static_Model *model;
     for(u32 i = 0; i < map->count; ++i) {
-        model = map->map.find_hash(hashes[i]);
-        // Do not adjust weights when refreshing model for cache purposes
-        if (!map_queue_model_stage(map, model, false))
-            break;
-        cached_count++;
     }
     #endif
 
@@ -3580,6 +3621,145 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
                 return Max_u32;
         }
 }
+
+//
+// @CurrentTask Allocator Redo (I have the hang of it now, this is the final system)
+//
+
+/*
+   Branchless function to remove duplicate indices from an array, with specific caveats:
+       1. There can only be ONE duplicate for EACH entry within the count.
+       2. It must be safe to deref array[align(len, 4) - 1] (sse simd, 4 * sizeof(u32))
+          (it is safe to have extra duplicates inside the deref range, but beyond the given count)
+       Example:
+          array len = 9, array data = malloc(sizeof(u32) * 12) // size allocated aligned to 16 bytes
+              OK:   1, 1, 2, 2, 3, 3, 4, 4, 5
+          NOT OK:   1, 1, 1, 2, 2, 3, 3, 4, 4    (the one has three entries)
+              OK:   1, 1, 5, 2, 2, 3, 3, 4, 4, 1 (the third one is beyond the count)
+
+    (The clamp functions compile to branchless assembly.)
+*/
+u32 eject_repeat_indices(u32 count, u32 *indices) {
+    __m128i a;
+    __m128i b;
+    u16 mask;
+    u32 inc = 0;
+    u32 dec = 0;
+    u32 tmp;
+    u32 idx;
+    u16 mask_mask = 0b0001000100010001;
+    u32 adj_count = align(count, 4);
+    u32 move;
+    u32 mov_t;
+    u32 mov_f;
+    for(u32 i = 0; i < count - dec; ++i) {
+        inc = 4 * (i >> 2);
+        b = _mm_set1_epi32(indices[i]);
+        a = _mm_load_si128((__m128i*)(indices + inc));
+        a = _mm_cmpeq_epi32(a, b);
+        mask = _mm_movemask_epi8(a);
+        mask &= mask_mask;
+        mask ^= 1 << (4 * (i & 3)); // clear self match
+        mask &= 0xffff >> (((4 - ((count - dec) & 3)) * ((u32)(count - dec < inc + 4))) << 2); // clear overflow matches beyond count
+
+        tmp = (u32)(pop_count16(mask) >= 1);
+        dec += tmp;
+        idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+        idx *= tmp;
+
+        // shuffle everything backwards if a dupe was found
+        move = (u32)(inc >= idx) & tmp;
+        mov_t = inc * move;
+        mov_f = max_clamp32((count - dec) - 1, inc + 1) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move = (u32)(inc + 1 >= idx) & tmp;
+        mov_t = (inc + 1) * move;
+        mov_f = max_clamp32(count - 1, inc + 2) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move = (u32)(inc + 2 >= idx) & tmp;
+        mov_t = (inc + 2) * move;
+        mov_f = max_clamp32(count - 1, inc + 3) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move = (u32)(inc + 3 >= idx) & tmp;
+        mov_t = (inc + 3) * move;
+        mov_f = max_clamp32(count - 1, inc + 4) * move;
+        indices[mov_t] = indices[mov_f];
+
+        inc += 4;
+        while(inc + 4 < count - dec) { // do not check into potential overflow range in loop
+            a = _mm_load_si128((__m128i*)(indices + inc));
+            a = _mm_cmpeq_epi32(a, b);
+            mask = _mm_movemask_epi8(a);
+            mask &= mask_mask;
+
+            tmp = (u32)(pop_count16(mask) >= 1);
+            dec += tmp;
+            idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+            idx *= tmp;
+
+            move |= (u32)(inc >= idx) & tmp;
+            mov_t = inc * move;
+            mov_f = max_clamp32(count - 1, inc + 1) * move;
+            indices[mov_t] = indices[mov_f];
+
+            move |= (u32)(inc + 1 >= idx) & tmp;
+            mov_t = (inc + 1) * move;
+            mov_f = max_clamp32(count - 1, inc + 2) * move;
+            indices[mov_t] = indices[mov_f];
+
+            move |= (u32)(inc + 2 >= idx) & tmp;
+            mov_t = (inc + 2) * move;
+            mov_f = max_clamp32(count - 1, inc + 3) * move;
+            indices[mov_t] = indices[mov_f];
+
+            move |= (u32)(inc + 3 >= idx) & tmp;
+            mov_t = (inc + 3) * move;
+            mov_f = max_clamp32(count - 1, inc + 4) * move;
+            indices[mov_t] = indices[mov_f];
+
+            inc += 4;
+        }
+        // deal with potential overflow outside the loop
+        // (avoids having to check loop iteration relative to inc)
+        a = _mm_load_si128((__m128i*)(indices + inc));
+        a = _mm_cmpeq_epi32(a, b);
+        mask = _mm_movemask_epi8(a);
+        mask &= mask_mask * ((u32)(inc < count - dec));
+        mask &= 0xffff >> (((4 - ((count - dec) & 3)) << 2) * ((count - dec) & 3));
+
+        tmp = (u32)(pop_count16(mask) >= 1);
+        dec += tmp;
+        idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+        idx *= tmp;
+
+        move |= (u32)(inc >= idx) & tmp;
+        mov_t = inc * move;
+        mov_f = max_clamp32(count - 1, inc + 1) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move |= (u32)(inc + 1 >= idx) & tmp;
+        mov_t = (inc + 1) * move;
+        mov_f = max_clamp32(count - 1, inc + 2) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move |= (u32)(inc + 2 >= idx) & tmp;
+        mov_t = (inc + 2) * move;
+        mov_f = max_clamp32(count - 1, inc + 3) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move |= (u32)(inc + 3 >= idx) & tmp;
+        mov_t = (inc + 3) * move;
+        mov_f = max_clamp32(count - 1, inc + 4) * move;
+        indices[mov_t] = indices[mov_f];
+
+        inc += 4;
+    }
+    return count - dec;
+}
+
 } // namespace model
 #if DEBUG
 VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info) {

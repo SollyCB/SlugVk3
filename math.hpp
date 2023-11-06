@@ -4,11 +4,16 @@
 #include "builtin_wrappers.h"
 #include <xmmintrin.h>
 
+static inline u32 max_clamp32(u32 max, u32 actual) {
+    if (actual > max)
+        return max;
+    else
+        return actual;
+}
 static inline float rad(float deg) {
     // 1/180 * pi
     return 0.0055555555 * 3.1415927 * deg;
 }
-
 static inline u64 pow(u64 num, u32 exp) {
     u64 accum = 1;
     for(u32 i = 0; i < exp; ++i) {
