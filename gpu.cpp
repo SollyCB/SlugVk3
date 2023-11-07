@@ -3626,19 +3626,224 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
 // @CurrentTask Allocator Redo (I have the hang of it now, this is the final system)
 //
 
-/*
-   Branchless function to remove duplicate indices from an array, with specific caveats:
-       1. There can only be ONE duplicate for EACH entry within the count.
-       2. It must be safe to deref array[align(len, 4) - 1] (sse simd, 4 * sizeof(u32))
-          (it is safe to have extra duplicates inside the deref range, but beyond the given count)
-       Example:
-          array len = 9, array data = malloc(sizeof(u32) * 12) // size allocated aligned to 16 bytes
-              OK:   1, 1, 2, 2, 3, 3, 4, 4, 5
-          NOT OK:   1, 1, 1, 2, 2, 3, 3, 4, 4    (the one has three entries)
-              OK:   1, 1, 5, 2, 2, 3, 3, 4, 4, 1 (the third one is beyond the count)
+Allocator_Result begin_allocation(Allocator *alloc) {
+    ASSERT(alloc->to_stage_count == Max_u32, "");
+    if (alloc->to_stage_count != Max_u32)
+        return QUEUE_IN_USE;
 
-    (The clamp functions compile to branchless assembly.)
-*/
+    if (alloc->allocation_count == alloc->allocation_cap)
+        return ALLOCATOR_FULL;
+    Allocation *tmp = &alloc->allocations[alloc->allocation_count];
+    *tmp = {};
+    tmp->disk_offset = alloc->disk_size;
+    alloc->disk = fopen(alloc->disk_storage); // offset to disk size
+
+    // staging queue must not be used during the allocation phase of the program. So it is safe to reuse it here
+    // for tracking in-progress allocations.
+    alloc->staging_queue_byte_count = 0;
+    return SUCCESS;
+}
+Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
+    u64 current_size = alloc->staging_queue_byte_count + size;
+    if (current_size > alloc->staging_queue_byte_cap)
+        return STAGE_FULL;
+
+    fwrite(file, ptr, size); // offset at disk size;
+    if (current_size + alloc->bytes_staged < alloc->stage_cap) {
+        memcpy(alloc->stage_ptr + alloc->staging_queue_byte_count, ptr, size);
+        alloc->staging_queue_byte_count += size;
+    }
+    return SUCCESS;
+}
+Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 *key) {
+    *key = alloc->allocation_count;
+    alloc->allocation_count++;
+    alloc->to_stage_count = Max_u32;
+    adjust_weights();
+    return SUCCESS;
+}
+
+Allocator_Result staging_queue_begin(Allocator *alloc) {
+    if (alloc->to_stage_count != Max_u32)
+        return QUEUE_IN_USE;
+    alloc->to_stage_count = 0;
+    alloc->staging_queue_byte_count = 0;
+    return SUCCESS;
+}
+Allocator_Result staging_queue_add(Allocator *alloc, u32 idx) {
+    idx = alloc->allocation_indices[idx];
+    idx = adjust_allocation_weights(
+                    alloc->allocation_count,
+                    alloc->allocation_weights,
+                    alloc->allocation_allocation_states,
+                    alloc->allocation_indices,
+                    alloc->allocations,
+                    3, 1); // @Test Find effective inc and dec values
+    alloc->allocation_states[new_idx] |= TO_DRAW;
+    if (alloc->allocation_states[new_idx] & STAGED)
+        return SUCCESS;
+
+    // Ensure that allocations will not overlap into another's bit representation
+    u64 bit_align_size = align(alloc->allocations[new_idx].size, alloc->stage_bit_granularity);
+    if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap)
+        return QUEUE_FULL;
+
+    alloc->staging_queue_byte_count += bit_align_size;
+    alloc->to_stage_count++;
+    return SUCCESS;
+}
+Allocator_Result staging_queue_submit(Allocator *alloc) {
+    // If the to stage count is zero on queue submission, just assume that everything queued was already cached,
+    // and we need not do anything. This is most likely, as vertex data should just be able to live in memory
+    // I am pretty certain. In case it can't (I would like to support even shit hardware, as everyone should)
+    // the same range searching functionality is implemented here for disk->stage (in the same way as stage->device)
+    if (alloc->to_stage_count == 0) {
+        alloc->to_stage_count == Max_u32;
+        return SUCCESS;
+    }
+
+    u32 free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
+    Allocation *tmp;
+    u32 *indices = alloc;
+    u32 evict_idx;
+    u32 count;
+    if (free_block == Max_u32) {
+        count = find_flags(alloc->allocation_states, indices, STAGED, TO_DRAW);
+        for(u32 i = count - 1; i != Max_u32; --i) {
+            tmp = alloc->allocations[indices[i]];
+            alloc->allocation_states[indices[i]] ^= STAGED; // mark as having been evicted from stage buffer
+            make_free(alloc->stage_masks, tmp->stage_offset, tmp->size);
+            free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
+            if (free_block != Max_u32) {
+                evict_idx = i;
+                goto free_block_found;
+            }
+        }
+        return STAGE_FULL; // Too many allocations waiting to draw
+    }
+
+    free_block_found: // goto
+
+    u64 block_size = free_block * alloc->stage_bit_granularity;
+    count = find_flags_any(alloc->allocation_states, indices, 0xff, STAGED);
+    u32 indices_final = alloc;
+    u64 size = 0;
+    for(u32 i = 0; i < count; ++i) {
+        size += align(alloc->allocations[indices[i]].size, alloc->stage_bit_granularity);
+        if (block_size - size > alloc->staging_queue_byte_cap)
+            indices_final[i] = indices[i];
+        else
+            break;
+    }
+    u32 tmp = find_flags_any(alloc->allocation_states, indices, TO_DRAW, STAGED);
+    memcpy(indices_final + count, indices, tmp * sizeof(u32));
+    eject_repeat_indices(count + tmp, indices_final);
+
+
+    // I do not know if this is a naive implementation. The way the allocator works is it takes a parsed gltf
+    // file, and then groups accessors/buffer views into one allocation. So all of a model's vertex attribute data
+    // is put into one contiguous allocation. This may be pointless, as it seems sensible that the data would
+    // already be laid out like this in the file. But I do not want to always rely on that fact (in a real company
+    // this would just be enforced, but wild world I will not trust). So I group the data together, then write
+    // it all into one file used by the allocator if its memory allocation is going to overflow. It's sort of dumb
+    // in the current state of the app, as these gltf files are read on every load, and then rewritten every load.
+    // However in production I would ditch the gltf files completely and just ship with the allocator files, obvs).
+    // So it will stay like this for now. Copying around data is the essence of computing *shrug*.
+    u64 stage_offset = free_block * alloc->stage_bit_granularity;
+    FILE *disk_storage = fopen(alloc->disk_storage);
+    for(u32 i = 0; i < count; ++i) {
+        tmp = alloc->allocations[indices[i]];
+        alloc->allocation_states[indices[i]] |= STAGED;
+        fread(alloc->stage_ptr + stage_offset, 1, tmp->size, disk_storage + tmp->disk_offset);
+
+        tmp->stage_offset = stage_offset;
+        stage_offset += align(tmp->size, alloc->stage_bit_granularity);
+        ASSERT(stage_offset + tmp->size <= alloc->stage_cap, "Allocator Stage Overflow");
+    }
+    fclose(alloc->disk_storage);
+    return SUCCESS;
+}
+Allocator_Result upload_queue_begin(Allocator *alloc) {
+    if (alloc->to_upload_count != Max_u32)
+        return QUEUE_IN_USE;
+    alloc->to_upload_count = 0;
+    alloc->upload_queue_byte_count = 0;
+    return SUCCESS;
+}
+Allocator_Result upload_queue_add(Allocator *alloc, u32 idx) {
+    idx = alloc->allocation_indices[idx];
+    idx = adjust_allocation_weights(
+                    alloc->allocation_count,
+                    alloc->allocation_weights,
+                    alloc->allocation_allocation_states,
+                    alloc->allocation_indices,
+                    alloc->allocations,
+                    3, 1); // @Test Find effective inc and dec values
+
+    alloc->allocation_states[idx] |= TO_DRAW;
+    if (alloc->allocation_states[idx] & UPLOADED)
+        return SUCCESS;
+
+    // Alignment ensures that allocations will not overlap into another's bit representation
+    u64 bit_align_size = align(alloc->allocations[idx].size, alloc->upload_bit_granularity);
+    if (bit_align_size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap)
+        return UPLOAD_QUEUE_FULL;
+
+    alloc->upload_queue_byte_count += bit_align_size;
+    alloc->to_upload_count++;
+    return SUCCESS;
+}
+Allocator_Result upload_queue_submit(Allocator *alloc) {
+    // If the to upload count is zero on queue submission, just assume that everything queued was already cached,
+    // and we need not do anything. This is most likely, as vertex data should just be able to live in memory
+    // I am pretty certain. In case it can't (I would like to support even shit hardware, as everyone should)
+    // the same range searching functionality is implemented here for disk->upload (in the same way as upload->device)
+    if (alloc->to_upload_count == 0) {
+        alloc->to_upload_count == Max_u32;
+        return SUCCESS;
+    }
+
+    u32 free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
+    Allocation *tmp;
+    u32 *indices = alloc;
+    u32 evict_idx;
+    u32 count;
+    if (free_block == Max_u32) {
+        count = find_flags(alloc->allocation_states, indices, UPLOADED, TO_DRAW);
+        for(u32 i = count - 1; i != Max_u32; --i) {
+            tmp = alloc->allocations[indices[i]];
+            alloc->allocation_states[indices[i]] ^= UPLOADED; // mark as having been evicted from upload buffer
+            make_free(alloc->upload_masks, tmp->upload_offset, tmp->size);
+            free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
+            if (free_block != Max_u32) {
+                evict_idx = i;
+                goto free_block_found;
+            }
+        }
+        return STAGE_FULL; // Too many allocations waiting to draw
+    }
+
+    free_block_found: // goto
+
+    u64 block_size = free_block * alloc->upload_bit_granularity;
+    count = find_flags_any(alloc->allocation_states, indices, 0xff, UPLOADED);
+    u32 indices_final = alloc;
+    u64 size = 0;
+    for(u32 i = 0; i < count; ++i) {
+        size += align(alloc->allocations[indices[i]].size, alloc->upload_bit_granularity);
+        if (block_size - size > alloc->upload_queue_byte_cap)
+            indices_final[i] = indices[i];
+        else
+            break;
+    }
+    u32 tmp = find_flags_any(alloc->allocation_states, indices, TO_DRAW, UPLOADED);
+    ASSERT(tmp == alloc->to_upload_count, "UUUGHGHGHHGGHHH!!!");
+    memcpy(indices_final + count, indices, alloc->to_upload_count * sizeof(u32));
+    eject_repeat_indices(count + tmp, indices_final);
+
+    return SUCCESS;
+}
+
 u32 eject_repeat_indices(u32 count, u32 *indices) {
     __m128i a;
     __m128i b;

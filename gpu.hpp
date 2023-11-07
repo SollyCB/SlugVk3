@@ -238,116 +238,150 @@ VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info);
 void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout);
 
 
-        /* Model Allocation */
 namespace model {
-enum class Alloc_State_Bits : u8 {
-    NONE      = 0x00,
-    SEEN      = 0x01,
-    TO_STAGE  = 0x02,
-    STAGED    = 0x04,
-    TO_UPLOAD = 0x08,
-    UPLOADED  = 0x10,
-    CACHED    = 0x20,
-    DRAWN     = 0x80,
-};
-typedef u8 Alloc_State;
-struct Allocation {
-    Alloc_State_Bits state;
+                                    /* Model Memory Management Begin */
 
-    u64 stage_offset;
+/*
+        Allocator Front End: (Front end functions are effectively equivalent unless stated otherwise)
+
+        add_texture(u8 weight, u32 *key) track new image memory: (Tex_Allocator Only)
+            - Returns ALLOCATOR_FULL if the allocator cannot track anymore allocations.
+            - Writes in 'key' the allocation's identifier.
+            - Weight is used to set a priority for the allocation. This effects how likely the allocation
+              is to be in memory at any given time.
+
+        begin_allocation() begin a new allocation: (Allocator Only)
+            - Return ALLOCATOR_FULL if the allocator is at capacity.
+            - Return QUEUE_IN_USE if submit allocation has not been called since calling begin.
+        continue_allocation(u64 size, void *ptr) add 'size' to allocation started by queue_begin:
+            - Copies data from ptr into its internal storage.
+            - Returns STAGE_FULL if the allocation is larger than the internal stage cap.
+            - Returns UPLOAD_FULL if the allocation is larger than the internal upload cap.
+        submit_allocation(u8 weight, u32 *key) complete an allocation:
+            - Writes to 'key' the identifier for the allocation.
+            - Weight is used to set a priority for the allocation. This effects how likely the allocation
+              is to be in memory at any given time.
+
+        ************************************************************************************************************
+        *** THE ABOVE FUNCTIONS MUST NOT BE CALLED AFTER ANY OF THE BELOW FUNCTIONS. ADDING ALLOCATIONS/TEXTURES ***
+        *** MUST BE DONE DURING SOME DEFINED STAGE OF THE PROGRAM, A STAGE WHICH OCCURS BEFORE QUEUEING STAGING  ***
+        ***                                           AND UPLOADS                                                ***
+        ************************************************************************************************************
+
+        queue_begin() prepares the allocator internal queue:
+            - Returns QUEUE_IN_USE if submit has not been called since calling begin.
+        queue_add(u32 key) queue the allocation corresponding to the key
+            - Returns QUEUE_FULL if the allocation would overflow the queue cap.
+            - Flags the allocation as TO_DRAW, do not queue an allocation unless this flag will be unset later.
+        queue_submit() submit the for upload/staging
+            - Returns QUEUE_FULL if there are too many allocations waiting to draw.
+            - Writes the internal secondary command buffers with the appropriate transfer commands if this is a
+              device upload. Binds images to memory if this is a tex queue submission.
+*/
+
+enum Allocator_Result {
+    SUCCESS = 0,
+    QUEUE_IN_USE,
+    QUEUE_FULL,
+    STAGE_FULL,
+    ALLOCATOR_FULL,
+};
+enum Allocation_State_Bits {
+    TO_DRAW = 0x02,
+    STAGED = 0x04,
+    UPLOADED = 0x08,
+};
+struct Allocation {
     u64 size;
     u64 upload_offset;
-    // u64 prev_offset; <- pretty sure I do not need this... was a dumb thought
+    u64 stage_offset;
+    u64 disk_offset;
 };
-enum class Flags : u8 {
-    UNIFIED_MEM = 0x01,
-    UNIFIED_TRANSFER = 0x02,
-};
-/*
-   I want to apply caching at a higher level for this allocator in the same way as
-   the sampler allocator, by assigning models a weight, and each time models are
-   accessed this weight is increased or decreased etc. Then each time models are
-   queued, models with some weight above some threshold are also queued behind
-   the scenes to keep them in memory, (queueing an allocation is basically free
-   if it is already in memory).
-
-   @Note That this allocator may need to be turned into smtg which more resembles the Tex_Allocator:
-   this allocator currently assumes that the staging buffer will always be large enough to hold all
-   vertex attribute data for all loaded models at any given time (i.e. vertex data is always small
-   enough to be in host memory). This is probably not true, but was setup like this for now to get
-   my toes wet with a simpler system, rather than jumping to max. This would be a pretty trivial update,
-   since it is just the same as now but double layered.
-*/
 struct Allocator {
-    // Bit Mask
-    u32 bit_granularity;
-    u32 mask_count;
-    u32 bit_cursor;
-    u64 *masks;
+    u32 allocation_cap;
+    u32 allocation_count;
+    Allocation *allocations;
+    Alloc_State *allocation_states;
+    u8 *allocation_weights;
+    u32 *allocation_indices;
 
-    // Allocations
-    u32 alloc_cap;
-    u32 alloc_count;
-    Allocation *allocs;
+    u64 stage_bit_granularity;
+    u64 upload_bit_granularity;
+    u32 stage_mask_count;
+    u32 upload_mask_count;
+    u64 *stage_masks;
+    u64 *upload_masks;
 
-    // Staging
-    u64 staging_queue;
-    u64 stage_cap;
+    u32 to_stage_count;
+    u64 staging_queue_byte_cap; // these are awful names lol
+    u64 staging_queue_byte_count;
+
+    u32 upload_queue_count;
+    u64 upload_queue_byte_cap;
+    u64 upload_queue_byte_count;
+    u32 to_upload_indices;
+
+    // Only used during the tex adding phase.
+    u64 stage_byte_cap;
     u64 bytes_staged;
-    VkBuffer stage;
-    void *stage_ptr;
 
-    // Upload
-    u32 to_upload_count;
-    u64 upload_queue;
-    u64 upload_cap;
-    u64 bytes_uploaded;
-    VkBuffer upload;
-
-    // Transfer Info
-    VkCommandPool graphics_pool;
-    VkCommandPool transfer_pool;
-    VkCommandBuffer graphics_cmd;
-    VkCommandBuffer transfer_cmd;
-
-    // Miscellaneous
-    u64 upload_check;
-    u64 alignment;
-    u8 flags;
-};
-struct Allocator_Create_Info {
-    u64 stage_cap;
-    u64 upload_cap;
-    VkBuffer stage;
-    void *stage_ptr;
-    VkBuffer upload;
-
-    u32 bit_granularity = 256; // Upload cap must be a multiple of 64 of this number
-    u32 alloc_cap; // How many allocations can exist in the allocator
+    String disk_storage;
+    FILE *disk;
+    u64 disk_size;
 };
 Allocator create_allocator(Allocator_Create_Info *info);
 void destroy_allocator(Allocator *alloc);
 
-/*
-    Buffer Allocator Front End:
-        Staging:
-            1. staging_queue_begin() to prepare the allocator staging queue.
-            2. staging_queue_add() to add to the staging queue.
-            3. staging_queue_submit() to receive a pointer to the final full allocation.
-        Uploading:
-            1. upload_queue_begin() to prepare the allocator upload queue.
-            2. upload_queue_add() to add an allocation to the queue.
-            3. upload_queue_submit() to upload the allocations in the queue to the device buffer.
-*/
-bool staging_queue_begin(Allocator *alloc);
-void* staging_queue_add(Allocator *alloc, u64 size, u64 *offset);
-Allocation* staging_queue_submit(Allocator *alloc);
+Allocator_Result begin_allocation(Allocator *alloc);
+Allocator_Result continue_allocation(Allocator *alloc, u64 size, void **ptr);
+Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 **key);
+Allocator_Result staging_queue_begin(Allocator *alloc);
+Allocator_Result staging_queue_add(Allocator *alloc, u32 key);
+Allocator_Result staging_queue_submit(Allocator *alloc);
+Allocator_Result upload_queue_begin(Allocator *alloc);
+Allocator_Result upload_queue_add(Allocator *alloc, u32 key);
+Allocator_Result upload_queue_submit(Allocator *alloc);
 
-bool upload_queue_begin(Allocator *alloc);
-VkBuffer upload_queue_add(Allocator *alloc, Allocation *allocation);
-bool upload_queue_submit(Allocator *alloc);
+struct Tex_Allocation {
+    const char *file_name;
+    u64 stage_offset;
+    u64 mem_offset;
+    VkImage image;
+    u32 width;
+    u32 height;
+};
+struct Tex_Allocator {
+    u32 allocation_count;
+    Allocation *allocations;
+    Alloc_State *allocation_states;
+    u8 *allocation_weights;
+    u32 *allocation_indices;
 
-        /* Texture (+ Sampler) Allocation */
+    u32 stage_mask_count;
+    u32 upload_mask_count;
+    u64 *stage_masks;
+    u64 *upload_masks;
+
+    u32 to_stage_count;
+    u64 staging_queue_byte_cap; // these are awful names lol
+    u64 staging_queue_byte_count;
+
+    u32 upload_queue_count;
+    u64 upload_queue_byte_cap;
+    u64 upload_queue_byte_count;
+    u32 to_upload_indices;
+
+    u64 *hashes;
+};
+// @Unimplemented
+Allocator_Result tex_add_texture(Allocator *alloc, String *file_name);
+Allocator_Result tex_staging_queue_begin(Allocator *alloc);
+Allocator_Result tex_staging_queue_add(Allocator *alloc, u32 key);
+Allocator_Result tex_staging_queue_submit(Allocator *alloc);
+Allocator_Result tex_upload_queue_begin(Allocator *alloc);
+Allocator_Result tex_upload_queue_add(Allocator *alloc, u32 key);
+Allocator_Result tex_upload_queue_submit(Allocator *alloc);
+
 struct Sampler { // This is potentially a bad name
     VkSamplerAddressMode wrap_s;
     VkSamplerAddressMode wrap_t;
@@ -374,98 +408,28 @@ void destroy_sampler_allocator(Sampler_Allocator *alloc);
 u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
 VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash);
 
-struct Tex_Allocation {
-    String uri;
-    u64 stage_offset;
-    u64 upload_offset;
+// Model Allocation Helper Funcs
 
-    u64 size;
-    u64 alignment;
-    VkImage img;
+/*
+   eject_repeat_indices(..)
+   Branchless function to remove duplicate indices from an array, with specific caveats:
+       1. There can only be ONE duplicate for EACH entry within the count.
+       2. It must be safe to deref array[align(len, 4) - 1] (sse simd, 4 * sizeof(u32))
+          (it is safe to have extra duplicates inside the deref range, but beyond the given count)
+       Example:
+          array len = 9, array data = malloc(sizeof(u32) * 12) // size allocated aligned to 16 bytes
+              OK:   1, 1, 2, 2, 3, 3, 4, 4, 5
+          NOT OK:   1, 1, 1, 2, 2, 3, 3, 4, 4    (the one has three entries)
+              OK:   1, 1, 5, 2, 2, 3, 3, 4, 4, 1 (the third one is beyond the count)
 
-    u32 width;
-    u32 height;
-    u32 state;
-};
-struct Tex_Bind_Info {
-    VkImage img;
-    u64 alignment;
-    u64 size;
-};
-struct Tex_Allocator {
-    u32 stage_cursor;
-    u32 upload_cursor;
-    u32 allocation_cap;
-    u32 allocation_count;
-    u32 to_stage_cap;
-    u32 to_upload_cap;
-    u32 to_stage_count;
-    u32 to_upload_count;
+    (The clamp functions compile to branchless assembly.)
 
-    u32 stage_bit_granularity;
-    u32 upload_bit_granularity;
-    u32 stage_mask_count;
-    u32 upload_mask_count;
-    u64 *stage_masks;
-    u64 *upload_masks;
-    String *to_stage_uris;
+    @Todo It would cool to also try to trim down on multiplies, but I mean then you are really
+    getting negligible lol.
+*/
+u32 eject_repeat_indices(u32 count, u32 *indices);
 
-    Tex_Allocation *textures;
-    Tex_Bind_Info *bind_infos;
-    u8 *allocation_states;
-    u64 **to_update_stage_offsets;
-    u64 **to_update_upload_offsets;
-
-    u64 stage_cap;
-    u64 upload_cap;
-    u64 staging_queue;
-    u64 staging_cache;
-    u64 upload_queue;
-    VkBuffer stage;
-    void *stage_ptr;
-    VkDeviceMemory upload;
-
-    String_Buffer string_buffer;
-    u64 optimal_copy_alignment;
-
-    VkBufferImageCopy *regions;
-    VkCommandPool graphics_pool;
-    VkCommandPool transfer_pool;
-    VkCommandBuffer graphics_cmd;
-    VkCommandBuffer transfer_cmd;
-
-    // Miscellaneous
-    u64 *hashes;
-    u64 upload_check;
-};
-struct Tex_Allocator_Create_Info {
-    u32 stage_bit_granularity;
-    u32 upload_bit_granularity;
-    u32 allocation_cap;
-    u32 to_stage_allocation_cap;
-    u32 to_upload_allocation_cap;
-    u64 stage_byte_cap;
-    u64 upload_byte_cap;
-    VkBuffer stage;
-    void *stage_ptr;
-    VkDeviceMemory upload;
-};
-Tex_Allocator create_tex_allocator(Tex_Allocator_Create_Info *info);
-void destroy_tex_allocator(Tex_Allocator *alloc);
-
-Tex_Allocation* tex_add(Tex_Allocator *alloc, String *uri);
-
-bool tex_staging_queue_begin(Tex_Allocator *alloc);
-bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex, bool upload_check = false);
-bool tex_staging_queue_submit(Tex_Allocator *alloc);
-void tex_staging_queue_pop(Tex_Allocator *alloc);
-
-bool tex_upload_queue_begin(Tex_Allocator *alloc);
-bool tex_upload_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex);
-bool tex_upload_queue_submit(Tex_Allocator *alloc);
-void tex_upload_queue_reset(Tex_Allocator *alloc);
-
-    /* End Texture Allocation */
+    /* Model Memory Management End */
 
     /* Model Loading */
 struct Node;
