@@ -45,6 +45,11 @@ static constexpr float VERTEX_DEVICE_SIZE   = 1048576;
 static constexpr float INDEX_DEVICE_SIZE    = 1048576;
 static constexpr float TEXTURE_DEVICE_SIZE  = 1048576 * 8;
 
+enum Memory_Flag_Bits {
+    GPU_MEMORY_UMA_BIT = 0x01,
+    GPU_MEMORY_DISCRETE_TRANSFER_BIT = 0x02,
+};
+typedef u8 Memory_Flags;
 struct Gpu_Memory {
     VkDeviceMemory depth_mem[DEPTH_ATTACHMENT_COUNT];
     VkDeviceMemory color_mem[COLOR_ATTACHMENT_COUNT];
@@ -72,6 +77,8 @@ struct Gpu_Memory {
     void *index_ptrs[INDEX_STAGE_COUNT];
     void *tex_ptrs[TEXTURE_STAGE_COUNT];
     void *uniform_ptrs[UNIFORM_BUFFER_COUNT];
+
+    Memory_Flags flags; // @Todo
 };
 struct Gpu_Info {
     VkPhysicalDeviceProperties props;

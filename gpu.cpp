@@ -292,6 +292,7 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
     VkDeviceQueueCreateInfo transfer_queue_create_info;
 
     if (transfer_queue_index != graphics_queue_index) {
+        gpu->memory.flags |= GPU_MEMORY_DISCRETE_TRANSFER_QUEUE;
         println("Selected Device (Primary Choice) %c", props.deviceName);
 
         queue_info_count++;
@@ -906,6 +907,7 @@ void allocate_memory() {
     u32 device_mem_type;
     u32 both_mem_type;
     if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+        gpu->memory.flags |= GPU_MEMORY_UMA;
         integrated_gpu_get_memory_type(
             &mem_props,
             largest_heap_device,
@@ -2191,10 +2193,6 @@ bool tex_staging_queue_add(Tex_Allocator *alloc, Tex_Allocation *tex, bool uploa
     alloc->to_stage_count++;
     return true;
 }
-// Takes the index of the last allocation in the queue added as a cache, and evicts in reverse order from this index
-// while there is insufficient free size for non cached queued allocations
-void tex_staging_queue_evict_cache(Tex_Allocator *alloc, u32 index) {
-}
 bool tex_staging_queue_submit(Tex_Allocator *alloc) {
     // Find textures in drawn + uploaded state (used further below without branch, so find once here, I can't really
     // see anywhere better in the function to put this, but it does seem weird right at function start...)
@@ -3174,457 +3172,19 @@ void free_static_model(Static_Model *model) {
     //free_h(model->nodes);
 }
 
-    /* Model Map */
-Static_Model_Map create_static_model_map(u32 cap, Model_Allocators *allocs) {
-    Static_Model_Map ret = {};
-    ret.cap = cap;
-    ret.weights = malloc_h(cap, 16); // align 16 for simd
-    ret.hashes = (u64*)malloc_h(sizeof(u64) * cap, 16);
-    ret.map = HashMap<u64, Static_Model>::get(cap);
-    ret.allocators = *allocs;
-    return ret;
-}
-void destroy_static_model_map(Static_Model_Map *map) {
-    auto iter = map->map.iter();
-    auto next = iter.next();
-    while(next) {
-        free_static_model(&next->value);
-        next = iter.next();
-    }
-
-    free_h(map->weights);
-    free_h(map->hashes);
-    map->map.kill();
-    *map = {};
-}
-
-u64 add_static_model(Static_Model_Map *map, String *name, Static_Model *model) {
-    if (map->cap == map->count)
-        return Max_u64;
-
-    u64 hash = get_string_hash(name);
-    u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
-    if (h_idx != Max_u32) {
-        correct_weights(map->count, map->weights, map->hashes, h_idx, 1, 0);
-        return hash;
-    }
-
-    ASSERT(map->count <= map->cap, "");
-    if (map->count >= map->cap)
-        return Max_u64;
-
-    map->map.insert_hash(hash, model);
-    map->hashes[map->count] = hash;
-    map->count++;
-
-    return hash;
-}
-Static_Model* get_model_by_name(Static_Model_Map *map, const char *name) {
-    u64 hash = calculate_hash(name);
-    return get_model_by_hash(map, hash);
-}
-Static_Model* get_model_by_hash(Static_Model_Map *map, u64 hash) {
-    u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
-
-    ASSERT(h_idx != Max_u32, "Invalid Model Hash");
-    if (h_idx == Max_u32)
-        return NULL;
-
-    // @Test Find good increase + decrease weights
-    correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
-    Static_Model *model = map->map.find_hash(hash);
-
-    ASSERT(model, "HashMap Failed To Find Model Hash");
-    return model;
-}
-
-/*
-                                        ** Model Map API Explanation **
-    map_queue_model(), map_submit_queue():
-        Adds model to staging queue, but checks if the queue size is too large to upload: this allows submit_queue()
-        to call the upload queue functions without complications (such as knowing which models are uploaded and which
-        are staged and how to deal with this), so if you are going to draw fewer models than would overflow the upload
-        cap you can use it to streamline upload. These functions update the internal map queue.
-
-    map_queue_model_stage(), map_queue_model_upload() (plus other functions which specify 'stage' or 'upload' etc):
-        More granular control over what happens to the models. It may be the case that you have some large group
-        of models that you know you will spend a bunch of time drawing, but that to upload them all at once would
-        overflow. These functions allow staging this large group and then incrementally uploading them. These
-        functions do not update the internal map queue.
-
-    *** @Note THESE SYSTEMS CANNOT BE USED SIMULTANEOUSLY (obviously). ***
-        If map_queue_model() is using the allocator queues, you can only use more granular functions after having
-        called the allocator submission functions AND submitting the allocator command buffers.
-        In the case of submit_models_stage(), technically this releases the queue for use, however its use case
-        is if you have a large number of allocations to incrementally upload, therefore really the queue should
-        not be used by queue_model() and submit_queue() before all the upload work is also complete.
-
-*/
-// @Unimplemented
-bool map_queue_model_stage(Static_Model_Map *map, u64 hash) {return false;}
-bool map_queue_model_upload(Static_Model_Map *map, u64 hash) {return false;}
-bool map_submit_models_stage(Static_Model_Map *map) {return false;}
-bool map_submit_models_upload(Static_Model_Map *map) {return false;}
-
-Result map_queue_model(Static_Model_Map *map, u64 hash, bool adjust_weights) {
-    //
-    // @Note This function assumes that if the queue is in use (no need to call begin_queue) then it is safe to
-    // add to the queue.
-    //
-
-    // Stuff the queue with the highest weight model allocations.
-    Static_Model *model;
-    if (map->allocators.index.upload_queue == Max_u64) { // If one allocator's queue is free, they must all be free.
-        ASSERT(map->allocators.vertex.upload_queue == Max_u64, "See Above Comment");
-        ASSERT(map->allocators.tex.staging_queue == Max_u64, "See Above Comment");
-        upload_queue_begin(&map->allocators.index);
-        for(u32 i = 0; i < map->count; ++i) {
-            model = map->map.find_hash(map->hashes[i]);
-            if (!upload_queue_add(map->allocators.index, model->index_allocation))
-                break;
-        }
-        upload_queue_begin(&map->allocators.vert);
-        for(u32 i = 0; i < map->count; ++i) {
-            model = map->map.find_hash(map->hashes[i]);
-            if (!upload_queue_add(map->allocators.vert->vert_allocation))
-                break;
-        }
-        tex_staging_queue_begin(&map->allocators.tex);
-        for(u32 i = 0; i < model->mat_count; ++i) {
-            // @Note @Todo The return codes here could be improved, as since upload_check == true,
-            // tex_staging_queue_add() can return false when the upload queue would be full were everything in the
-            // staging queue submitted to the upload queue. Hence the return code TEX_STAGING_QUEUE_FULL is misleading.
-            // Although really it is not a big deal, as I cannot see one truly being more useful than the other.
-            // (It would only be useful if then the decision were made to instead begin calling the more granular
-            // staging functions for the map instead after reacting to the return code. But the overhead of switching
-            // paths seems to defeat the purpose of not having used that in the first place if the risk of overflow
-            // was present.)
-            if (model->mats[i].tex_base.allocation) {
-                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_base.allocation, true))
-                    break;
-            }
-            if (model->mats[i].tex_pbr.allocation) {
-                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_pbr.allocation, true))
-                    break;
-            }
-            if (model->mats[i].tex_norm.allocation) {
-                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_norm.allocation, true))
-                    break;
-            }
-            if (model->mats[i].tex_occlusion.allocation) {
-                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_occlusion.allocation, true))
-                    break;
-            }
-            if (model->mats[i].tex_emissive.allocation) {
-                if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_emissive.allocation, true))
-                    break;
-            }
-        }
-    }
-
-    if (adjust_weights) {
-        u32 h_idx = find_hash_idx(map->count, map->hashes, hash);
-        ASSERT(h_idx != Max_u32, "Invalid Model Hash");
-        if (h_idx == Max_u32)
-            return NULL;
-        // @Test Find good increase + decrease weights
-        correct_weights(map->count, map->weights, map->hashes, h_idx, 5, 1);
-    }
-
-    model = map->map.find_hash(hash);
-    ASSERT(model, "HashMap Failed To Find Model");
-    if (!model)
-        return Result::MODEL_HASH_NOT_FOUND;
-
-    // @Note @Todo Currently vertex data is small enough that I do not need to worry about it being evicted to disk:
-    // when a model is loaded, it just lives in staging memory for the program lifetime. Therefore we add straight
-    // to upload queue. Return false if the upload queue is full.
-    if (!upload_queue_add(&map->allocators.vert, model->vert_allocation))
-        return Result::VERTEX_UPLOAD_QUEUE_FULL;
-    if (!upload_queue_add(&map->allocators.index, model->index_allocation))
-        return Result::INDEX_UPLOAD_QUEUE_FULL;
-
-    // Stage queue materials' textures
-    for(u32 i = 0; i < model->mat_count; ++i) {
-        // @Note @Todo The return codes here could be improved, as since upload_check == true,
-        // tex_staging_queue_add() can return false when the upload queue would be full were everything in the
-        // staging queue submitted to the upload queue. Hence the return code TEX_STAGING_QUEUE_FULL is misleading.
-        // Although really it is not a big deal, as I cannot see one truly being more useful than the other.
-        // (It would only be useful if then the decision were made to instead begin calling the more granular
-        // staging functions for the map instead after reacting to the return code. But the overhead of switching
-        // paths seems to defeat the purpose of not having used that in the first place if the risk of overflow
-        // was present.)
-        if (model->mats[i].tex_base.allocation)
-            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_base.allocation, true))
-                return Result::TEX_STAGING_QUEUE_FULL;
-        if (model->mats[i].tex_pbr.allocation)
-            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_pbr.allocation, true))
-                return Result::TEX_STAGING_QUEUE_FULL;
-        if (model->mats[i].tex_norm.allocation)
-            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_norm.allocation, true))
-                return Result::TEX_STAGING_QUEUE_FULL;
-        if (model->mats[i].tex_occlusion.allocation)
-            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_occlusion.allocation, true))
-                return Result::TEX_STAGING_QUEUE_FULL;
-        if (model->mats[i].tex_emissive.allocation)
-            if (!tex_staging_queue_add(&map->allocators.tex, model->mats[i].tex_emissive.allocation, true))
-                return Result::TEX_STAGING_QUEUE_FULL;
-    }
-
-    map->queued[map->queued_count] = hash;
-    map->queued_count++;
-    return Result::SUCCESS;
-}
-/*
-    Model Map Caching System:
-        Each allocation in the model map has a weight. After all models have been added to a map,
-        these models are staged and uploaded to video memory in order of weight, while the sizes
-        staged and uploaded are less than their respective caps. Therefore, in memory, the models
-        with the greatest weights have their resources at the lowest addresses in their allocators'
-        respective memory. These weights are initially set by the programmer. When a model is added
-        to the stage/upload queue after this initial phase, if they are not already cached in the
-        allocator, they must be added to the allocators' queues. The map calls submit functions, on
-        the allocators. If a call fails, the map will initiate the following pseudo code:
-
-                while(!find_contiguous_free(allocator.masks)) {
-                    make_free(range_of_cached_allocation_with_lowest_weight);
-                }
-                submit_queue(allocator); // resubmit the queue now that there is sufficient free memory
-
-        then, when submitting the upload, space is made for the allocation which has been queued at the
-        end of the allocator if its weight is too low for caching, while allocations with high enough
-        weights for caching are uploaded in the order of their weights at the lowest addresses.
-
-        The benefits of this system:
-
-        It alleviates fragmentation as allocations are removed in a way that at least keeps RANGES
-        of weights contiguous: the weights will fluctuate, and it is highly likely that at times
-        there will be allocations with high weights at much higher addresses than they should be.
-        This is where fragmentation occurs, as these allocations are not removed, while those around
-        them are, interrupting contiguous blocks. However, as the above algorithm runs, the
-        number and size of contiguous blocks will increase, until eventually there is sufficient
-        size for the queue submission. In this case, all the values with the highest weights will be
-        reuploaded to memory, with a trend towards the higher weights being at lower addresses,
-        ordered by their weights, now with weights that are ever closer to their true values.
-
-        The cache being significantly overwritten and reuploaded really should not happen as long as
-        the initial weights, and increase and decrease sizes are set to effective values, to allow
-        models to rise and fall in priority with their usage, but without wild fluctuations. For instance,
-        shooting an automatic weapon should not cause a muzzle flash texture to reach a crazy high priority
-        due to a short burst of rapid usage. Generally, allocations should be found in the cache, there should
-        only be small fluctuations of overwrite and reupload in the tail of the allocator, so the above loop
-        should never run for very many iterations, and the amount of data actually being uploaded on a queue
-        submission should be low.
-*/
-Result map_submit_queue(Static_Model_Map *map) {
-/*
-                *** THESE RETURN CODES INDICATE AN ERROR, THEY SHOULD NEVER OCCUR ***
-
-    TEX_UPLOAD_QUEUE_FULL:
-        map_queue_model() MUST ensure that any size in the staging queue will also fit in the upload queue.
-
-    TEX_UPLOAD_QUEUE_IN_USE:
-        All queues MUST be available when this function is called.
-
-    See 'Model Map API Explanation' (above, greppable) for more info.
-
-*/
-
-
-//bool map_queue_model_stage(Static_Model_Map *map, u64 hash) {return false;}
-//bool map_queue_model_upload(Static_Model_Map *map, u64 hash) {return false;}
-//bool map_submit_models_stage(Static_Model_Map *map) {return false;}
-//bool map_submit_models_upload(Static_Model_Map *map) {return false;}
-
-    // If there is space in the allocators, stuff in the allocations with the greatest weights to increase the
-    // chances of them not having to be reloaded from memory.
-    #if MODEL_MAP_CACHING
-    u32 cached_count = 0;
-    Static_Model *model;
-    for(u32 i = 0; i < map->count; ++i) {
-    }
-    #endif
-
-    bool check;
-    if (!upload_queue_submit(&map->allocators.vert))
-        return Result::VERTEX_UPLOAD_BUFFER_FULL;
-    if (!upload_queue_submit(&map->allocators.index))
-        return Result::INDEX_UPLOAD_BUFFER_FULL;
-
-    // Complete staging pipeline
-    if (!tex_staging_queue_submit(&map->allocators.tex))
-        return Result::TEX_STAGING_BUFFER_FULL;
-
-    if (!tex_upload_queue_begin(&map->allocators.tex)) {
-        ASSERT(false, "See Comment At Beginning Of Function");
-        return Result::TEX_UPLOAD_QUEUE_IN_USE;
-    }
-
-    // Upload materials' textures
-    for(u32 i = 0; i < map->queued_count; ++i) {
-        model = map->map.find_hash(map->queued[i]);
-        ASSERT(model, "HashMap Failed To Find Model");
-        for(u32 i = 0; i < model->mat_count; ++i) {
-            if (model->mats[i].tex_base.allocation)
-                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_base.allocation)) {
-                    ASSERT(false, "See Comment At Beginning Of Function");
-                    return Result::TEX_UPLOAD_QUEUE_FULL;
-                }
-            if (model->mats[i].tex_pbr.allocation)
-                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_pbr.allocation)) {
-                    ASSERT(false, "See Comment At Beginning Of Function");
-                    return Result::TEX_UPLOAD_QUEUE_FULL;
-                }
-            if (model->mats[i].tex_norm.allocation)
-                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_norm.allocation)) {
-                    ASSERT(false, "See Comment At Beginning Of Function");
-                    return Result::TEX_UPLOAD_QUEUE_FULL;
-                }
-            if (model->mats[i].tex_occlusion.allocation)
-                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_occlusion.allocation)) {
-                    ASSERT(false, "See Comment At Beginning Of Function");
-                    return Result::TEX_UPLOAD_QUEUE_FULL;
-                }
-            if (model->mats[i].tex_emissive.allocation)
-                if (!tex_upload_queue_add(&map->allocators.tex, model->mats[i].tex_emissive.allocation)) {
-                    ASSERT(false, "See Comment At Beginning Of Function");
-                    return Result::TEX_UPLOAD_QUEUE_FULL;
-                }
-        }
-    }
-    if (!tex_upload_queue_submit(&map->allocators.tex))
-        return Result::TEX_UPLOAD_MEMORY_FULL;
-
-    // Make them a bit easier to get a hold of
-    map->vertex_graphics_cmd = map->allocators.vert.graphics_cmd;
-    map->vertex_transfer_cmd = map->allocators.vert.transfer_cmd;
-    map->index_graphics_cmd = map->allocators.index.graphics_cmd;
-    map->index_transfer_cmd = map->allocators.index.transfer_cmd;
-    map->tex_graphics_cmd = map->allocators.vert.graphics_cmd;
-    map->tex_transfer_cmd = map->allocators.index.transfer_cmd;
-
-    map->queued_count = 0;
-    return Result::SUCCESS;
-}
-
-// Name Overloads
-Result map_queue_model(Static_Model_Map *map, const char *name) {
-    u64 hash = calculate_hash(name);
-    return map_queue_model(map, hash);
-}
-
-#endif
-
-// functions like this are such a waste of time to write...
-u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
-        switch(accessor_format) {
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U8:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S8:
-                return 1;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S8:
-                return 2;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S8:
-                return 3;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S8:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S16:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT16:
-                return 2;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT16:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT16:
-                return 6;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT16:
-                 return 8;
-
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S32:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT32:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT32:
-                return 8;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT32:
-                return 12;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT32:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S8:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S8:
-                return 9;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S8:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT16:
-                return 8;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT16:
-                return 18;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT16:
-                return 32;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT32:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT32:
-                return 36;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT32:
-                return 64;
-
-            default:
-                ASSERT(false, "Invalid Accessor Format");
-                return Max_u32;
-        }
-}
-
 //
 // @CurrentTask Allocator Redo (I have the hang of it now, this is the final system)
 //
+
+/*
+   Allocator To Implement:
+       find_flags_<>()
+       adjust_weights()
+       fopening + freading + fwrite at correct file offset
+
+   Tex_Allocator To Implement:
+    @Todo
+*/
 
 Allocator_Result begin_allocation(Allocator *alloc) {
     ASSERT(alloc->to_stage_count == Max_u32, "");
@@ -3798,16 +3358,19 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     // and we need not do anything. This is most likely, as vertex data should just be able to live in memory
     // I am pretty certain. In case it can't (I would like to support even shit hardware, as everyone should)
     // the same range searching functionality is implemented here for disk->upload (in the same way as upload->device)
-    if (alloc->to_upload_count == 0) {
+    Gpu *gpu = get_gpu_instance();
+    Memory_Flags mem_flags = gpu->memory.flags;
+    // Really this should never be used. Upload queue shouldnt be used at all if UMA
+    if (alloc->to_upload_count == 0 || mem_flags & GPU_MEMORY_UMA) {
         alloc->to_upload_count == Max_u32;
         return SUCCESS;
     }
 
-    u32 free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
-    Allocation *tmp;
-    u32 *indices = alloc;
     u32 evict_idx;
     u32 count;
+    Allocation *tmp;
+    u32 *indices = alloc;
+    u32 free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
     if (free_block == Max_u32) {
         count = find_flags(alloc->allocation_states, indices, UPLOADED, TO_DRAW);
         for(u32 i = count - 1; i != Max_u32; --i) {
@@ -3839,11 +3402,106 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     u32 tmp = find_flags_any(alloc->allocation_states, indices, TO_DRAW, UPLOADED);
     ASSERT(tmp == alloc->to_upload_count, "UUUGHGHGHHGGHHH!!!");
     memcpy(indices_final + count, indices, alloc->to_upload_count * sizeof(u32));
-    eject_repeat_indices(count + tmp, indices_final);
+    count = eject_repeat_indices(count + tmp, indices_final);
+
+    VkBufferCopy2 *regions = (VkBufferCopy2*)malloc_t(sizeof(VkBufferCopy2) * count, 8);
+    u64 g = alloc->upload_bit_granularity;
+    u64 upload_offset = free_block * g;
+    for(u32 i = 0; i < count; ++i) {
+        tmp = &alloc->allocations[indices[i]];
+        regions[i] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+        regions[i].srcOffset = tmp->stage_offset;
+        regions[i].dstOffset = tmp->upload_offset;
+        regions[i].size = tmp->size;
+        upload_offset = align(tmp->size, g);
+    }
+
+    VkCopyBufferInfo2 copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2};
+    copy_info.srcBuffer = alloc->stage;
+    copy_info.dstBuffer = alloc->upload;
+    copy_info.regionCount = region_count;
+    copy_info.pRegions = regions;
+
+    VkDevice device = gpu->device;
+
+    VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmd_alloc_info.commandPool = alloc->graphics_pool;
+    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    cmd_alloc_info.commandBufferCount = 1;
+    auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmd);
+    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+
+    if (mem_flags & GPU_MEMORY_DISCRETE_TRANSFER_BIT == 0) {
+        cmd_alloc_info.commandPool = alloc->transfer_pool;
+        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
+        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+    }
+
+    VkCommandBufferInheritanceInfo inheritance = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    VkCommandBufferBeginInfo cmd_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    cmd_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    cmd_begin_info.pInheritanceInfo = &inheritance;
+
+    // Submit copies later with other commands that use the graphics queue
+    if (alloc->flags & (u8)Flags::UNIFIED_TRANSFER) {
+        vkBeginCommandBuffer(alloc->graphics_cmd, &cmd_begin_info);
+
+        VkMemoryBarrier2 mem_barr = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        mem_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
+        mem_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
+        mem_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
+        mem_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
+
+        VkDependencyInfo dep = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers = &mem_barr;
+
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+
+        vkEndCommandBuffer(alloc->graphics_cmd);
+
+    // Submit copies now since transfer queue is discrete
+    } else {
+        vkBeginCommandBuffer(alloc->transfer_cmd, &cmd_begin_info);
+
+        vkCmdCopyBuffer2(alloc->transfer_cmd, &copy_info);
+
+        VkBufferMemoryBarrier2 buf_barr = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        buf_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
+        buf_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
+        buf_barr.srcQueueFamilyIndex = gpu->transfer_queue_index;
+        buf_barr.dstQueueFamilyIndex = gpu->graphics_queue_index;
+        buf_barr.buffer = alloc->upload;
+        buf_barr.offset = upload_begin;
+        buf_barr.size = align(upload_end, gpu->info.props.limits.nonCoherentAtomSize);
+
+        VkDependencyInfo dep_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep_info.bufferMemoryBarrierCount = 1;
+        dep_info.pBufferMemoryBarriers = &buf_barr;
+
+        vkCmdPipelineBarrier2(alloc->transfer_cmd, &dep_info);
+
+        vkEndCommandBuffer(alloc->transfer_cmd);
+
+        vkBeginCommandBuffer(alloc->graphics_cmd, &cmd_begin_info);
+
+        buf_barr.srcStageMask = 0x0;
+        buf_barr.srcAccessMask = 0x0;
+        buf_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
+        buf_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
+
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep_info);
+
+        vkEndCommandBuffer(alloc->graphics_cmd);
+    }
+
+    alloc->upload_queue = Max_u64;
+    return true;
 
     return SUCCESS;
 }
 
+// Allocator Helpers
 u32 eject_repeat_indices(u32 count, u32 *indices) {
     __m128i a;
     __m128i b;
@@ -3963,6 +3621,113 @@ u32 eject_repeat_indices(u32 count, u32 *indices) {
         inc += 4;
     }
     return count - dec;
+}
+
+// functions like this are such a waste of time to write...
+u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
+        switch(accessor_format) {
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U8:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S8:
+                return 1;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S8:
+                return 2;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S8:
+                return 3;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S8:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S16:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT16:
+                return 2;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT16:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT16:
+                return 6;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT16:
+                 return 8;
+
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S32:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT32:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT32:
+                return 8;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT32:
+                return 12;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT32:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S8:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S8:
+                return 9;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S8:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT16:
+                return 8;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT16:
+                return 18;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT16:
+                return 32;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT32:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT32:
+                return 36;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT32:
+                return 64;
+
+            default:
+                ASSERT(false, "Invalid Accessor Format");
+                return Max_u32;
+        }
 }
 
 } // namespace model
