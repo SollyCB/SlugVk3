@@ -1234,7 +1234,6 @@ VkPipelineShaderStageCreateInfo* create_pl_shaders(u32 count, Shader *shaders) {
     return ret;
 }
 
-
 // `Model Loading
 namespace model {
 #if 1
@@ -1257,6 +1256,126 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 */
 
         /* Begin Allocator Helper Algorithms */
+u32 eject_repeat_indices(u32 count, u32 *indices) {
+    __m128i a;
+    __m128i b;
+    u16 mask;
+    u32 inc = 0;
+    u32 dec = 0;
+    u32 tmp;
+    u32 idx;
+    u16 mask_mask = 0b0001000100010001;
+    u32 adj_count = align(count, 4);
+    u32 move;
+    u32 mov_t;
+    u32 mov_f;
+    for(u32 i = 0; i < count - dec; ++i) {
+        inc = 4 * (i >> 2);
+        b = _mm_set1_epi32(indices[i]);
+        a = _mm_load_si128((__m128i*)(indices + inc));
+        a = _mm_cmpeq_epi32(a, b);
+        mask = _mm_movemask_epi8(a);
+        mask &= mask_mask;
+        mask ^= 1 << (4 * (i & 3)); // clear self match
+        mask &= 0xffff >> (((4 - ((count - dec) & 3)) * ((u32)(count - dec < inc + 4))) << 2); // clear overflow matches beyond count
+
+        tmp = (u32)(pop_count16(mask) >= 1);
+        dec += tmp;
+        idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+        idx *= tmp;
+
+        // shuffle everything backwards if a dupe was found
+        move = (u32)(inc >= idx) & tmp;
+        mov_t = inc * move;
+        mov_f = max_clamp32((count - dec) - 1, inc + 1) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move = (u32)(inc + 1 >= idx) & tmp;
+        mov_t = (inc + 1) * move;
+        mov_f = max_clamp32(count - 1, inc + 2) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move = (u32)(inc + 2 >= idx) & tmp;
+        mov_t = (inc + 2) * move;
+        mov_f = max_clamp32(count - 1, inc + 3) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move = (u32)(inc + 3 >= idx) & tmp;
+        mov_t = (inc + 3) * move;
+        mov_f = max_clamp32(count - 1, inc + 4) * move;
+        indices[mov_t] = indices[mov_f];
+
+        inc += 4;
+        while(inc + 4 < count - dec) { // do not check into potential overflow range in loop
+            a = _mm_load_si128((__m128i*)(indices + inc));
+            a = _mm_cmpeq_epi32(a, b);
+            mask = _mm_movemask_epi8(a);
+            mask &= mask_mask;
+
+            tmp = (u32)(pop_count16(mask) >= 1);
+            dec += tmp;
+            idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+            idx *= tmp;
+
+            move |= (u32)(inc >= idx) & tmp;
+            mov_t = inc * move;
+            mov_f = max_clamp32(count - 1, inc + 1) * move;
+            indices[mov_t] = indices[mov_f];
+
+            move |= (u32)(inc + 1 >= idx) & tmp;
+            mov_t = (inc + 1) * move;
+            mov_f = max_clamp32(count - 1, inc + 2) * move;
+            indices[mov_t] = indices[mov_f];
+
+            move |= (u32)(inc + 2 >= idx) & tmp;
+            mov_t = (inc + 2) * move;
+            mov_f = max_clamp32(count - 1, inc + 3) * move;
+            indices[mov_t] = indices[mov_f];
+
+            move |= (u32)(inc + 3 >= idx) & tmp;
+            mov_t = (inc + 3) * move;
+            mov_f = max_clamp32(count - 1, inc + 4) * move;
+            indices[mov_t] = indices[mov_f];
+
+            inc += 4;
+        }
+        // deal with potential overflow outside the loop
+        // (avoids having to check loop iteration relative to inc)
+        a = _mm_load_si128((__m128i*)(indices + inc));
+        a = _mm_cmpeq_epi32(a, b);
+        mask = _mm_movemask_epi8(a);
+        mask &= mask_mask * ((u32)(inc < count - dec));
+        mask &= 0xffff >> (((4 - ((count - dec) & 3)) << 2) * ((count - dec) & 3));
+
+        tmp = (u32)(pop_count16(mask) >= 1);
+        dec += tmp;
+        idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+        idx *= tmp;
+
+        move |= (u32)(inc >= idx) & tmp;
+        mov_t = inc * move;
+        mov_f = max_clamp32(count - 1, inc + 1) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move |= (u32)(inc + 1 >= idx) & tmp;
+        mov_t = (inc + 1) * move;
+        mov_f = max_clamp32(count - 1, inc + 2) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move |= (u32)(inc + 2 >= idx) & tmp;
+        mov_t = (inc + 2) * move;
+        mov_f = max_clamp32(count - 1, inc + 3) * move;
+        indices[mov_t] = indices[mov_f];
+
+        move |= (u32)(inc + 3 >= idx) & tmp;
+        mov_t = (inc + 3) * move;
+        mov_f = max_clamp32(count - 1, inc + 4) * move;
+        indices[mov_t] = indices[mov_f];
+
+        inc += 4;
+    }
+    return count - dec;
+}
 static u32 find_contiguous_free(u32 count, u64 *bits, u32 offset, u32 req_count) {
     u32 restore = bits[offset >> 6];
     u64 mask = 0x01;
@@ -1543,7 +1662,6 @@ u32 find_lowest_flagged_weight(u32 count, u8 *weights) {
         /* End Allocator Helper Algorithms */
 
         /* Implement Vertex Attribute Allocator */
-
 Allocator create_allocator(Allocator_Create_Info *info) {
     ASSERT(info->upload_cap % (info->bit_granularity * 64) == 0,
             "upload_cap \% bit_granularity * 64 must be equivalent to 0");
@@ -3178,7 +3296,6 @@ void free_static_model(Static_Model *model) {
 
 /*
    Allocator To Implement:
-       find_flags_<>()
        adjust_weights()
        fopening + freading + fwrite at correct file offset
 
@@ -3285,7 +3402,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     free_block_found: // goto
 
     u64 block_size = free_block * alloc->stage_bit_granularity;
-    count = find_flags_any(alloc->allocation_states, indices, 0xff, STAGED);
+    count = simd_find_flags_u8(alloc->allocation_states, indices, 0xff, STAGED);
     u32 indices_final = alloc;
     u64 size = 0;
     for(u32 i = 0; i < count; ++i) {
@@ -3499,128 +3616,6 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     return true;
 
     return SUCCESS;
-}
-
-// Allocator Helpers
-u32 eject_repeat_indices(u32 count, u32 *indices) {
-    __m128i a;
-    __m128i b;
-    u16 mask;
-    u32 inc = 0;
-    u32 dec = 0;
-    u32 tmp;
-    u32 idx;
-    u16 mask_mask = 0b0001000100010001;
-    u32 adj_count = align(count, 4);
-    u32 move;
-    u32 mov_t;
-    u32 mov_f;
-    for(u32 i = 0; i < count - dec; ++i) {
-        inc = 4 * (i >> 2);
-        b = _mm_set1_epi32(indices[i]);
-        a = _mm_load_si128((__m128i*)(indices + inc));
-        a = _mm_cmpeq_epi32(a, b);
-        mask = _mm_movemask_epi8(a);
-        mask &= mask_mask;
-        mask ^= 1 << (4 * (i & 3)); // clear self match
-        mask &= 0xffff >> (((4 - ((count - dec) & 3)) * ((u32)(count - dec < inc + 4))) << 2); // clear overflow matches beyond count
-
-        tmp = (u32)(pop_count16(mask) >= 1);
-        dec += tmp;
-        idx = inc + (count_trailing_zeros_u16(mask) >> 2);
-        idx *= tmp;
-
-        // shuffle everything backwards if a dupe was found
-        move = (u32)(inc >= idx) & tmp;
-        mov_t = inc * move;
-        mov_f = max_clamp32((count - dec) - 1, inc + 1) * move;
-        indices[mov_t] = indices[mov_f];
-
-        move = (u32)(inc + 1 >= idx) & tmp;
-        mov_t = (inc + 1) * move;
-        mov_f = max_clamp32(count - 1, inc + 2) * move;
-        indices[mov_t] = indices[mov_f];
-
-        move = (u32)(inc + 2 >= idx) & tmp;
-        mov_t = (inc + 2) * move;
-        mov_f = max_clamp32(count - 1, inc + 3) * move;
-        indices[mov_t] = indices[mov_f];
-
-        move = (u32)(inc + 3 >= idx) & tmp;
-        mov_t = (inc + 3) * move;
-        mov_f = max_clamp32(count - 1, inc + 4) * move;
-        indices[mov_t] = indices[mov_f];
-
-        inc += 4;
-        while(inc + 4 < count - dec) { // do not check into potential overflow range in loop
-            a = _mm_load_si128((__m128i*)(indices + inc));
-            a = _mm_cmpeq_epi32(a, b);
-            mask = _mm_movemask_epi8(a);
-            mask &= mask_mask;
-
-            tmp = (u32)(pop_count16(mask) >= 1);
-            dec += tmp;
-            idx = inc + (count_trailing_zeros_u16(mask) >> 2);
-            idx *= tmp;
-
-            move |= (u32)(inc >= idx) & tmp;
-            mov_t = inc * move;
-            mov_f = max_clamp32(count - 1, inc + 1) * move;
-            indices[mov_t] = indices[mov_f];
-
-            move |= (u32)(inc + 1 >= idx) & tmp;
-            mov_t = (inc + 1) * move;
-            mov_f = max_clamp32(count - 1, inc + 2) * move;
-            indices[mov_t] = indices[mov_f];
-
-            move |= (u32)(inc + 2 >= idx) & tmp;
-            mov_t = (inc + 2) * move;
-            mov_f = max_clamp32(count - 1, inc + 3) * move;
-            indices[mov_t] = indices[mov_f];
-
-            move |= (u32)(inc + 3 >= idx) & tmp;
-            mov_t = (inc + 3) * move;
-            mov_f = max_clamp32(count - 1, inc + 4) * move;
-            indices[mov_t] = indices[mov_f];
-
-            inc += 4;
-        }
-        // deal with potential overflow outside the loop
-        // (avoids having to check loop iteration relative to inc)
-        a = _mm_load_si128((__m128i*)(indices + inc));
-        a = _mm_cmpeq_epi32(a, b);
-        mask = _mm_movemask_epi8(a);
-        mask &= mask_mask * ((u32)(inc < count - dec));
-        mask &= 0xffff >> (((4 - ((count - dec) & 3)) << 2) * ((count - dec) & 3));
-
-        tmp = (u32)(pop_count16(mask) >= 1);
-        dec += tmp;
-        idx = inc + (count_trailing_zeros_u16(mask) >> 2);
-        idx *= tmp;
-
-        move |= (u32)(inc >= idx) & tmp;
-        mov_t = inc * move;
-        mov_f = max_clamp32(count - 1, inc + 1) * move;
-        indices[mov_t] = indices[mov_f];
-
-        move |= (u32)(inc + 1 >= idx) & tmp;
-        mov_t = (inc + 1) * move;
-        mov_f = max_clamp32(count - 1, inc + 2) * move;
-        indices[mov_t] = indices[mov_f];
-
-        move |= (u32)(inc + 2 >= idx) & tmp;
-        mov_t = (inc + 2) * move;
-        mov_f = max_clamp32(count - 1, inc + 3) * move;
-        indices[mov_t] = indices[mov_f];
-
-        move |= (u32)(inc + 3 >= idx) & tmp;
-        mov_t = (inc + 3) * move;
-        mov_f = max_clamp32(count - 1, inc + 4) * move;
-        indices[mov_t] = indices[mov_f];
-
-        inc += 4;
-    }
-    return count - dec;
 }
 
 // functions like this are such a waste of time to write...

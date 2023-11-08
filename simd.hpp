@@ -32,18 +32,20 @@
 //
 
 // @Todo Where possible, convert older methodologies to use this updated version I somehow only just realised:
+// UPDATE: Reading through some of these older implementations, lots are pretty whack. Not terrible, but the newer
+// ones near the top are significantly better. But I am sure in a month I will think the same about those ones.
 /*
     while(inc < alloc->allocation_count) {
+        a = _mm_load_si128((__m128i*)(alloc->allocations + inc));
+        a = _mm_and_si128(a, b);
+        a = _mm_cmpeq_epi8(a, b);
+        mask = _mm_movemask_epi8(a);
         for(u32 i = 0; i < pop_count16(mask); ++i) {
             tz = count_trailing_zeros_u16(mask);
             indices[idx] = inc + tz;
             mask ^= 1 << tz;
         }
         inc += 16;
-        a = _mm_load_si128((__m128i*)(alloc->allocations + inc));
-        a = _mm_and_si128(a, b);
-        a = _mm_cmpeq_epi8(a, b);
-        mask = _mm_movemask_epi8(a);
     }
 */
 
@@ -77,70 +79,68 @@ inline static Vec4 simd_acos_vec4(Vec4 *vec4) {
     Vec4 *acos = (Vec4*)&a;
     return *acos;
 } */
-
-// Assumes 'to_check' aligned 16; Assumes safe to deref 'to_check + count + 15'
-inline static void simd_find_and_update_flags_u8(u32 count, u8 *to_update, u8 find_flags, u8 clear_flags, u8 set_flags) {
-    __m128i a = _mm_load_si128((__m128i*)(to_update));
-    __m128i b = _mm_set1_epi8(find_flags);
-    // @Note @Todo Seems like this could be done in one less instruction
-    a = _mm_and_si128(a, b);
-    a = _mm_cmpeq_epi8(a, b);
-    u16 mask = _mm_movemask_epi8(a);
-
-    u32 tz;
-    u32 inc = 0;
-    u32 idx = 0;
+inline static u32 simd_find_update_flags_u8(u32 count, u8 *flags, u8 find, u8 negate, u8 set, u8 clear, u32 *indices) {
+    __m128i a;
+    __m128i b = _mm_set1_epi8(find | negate);
+    __m128i c = _mm_set1_epi8(find);
+    __m128i d;
+    __m128i e;
+    u16 mask;
     u32 pc;
-    while(inc < count) {
-        pc = pop_count16(mask);
-        for(u32 i = 0; i < pc; ++i) {
-            tz = count_trailing_zeros_u16(mask);
-
-            to_update[inc + tz] &= ~clear_flags;
-            to_update[inc + tz] |= set_flags;
-
-            mask ^= 1 << tz;
-        }
-        inc += 16;
-        a = _mm_load_si128((__m128i*)(to_update + inc));
-        a = _mm_and_si128(a, b);
-        a = _mm_cmpeq_epi8(a, b);
-        mask = _mm_movemask_epi8(a);
-    }
-}
-
-// Assumes 'to_check' aligned 16; Assumes safe to deref 'to_check + count + 15'
-inline static u32 simd_find_flags_u8(u32 count, u8 *to_check, u8 flags, u32 *indices) {
-    __m128i a = _mm_load_si128((__m128i*)(to_check));
-    __m128i b = _mm_set1_epi8(flags);
-    // @Note @Todo Seems like this could be done in one less instruction
-    a = _mm_and_si128(a, b);
-    a = _mm_cmpeq_epi8(a, b);
-    u16 mask = _mm_movemask_epi8(a);
-
     u32 tz;
-    u32 inc = 0;
-    u32 idx = 0;
     u32 cnt = 0;
-    u32 pc;
+    u32 inc = 0;
     while(inc < count) {
+        a = _mm_load_si128((__m128i*)(flags + inc));
+        d = _mm_and_si128(a, b);
+        d = _mm_cmpeq_epi8(d, c);
+        mask = _mm_movemask_epi8(d);
+
+        // Can this be done in fewer instructions? Seems this seems like a few too many...
+        e = _mm_set1_epi8(clear);
+        e = _mm_and_si128(e, d);
+        a = _mm_and_si128(a, ~e);
+        e = _mm_set1_epi8(set);
+        e = _mm_and_si128(e, d);
+        a = _mm_or_si128(a, e);
+        _mm_store_si128((__m128i*)(flags + inc), a);
+
         pc = pop_count16(mask);
-        cnt += pc;
         for(u32 i = 0; i < pc; ++i) {
             tz = count_trailing_zeros_u16(mask);
-            indices[idx] = inc + tz;
-            idx++;
+            indices[cnt] = tz + inc;
             mask ^= 1 << tz;
+            cnt++;
         }
         inc += 16;
-        a = _mm_load_si128((__m128i*)(to_check + inc));
-        a = _mm_and_si128(a, b);
-        a = _mm_cmpeq_epi8(a, b);
-        mask = _mm_movemask_epi8(a);
     }
     return cnt;
 }
-
+inline static u32 simd_find_flags_u8(u32 count, u8 *flags, u8 find, u8 negate, u32 *indices) {
+    __m128i a;
+    __m128i b = _mm_set1_epi8(find | negate);
+    __m128i c = _mm_set1_epi8(find);
+    u16 mask;
+    u32 pc;
+    u32 tz;
+    u32 cnt = 0;
+    u32 inc = 0;
+    while(inc < count) {
+        a = _mm_load_si128((__m128i*)(flags + inc));
+        a = _mm_and_si128(a, b);
+        a = _mm_cmpeq_epi8(a, c);
+        mask = _mm_movemask_epi8(a);
+        pc = pop_count16(mask);
+        for(u32 i = 0; i < pc; ++i) {
+            tz = count_trailing_zeros_u16(mask);
+            indices[cnt] = tz + inc;
+            mask ^= 1 << tz;
+            cnt++;
+        }
+        inc += 16;
+    }
+    return cnt;
+}
 // assumes safe to deref data up to 16 bytes, counts bytes up to a closing char
 inline static int simd_strlen(const char *string, char close) {
     __m128i a = _mm_loadu_si128((__m128i*)string);
