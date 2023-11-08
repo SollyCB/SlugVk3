@@ -1256,6 +1256,81 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 */
 
         /* Begin Allocator Helper Algorithms */
+struct Weight_Args {
+    u32 count;
+    u8 *weights;
+    u8 *states;
+    u32 *indices;
+    Allocation *allocations;
+    u32 idx;
+    u8 inc;
+    u8 dec;
+};
+static void adjust_allocation_weights(Weight_Args *args) {
+    u32 idx = args->indices[args->idx];
+
+    // Find incremented weight
+    u8 w = args->weights[idx];
+    u8 tmp = Max_u8 + (u8)(w + args->inc > w);
+    w = (w + args->inc) | tmp;
+    w &= 0b0111'1111;
+
+    args->weights[idx] = Max_u8; // prevent matching itself
+    __m128i a;
+    __m128i b = _mm_set1_epi8(args->dec);
+    __m128i c = _mm_set1_epi8(w);
+    __m128i d;
+    __m128i e;
+    u32 inc = 0;
+    u32 pos = Max_u32;
+    u32 tmp32;
+    u16 mask;
+    // decrement all values
+    while(inc < args->count) {
+        a = _mm_load_si128((__m128i*)(args->weights + inc));
+        d = _mm_cmpgt_epi8(a, b);
+        e = _mm_and_si128(b, d);
+        a = _mm_sub_epi8(a, e);
+        a = _mm_and_si128(a, d);
+        _mm_store_si128((__m128i*)(args->weights + inc), a);
+
+        d = _mm_cmplt_epi8(a, c);
+        mask = _mm_movemask_epi8(d);
+        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32); // deliberate wrap
+        pos -= pos & tmp32;
+        pos += (count_trailing_zeros_u16(mask) + inc) & tmp32;
+
+        inc += 16;
+    }
+
+    Allocation allocation = args->allocations[idx];
+    u8 state = args->states[idx];
+    for(u32 i = idx; i > pos; --i) {
+        args->weights[i] = args->weights[i-1];
+        args->allocations[i] = args->allocations[i-1];
+        args->states[i] = args->states[i-1];
+    }
+    args->weights[pos] = w;
+    args->allocations[pos] = allocation;
+    args->states[pos] = state;
+
+    b = _mm_set1_epi32(pos - 1);
+    c = _mm_set1_epi32(idx);
+    inc = 0;
+    while(inc < args->count) {
+        a = _mm_load_si128((__m128i*)(args->indices + inc));
+        d = _mm_cmpgt_epi32(a, b);
+        e = _mm_cmplt_epi32(a, c);
+        d = _mm_and_si128(d, e);
+        e = _mm_set1_epi32(0x01);
+        d = _mm_and_si128(d, e);
+        a = _mm_add_epi32(a, d);
+        _mm_store_si128((__m128i*)(args->indices + inc), a);
+        inc += 4;
+    }
+    args->indices[args->idx] = pos;
+    return;
+}
 u32 eject_repeat_indices(u32 count, u32 *indices) {
     __m128i a;
     __m128i b;
@@ -3296,7 +3371,6 @@ void free_static_model(Static_Model *model) {
 
 /*
    Allocator To Implement:
-       adjust_weights()
        fopening + freading + fwrite at correct file offset
 
    Tex_Allocator To Implement:
@@ -3336,7 +3410,7 @@ Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 *key) {
     *key = alloc->allocation_count;
     alloc->allocation_count++;
     alloc->to_stage_count = Max_u32;
-    adjust_weights();
+    adjust_allocation_weights();
     return SUCCESS;
 }
 
@@ -3349,13 +3423,17 @@ Allocator_Result staging_queue_begin(Allocator *alloc) {
 }
 Allocator_Result staging_queue_add(Allocator *alloc, u32 idx) {
     idx = alloc->allocation_indices[idx];
-    idx = adjust_allocation_weights(
-                    alloc->allocation_count,
-                    alloc->allocation_weights,
-                    alloc->allocation_allocation_states,
-                    alloc->allocation_indices,
-                    alloc->allocations,
-                    3, 1); // @Test Find effective inc and dec values
+    Weight_Args w_args = {
+        .count = alloc->allocation_count,
+        .weights = alloc->allocation_weights,
+        .states = alloc->allocation_allocation_states,
+        .indices = alloc->allocation_indices,
+        .allocations = alloc->allocations,
+        .idx = idx,
+        .inc = 3,
+        .dec = 1 // @Test Find effective inc and dec values
+    };
+    idx = adjust_allocation_weights(&w_args);
     alloc->allocation_states[new_idx] |= TO_DRAW;
     if (alloc->allocation_states[new_idx] & STAGED)
         return SUCCESS;
@@ -3449,13 +3527,17 @@ Allocator_Result upload_queue_begin(Allocator *alloc) {
 }
 Allocator_Result upload_queue_add(Allocator *alloc, u32 idx) {
     idx = alloc->allocation_indices[idx];
-    idx = adjust_allocation_weights(
-                    alloc->allocation_count,
-                    alloc->allocation_weights,
-                    alloc->allocation_allocation_states,
-                    alloc->allocation_indices,
-                    alloc->allocations,
-                    3, 1); // @Test Find effective inc and dec values
+    Weight_Args w_args = {
+        .count = alloc->allocation_count,
+        .weights = alloc->allocation_weights,
+        .states = alloc->allocation_allocation_states,
+        .indices = alloc->allocation_indices,
+        .allocations = alloc->allocations,
+        .idx = idx,
+        .inc = 3,
+        .dec = 1 // @Test Find effective inc and dec values
+    };
+    idx = adjust_allocation_weights(&w_args);
 
     alloc->allocation_states[idx] |= TO_DRAW;
     if (alloc->allocation_states[idx] & UPLOADED)
