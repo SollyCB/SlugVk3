@@ -1,7 +1,7 @@
-#pragma once
+#ifndef SOL_BUILTIN_WRAPPERS_H_INCLUDE_GUARD_
+#define SOL_BUILTIN_WRAPPERS_H_INCLUDE_GUARD_
 #include "typedef.h"
 #include <immintrin.h>
-
 
 // builtin wrappers (why the fuck do they differ between compilers!!! the world is retarded)
 #ifndef _WIN32
@@ -97,4 +97,5 @@ inline float cosf(float x) {
 inline float acosf(float x) {
     return acosf(x);
 }
-#endif
+#endif // WIN32 or not
+#endif // include guard
