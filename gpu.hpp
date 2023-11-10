@@ -19,8 +19,8 @@
 #include "string.hpp"
 
 struct Settings {
-    VkSampleCountFlagBits tex_samples = VK_SAMPLE_COUNT_1_BIT;
-    u32 tex_mip_levels = 1;
+    VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
+    u32 mip_levels = 1;
     float anisotropy;
 };
 static Settings global_settings = {};
@@ -294,11 +294,14 @@ enum Allocator_Result {
     UPLOAD_FULL,
     ALLOCATOR_FULL,
     BIND_IMAGE_FAIL,
+    MISALIGNED_BIT_GRANULARITY,
 };
 enum Allocation_State_Bits {
     TO_DRAW = 0x02,
     STAGED = 0x04,
     UPLOADED = 0x08,
+    TO_STAGE = 0x10,
+    TO_UPLOAD = 0x20,
 };
 struct Allocation {
     u64 size;
@@ -356,6 +359,7 @@ struct Tex_Allocation {
     u64 stage_offset;
     u64 mem_offset;
     VkImage image;
+    u64 size; // aligned to bit granularity (no reason to keep it as it is)
     u32 width;
     u32 height;
 };
