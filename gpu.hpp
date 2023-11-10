@@ -291,7 +291,9 @@ enum Allocator_Result {
     QUEUE_IN_USE,
     QUEUE_FULL,
     STAGE_FULL,
+    UPLOAD_FULL,
     ALLOCATOR_FULL,
+    BIND_IMAGE_FAIL,
 };
 enum Allocation_State_Bits {
     TO_DRAW = 0x02,
@@ -350,7 +352,7 @@ Allocator_Result upload_queue_add(Allocator *alloc, u32 key);
 Allocator_Result upload_queue_submit(Allocator *alloc);
 
 struct Tex_Allocation {
-    const char *file_name;
+    String file_name;
     u64 stage_offset;
     u64 mem_offset;
     VkImage image;
@@ -379,6 +381,7 @@ struct Tex_Allocator {
     u32 to_upload_indices;
 
     u64 *hashes;
+    String_Buffer string_buffer;
 };
 // @Unimplemented
 Allocator_Result tex_add_texture(Allocator *alloc, String *file_name);

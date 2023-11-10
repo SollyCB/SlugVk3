@@ -41,6 +41,7 @@ inline static void destroy_string_buffer(String_Buffer *buf) {
     free_h(buf->buf);
     *buf = {};
 }
+// make a temp string into one backed by a buffer
 inline static String string_buffer_get_string(String_Buffer *buf, String *str) {
     String ret = {};
     ret.len = str->len;

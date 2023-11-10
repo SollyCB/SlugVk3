@@ -1266,7 +1266,7 @@ struct Weight_Args {
     u8 inc;
     u8 dec;
 };
-static void adjust_allocation_weights(Weight_Args *args) {
+static u32 adjust_allocation_weights(Weight_Args *args) {
     u32 idx = args->indices[args->idx];
 
     // Find incremented weight
@@ -1329,7 +1329,7 @@ static void adjust_allocation_weights(Weight_Args *args) {
         inc += 4;
     }
     args->indices[args->idx] = pos;
-    return;
+    return pos;
 }
 u32 eject_repeat_indices(u32 count, u32 *indices) {
     __m128i a;
@@ -1635,67 +1635,6 @@ bool is_range_free(u32 count, u64 *bits, u32 offset, u32 range) {
     if ((bits[offset >> 6] | ~mask) != ~mask)
         return false;
     return true;
-}
-void correct_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
-    //
-    // @Todo Add a little simd thing to search for a contiguous block of equal weights:
-    // It will almost certainly be the case that there will be loads of zero weights
-    // at the end of the array, and so when you load one of these, there has to be loads
-    // of pointless swaps, when you can just do one swap. I cba to add it right now...
-    //
-    u8 flag_bit = weights[idx] & 0b10000000;
-    weights[idx] &= 0b01111111;
-    if ((weights[idx] + inc + dec) <= 127)
-        weights[idx] += inc + dec;
-    else
-        weights[idx] = 127;
-    weights[idx] |= flag_bit;
-
-    // @Note Clamps like this should compile without branches, but if there is a way
-    // to do this without the 'if' (just to always be sure) I would like that...
-    for(u32 i = 0; i < count; ++i) {
-        flag_bit = weights[i] & 0b10000000;
-        weights[i] &= 0b01111111;
-        if ((weights[i] - dec) > weights[i])
-            weights[i] = 0;
-        else
-            weights[i] -= dec;
-        weights[i] |= flag_bit;
-    }
-
-    // Find the index where the weight should be
-    // @Note higher weights exist closer to the beginning of the list, so loop backwards
-    u32 shift = idx & 15;
-    u32 pos = idx - shift;
-    __m128i a = _mm_load_si128((__m128i*)(weights + pos));
-    __m128i b = _mm_set1_epi8(weights[idx]);
-    __m128i c = _mm_set1_epi8(0b01111111);
-    a = _mm_and_si128(a, c); // flag bit irrelevant cmping weights
-    a = _mm_cmplt_epi8(a, b);
-    u16 mask = _mm_movemask_epi8(a);
-    mask <<= 16 - shift;
-    u32 new_idx = idx;
-    new_idx -= pop_count16(mask);
-    while(mask && pos) {
-        pos -= 16;
-        a = _mm_load_si128((__m128i*)(weights + pos));
-        a = _mm_and_si128(a, c);
-        a = _mm_cmplt_epi8(a, b);
-        mask = _mm_movemask_epi8(a);
-        new_idx -= pop_count16(mask);
-    }
-
-    // Shift all lt weights towards the end of the list
-    u8 w = weights[idx];
-    for(u32 i = idx - 1; i >= new_idx && i != Max_u32; --i)
-        weights[i + 1] = weights[i];
-    weights[new_idx] = w;
-
-    // Repeat weights for hashes
-    u64 h = hashes[idx];
-    for(u32 i = idx - 1; i >= new_idx && i != Max_u32; --i)
-        hashes[i + 1] = hashes[i];
-    hashes[new_idx] = h;
 }
 u32 find_hash_idx(u32 count, u64 *hashes, u64 hash) {
     __m128i a = _mm_load_si128((__m128i*)hashes);
@@ -3370,11 +3309,11 @@ void free_static_model(Static_Model *model) {
 //
 
 /*
-   Allocator To Implement:
+   Allocator To Implement: (I really think that everything else is done except file stuff).
        fopening + freading + fwrite at correct file offset
 
    Tex_Allocator To Implement:
-    @Todo
+        @Todo
 */
 
 Allocator_Result begin_allocation(Allocator *alloc) {
@@ -3387,10 +3326,11 @@ Allocator_Result begin_allocation(Allocator *alloc) {
     Allocation *tmp = &alloc->allocations[alloc->allocation_count];
     *tmp = {};
     tmp->disk_offset = alloc->disk_size;
-    alloc->disk = fopen(alloc->disk_storage); // offset to disk size
+    alloc->disk = fopen(alloc->disk_storage, "wb"); // offset to disk size
 
-    // staging queue must not be used during the allocation phase of the program. So it is safe to reuse it here
-    // for tracking in-progress allocations.
+    // staging queue must not be used during the allocation phase of the
+    // program. So it is safe to reuse it here for tracking in-progress
+    // allocations.
     alloc->staging_queue_byte_count = 0;
     return SUCCESS;
 }
@@ -3399,7 +3339,10 @@ Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
     if (current_size > alloc->staging_queue_byte_cap)
         return STAGE_FULL;
 
-    fwrite(file, ptr, size); // offset at disk size;
+    fseek(alloc->disk_storage, 0, alloc->disk_size);
+    fwrite(alloc->disk_storage, ptr, size); // offset at disk size;
+    alloc->disk_size += size;
+
     if (current_size + alloc->bytes_staged < alloc->stage_cap) {
         memcpy(alloc->stage_ptr + alloc->staging_queue_byte_count, ptr, size);
         alloc->staging_queue_byte_count += size;
@@ -3410,7 +3353,7 @@ Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 *key) {
     *key = alloc->allocation_count;
     alloc->allocation_count++;
     alloc->to_stage_count = Max_u32;
-    adjust_allocation_weights();
+    fclose(alloc->disk_storage);
     return SUCCESS;
 }
 
@@ -3422,7 +3365,6 @@ Allocator_Result staging_queue_begin(Allocator *alloc) {
     return SUCCESS;
 }
 Allocator_Result staging_queue_add(Allocator *alloc, u32 idx) {
-    idx = alloc->allocation_indices[idx];
     Weight_Args w_args = {
         .count = alloc->allocation_count,
         .weights = alloc->allocation_weights,
@@ -3434,12 +3376,12 @@ Allocator_Result staging_queue_add(Allocator *alloc, u32 idx) {
         .dec = 1 // @Test Find effective inc and dec values
     };
     idx = adjust_allocation_weights(&w_args);
-    alloc->allocation_states[new_idx] |= TO_DRAW;
-    if (alloc->allocation_states[new_idx] & STAGED)
+    alloc->allocation_states[idx] |= TO_DRAW;
+    if (alloc->allocation_states[idx] & STAGED)
         return SUCCESS;
 
     // Ensure that allocations will not overlap into another's bit representation
-    u64 bit_align_size = align(alloc->allocations[new_idx].size, alloc->stage_bit_granularity);
+    u64 bit_align_size = align(alloc->allocations[idx].size, alloc->stage_bit_granularity);
     if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap)
         return QUEUE_FULL;
 
@@ -3448,12 +3390,14 @@ Allocator_Result staging_queue_add(Allocator *alloc, u32 idx) {
     return SUCCESS;
 }
 Allocator_Result staging_queue_submit(Allocator *alloc) {
-    // If the to stage count is zero on queue submission, just assume that everything queued was already cached,
-    // and we need not do anything. This is most likely, as vertex data should just be able to live in memory
-    // I am pretty certain. In case it can't (I would like to support even shit hardware, as everyone should)
-    // the same range searching functionality is implemented here for disk->stage (in the same way as stage->device)
+    // If the to stage count is zero on queue submission, just assume that
+    // everything queued was already cached, and we need not do anything. This
+    // is most likely, as vertex data should just be able to live in memory I
+    // am pretty certain. In case it can't (I would like to support even shit
+    // hardware, as everyone should) the same range searching functionality is
+    // implemented here for disk->stage (in the same way as stage->device)
     if (alloc->to_stage_count == 0) {
-        alloc->to_stage_count == Max_u32;
+        alloc->to_stage_count = Max_u32;
         return SUCCESS;
     }
 
@@ -3492,30 +3436,36 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     }
     u32 tmp = find_flags_any(alloc->allocation_states, indices, TO_DRAW, STAGED);
     memcpy(indices_final + count, indices, tmp * sizeof(u32));
-    eject_repeat_indices(count + tmp, indices_final);
+    count = eject_repeat_indices(count + tmp, indices_final);
 
-
-    // I do not know if this is a naive implementation. The way the allocator works is it takes a parsed gltf
-    // file, and then groups accessors/buffer views into one allocation. So all of a model's vertex attribute data
-    // is put into one contiguous allocation. This may be pointless, as it seems sensible that the data would
-    // already be laid out like this in the file. But I do not want to always rely on that fact (in a real company
-    // this would just be enforced, but wild world I will not trust). So I group the data together, then write
-    // it all into one file used by the allocator if its memory allocation is going to overflow. It's sort of dumb
-    // in the current state of the app, as these gltf files are read on every load, and then rewritten every load.
-    // However in production I would ditch the gltf files completely and just ship with the allocator files, obvs).
-    // So it will stay like this for now. Copying around data is the essence of computing *shrug*.
+    // I do not know if this is a naive implementation. The way the allocator
+    // works is it takes a parsed gltf file, and then groups accessors/buffer
+    // views into one allocation. So all of a model's vertex attribute data is
+    // put into one contiguous allocation. This may be pointless, as it seems
+    // sensible that the data would already be laid out like this in the file.
+    // But I do not want to always rely on that fact (in a real company this
+    // would just be enforced, but wild world I will not trust). So I group the
+    // data together, then write it all into one file used by the allocator if
+    // its memory allocation is going to overflow. It's sort of dumb in the
+    // current state of the app, as these gltf files are read on every load,
+    // and then rewritten every load. However in production I would ditch the
+    // gltf files completely and just ship with the allocator files, obvs). So
+    // it will stay like this for now. Copying around data is the essence of
+    // computing *shrug*.
     u64 stage_offset = free_block * alloc->stage_bit_granularity;
     FILE *disk_storage = fopen(alloc->disk_storage);
     for(u32 i = 0; i < count; ++i) {
         tmp = alloc->allocations[indices[i]];
-        alloc->allocation_states[indices[i]] |= STAGED;
-        fread(alloc->stage_ptr + stage_offset, 1, tmp->size, disk_storage + tmp->disk_offset);
+        fseek(alloc->disk_storage, 0, tmp->disk_offset);
+        fread(alloc->stage_ptr + stage_offset, 1, tmp->size, alloc->disk_storage);
 
         tmp->stage_offset = stage_offset;
         stage_offset += align(tmp->size, alloc->stage_bit_granularity);
+        alloc->allocation_states[indices[i]] |= STAGED;
         ASSERT(stage_offset + tmp->size <= alloc->stage_cap, "Allocator Stage Overflow");
     }
     fclose(alloc->disk_storage);
+    alloc->to_stage_count = Max_u32;
     return SUCCESS;
 }
 Allocator_Result upload_queue_begin(Allocator *alloc) {
@@ -3526,7 +3476,6 @@ Allocator_Result upload_queue_begin(Allocator *alloc) {
     return SUCCESS;
 }
 Allocator_Result upload_queue_add(Allocator *alloc, u32 idx) {
-    idx = alloc->allocation_indices[idx];
     Weight_Args w_args = {
         .count = alloc->allocation_count,
         .weights = alloc->allocation_weights,
@@ -3535,7 +3484,7 @@ Allocator_Result upload_queue_add(Allocator *alloc, u32 idx) {
         .allocations = alloc->allocations,
         .idx = idx,
         .inc = 3,
-        .dec = 1 // @Test Find effective inc and dec values
+        .dec = 1, // @Test Find effective inc and dec values
     };
     idx = adjust_allocation_weights(&w_args);
 
@@ -3553,15 +3502,17 @@ Allocator_Result upload_queue_add(Allocator *alloc, u32 idx) {
     return SUCCESS;
 }
 Allocator_Result upload_queue_submit(Allocator *alloc) {
-    // If the to upload count is zero on queue submission, just assume that everything queued was already cached,
-    // and we need not do anything. This is most likely, as vertex data should just be able to live in memory
-    // I am pretty certain. In case it can't (I would like to support even shit hardware, as everyone should)
-    // the same range searching functionality is implemented here for disk->upload (in the same way as upload->device)
+    // If the to upload count is zero on queue submission, just assume that
+    // everything queued was already cached, and we need not do anything. This
+    // is most likely, as vertex data should just be able to live in memory I
+    // am pretty certain. In case it can't (I would like to support even shit
+    // hardware, as everyone should) the same range searching functionality is
+    // implemented here for disk->upload (in the same way as upload->device)
     Gpu *gpu = get_gpu_instance();
     Memory_Flags mem_flags = gpu->memory.flags;
     // Really this should never be used. Upload queue shouldnt be used at all if UMA
     if (alloc->to_upload_count == 0 || mem_flags & GPU_MEMORY_UMA) {
-        alloc->to_upload_count == Max_u32;
+        alloc->to_upload_count = Max_u32;
         return SUCCESS;
     }
 
@@ -3699,7 +3650,328 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
 
     return SUCCESS;
 }
+Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *key) {
+    Image img = load_image(file_name);
+    u64 img_size = img.width * img.height * 4;
+    ASSERT(img_size <= alloc->stage_cap, "Image Too Large");
+    if (img_size > alloc->stage_cap)
+        return STAGE_FULL;
 
+    u64 hash = get_string_hash(file_name);
+    for(u32 i = 0; i < alloc->allocation_count; ++i)
+        if (hash == alloc->hashes[i]) {
+            adjust_allocation_weights();
+            *key = i;
+            return SUCCESS;
+        }
+
+    VkImageCreateInfo img_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    VkImage vk_img;
+    VkDevice dvc = get_gpu_instance()->device;
+    auto check = vkCreateImage(dvc, &img_info, ALLOCATION_CALLBACKS, &vk_img);
+    DEBUG_OBJ_CREATION(vkCreateImage, check);
+
+    Tex_Allocation *tmp = alloc->allocations[alloc->allocation_count];
+    *tmp = {
+        .file_name = string_buffer_get_string(&alloc->string_buffer, file_name),
+        .width = img.width,
+        .height = img.height,
+        .image = vk_img,
+    };
+    u64 align_size = align(img_size, alloc->stage_bit_granularity);
+    if (alloc->staging_queue_byte_count + align_size < alloc->staging_queue_byte_cap) {
+        memcpy(alloc->stage_ptr + alloc->staging_queue_byte_count, img.data, img_size);
+        tmp->stage_offset = alloc->staging_queue_byte_count;
+        alloc->allocation_states[alloc->allocation_count] |= STAGED;
+        alloc->staging_queue_byte_count += align_size;
+    }
+    *key = alloc->allocation_count;
+    alloc->allocation_count++;
+    return SUCCESS;
+}
+Allocator_Result tex_staging_queue_begin(Allocator *alloc) {
+    if (alloc->to_stage_count != Max_u32)
+        return QUEUE_IN_USE;
+    alloc->to_stage_count = 0;
+    alloc->staging_queue_byte_count = 0;
+    return SUCCESS;
+}
+Allocator_Result tex_staging_queue_add(Allocator *alloc, u32 idx) {
+    Weight_Args w_args = {
+        .count = alloc->allocation_count,
+        .weights = alloc->allocation_weights,
+        .states = alloc->allocation_allocation_states,
+        .indices = alloc->allocation_indices,
+        .allocations = alloc->allocations,
+        .idx = idx,
+        .inc = 3,
+        .dec = 1 // @Test Find effective inc and dec values
+    };
+    idx = adjust_allocation_weights(&w_args);
+    alloc->allocation_states[new_idx] |= TO_DRAW;
+    if (alloc->allocation_states[new_idx] & STAGED)
+        return SUCCESS;
+
+    // Ensure that allocations will not overlap into another's bit representation
+    Tex_Allocation *tmp = &alloc->allocations[idx];
+    u64 img_size = tmp->width * tmp->height * 4;
+    u64 bit_align_size = align(img_size, alloc->stage_bit_granularity);
+    if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap)
+        return QUEUE_FULL;
+
+    alloc->staging_queue_byte_count += bit_align_size;
+    alloc->to_stage_count++;
+    return SUCCESS;
+}
+Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
+    // If the to stage count is zero on queue submission, just assume that
+    // everything queued was already cached, and we need not do anything. This
+    // is most likely, as vertex data should just be able to live in memory I
+    // am pretty certain. In case it can't (I would like to support even shit
+    // hardware, as everyone should) the same range searching functionality is
+    // implemented here for disk->stage (in the same way as stage->device)
+    if (alloc->to_stage_count == 0) {
+        alloc->to_stage_count = Max_u32;
+        return SUCCESS;
+    }
+
+    u32 free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
+    Allocation *tmp;
+    u32 *indices = alloc;
+    u32 evict_idx;
+    u32 count;
+    u64 img_size;
+    if (free_block == Max_u32) {
+        count = find_flags(alloc->allocation_states, indices, STAGED, TO_DRAW);
+        for(u32 i = count - 1; i != Max_u32; --i) {
+            tmp = alloc->allocations[indices[i]];
+            img_size = tmp->width * tmp->height * 4;
+            make_free(alloc->stage_masks, tmp->stage_offset, img_size); // @Todo Wrong args (also for not tex)
+            alloc->allocation_states[indices[i]] &= ~STAGED; // mark as having been evicted from stage buffer
+            free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
+            if (free_block != Max_u32) {
+                evict_idx = i;
+                goto free_block_found; // jump early return
+            }
+        }
+        return STAGE_FULL; // Too many allocations waiting to draw
+    }
+
+    free_block_found: // goto label
+
+    u64 block_size = free_block * alloc->stage_bit_granularity;
+    count = simd_find_flags_u8(alloc->allocation_states, indices, 0xff, STAGED); // @Todo Check this works correctly
+    u32 indices_final = alloc;
+    u64 size = 0;
+    for(u32 i = 0; i < count; ++i) {
+        tmp = alloc->allocations[indices[i]];
+        img_size = tmp->width * tmp->height * 4;
+        size += align(img_size, alloc->stage_bit_granularity);
+        if (block_size - size > alloc->staging_queue_byte_cap)
+            indices_final[i] = indices[i];
+        else
+            break;
+    }
+    u32 tmp = find_flags_any(alloc->allocation_states, indices, TO_DRAW, STAGED);
+    memcpy(indices_final + count, indices, tmp * sizeof(u32));
+    count = eject_repeat_indices(count + tmp, indices_final);
+
+    u64 stage_offset = free_block * alloc->stage_bit_granularity;
+    Image img;
+    for(u32 i = 0; i < count; ++i) {
+        tmp = alloc->allocations[indices[i]];
+        img = load_image(&tmp->file_name);
+        img_size = img.width * img.height * 4;
+        memcpy(alloc->stage_ptr + stage_offset, img.data, img_size);
+        tmp->stage_offset = stage_offset;
+        alloc->allocation_states[indices[i]] |= STAGED;
+        stage_offset += align(tmp->size, alloc->stage_bit_granularity);
+        ASSERT(stage_offset + tmp->size <= alloc->stage_cap, "Allocator Stage Overflow");
+    }
+    alloc->to_stage_count = Max_u32;
+    return SUCCESS;
+}
+Allocator_Result tex_upload_queue_begin(Allocator *alloc) {
+    if (alloc->to_upload_count != Max_u32)
+        return QUEUE_IN_USE;
+    alloc->to_upload_count = 0;
+    alloc->upload_queue_byte_count = 0;
+    return SUCCESS;
+}
+Allocator_Result tex_upload_queue_add(Allocator *alloc, u32 idx) {
+    Weight_Args w_args = {
+        .count = alloc->allocation_count,
+        .weights = alloc->allocation_weights,
+        .states = alloc->allocation_allocation_states,
+        .indices = alloc->allocation_indices,
+        .allocations = alloc->allocations,
+        .idx = idx,
+        .inc = 3,
+        .dec = 1 // @Test Find effective inc and dec values
+    };
+    idx = adjust_allocation_weights(&w_args);
+    alloc->allocation_states[new_idx] |= TO_DRAW;
+    if (alloc->allocation_states[new_idx] & UPLOADED)
+        return SUCCESS;
+
+    // Ensure that allocations will not overlap into another's bit representation
+    Tex_Allocation *tmp = &alloc->allocations[idx];
+    u64 bit_align_size = align(tmp->size, alloc->upload_bit_granularity);
+    if (bit_align_size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap)
+        return QUEUE_FULL;
+
+    alloc->upload_queue_byte_count += bit_align_size;
+    alloc->to_upload_count++;
+    return SUCCESS;
+}
+Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
+    // If the to upload count is zero on queue submission, just assume that
+    // everything queued was already cached, and we need not do anything. This
+    // is most likely, as vertex data should just be able to live in memory I
+    // am pretty certain. In case it can't (I would like to support even shit
+    // hardware, as everyone should) the same range searching functionality is
+    // implemented here for disk->upload (in the same way as upload->device)
+    if (alloc->to_upload_count == 0) {
+        alloc->to_upload_count = Max_u32;
+        return SUCCESS;
+    }
+
+    // @Todo I think these find free blocks have template args
+    u32 free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
+    Allocation *tmp;
+    u32 *indices = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16);
+    u32 evict_idx;
+    u32 count;
+    if (free_block == Max_u32) {
+        count = find_flags(alloc->allocation_states, indices, UPLOADED, TO_DRAW);
+        for(u32 i = count - 1; i != Max_u32; --i) {
+            tmp = alloc->allocations[indices[i]];
+            make_free(alloc->upload_masks, tmp->upload_offset, tmp->size); // @Todo Wrong args (also for not tex)
+            alloc->allocation_states[indices[i]] &= ~UPLOADED; // mark as having been evicted from upload buffer
+            free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
+            if (free_block != Max_u32) {
+                evict_idx = i;
+                goto free_block_found; // jump early return
+            }
+        }
+        return STAGE_FULL; // Too many allocations waiting to draw
+    }
+
+    free_block_found: // goto label
+
+    // @Todo This is not the correct value, this is just the offset to the block, not the size of the block.
+    // I need to write another function to get the size of the block.
+    //u64 block_size = free_block * alloc->upload_bit_granularity;
+
+    // @Todo Check this works correctly. I am pretty sure it will match no flags (it will only match all flags set
+    // except UPLOADED I think).
+    count = simd_find_flags_u8(alloc->allocation_states, indices, 0xff, UPLOADED);
+    u32 *indices_final = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16);
+    u64 size = 0;
+    for(u32 i = 0; i < count; ++i) {
+        tmp = alloc->allocations[indices[i]];
+        size += align(tmp->size, alloc->upload_bit_granularity);
+        if (alloc->upload_queue_byte_count + size < block_size)
+            indices_final[i] = indices[i];
+        else
+            break;
+    }
+    // Should not need this line, this should just be the 'to_upload_count'. The function is necessary to find
+    // the indices, but the count is not necessary.
+    //u32 tmp = find_flags_any(alloc->allocation_states, indices, TO_DRAW, UPLOADED);
+    memcpy(indices_final + count, indices, tmp * sizeof(u32));
+    count = eject_repeat_indices(count + tmp, indices_final);
+
+    u64 upload_offset = free_block * alloc->upload_bit_granularity;
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+    VkBindImageMemoryInfo *bind_infos =
+        (VkBindImageMemoryInfo*)malloc_t(sizeof(VkBindImageMemoryInfo) * alloc->allocation_count, 8);
+    u64 alignment;
+    VkMemoryRequirements mem_req;
+    for(u32 i = 0; i < count; ++i) {
+        tmp = alloc->allocations[indices_final[i]];
+        tmp->upload_offset = upload_offset;
+        bind_infos[i] = {VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO};
+        bind_infos[i].image = tmp->img;
+        bind_infos[i].memory = alloc->upload;
+        // Already aligned to bit granularity which must be sufficient
+        bind_infos[i].memoryOffset = upload_offset;
+        upload_offset += alloc->bind_infos[i].size; // This size is aligned to bit granularity already
+    }
+    if (vkBindImageMemory2(device, alloc->to_upload_count, bind_infos) != VK_SUCCESS) {
+        // @Todo Make this only recreate the undefined images, and reset the images' states to not uploaded.
+        recreate_images(alloc, indices);
+        return BIND_IMAGE_FAIL;
+    } else {
+        for(u32 i = 0; i < count; ++i)
+            alloc->allocation_states[indices[i]] |= UPLOADED;
+    }
+
+    // @Todo Copy regions.
+    // Record copies and transitions
+    VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmd_alloc_info.commandPool = alloc->graphics_pool;
+    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    cmd_alloc_info.commandBufferCount = 1;
+
+    auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmd);
+    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+
+    u32 transfer_queue_idx = gpu->transfer_queue_index;
+    u32 graphics_queue_idx = gpu->graphics_queue_index;
+
+    if (transfer_queue_idx != graphics_queue_idx) {
+        cmd_alloc_info.commandPool = alloc->transfer_pool;
+        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
+        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+    }
+    VkImageMemoryBarrier2 *img_barrs =
+        (VkImageMemoryBarrier2*)malloc_t(sizeof(VkImageMemoryBarrier2) * alloc->to_upload_count, 8);
+
+    VkCommandBufferInheritanceInfo inheritance = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
+    VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    begin_info.pInheritanceInfo = &inheritance;
+
+    VkDependencyInfo dep = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = alloc->to_upload_count;
+    dep.pImageMemoryBarriers = img_barrs;
+
+    if (gpu->memory.flags & GPU_MEMORY_DISCRETE_TRANSFER_BIT) {
+        vkBeginCommandBuffer(alloc->graphics_cmd, &begin_info);
+
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+
+        for(u32 i = 0; i < alloc->to_upload_count; ++i) {
+            vkCmdCopyBufferToImage(
+                    alloc->graphics_cmd,
+                    alloc->stage,
+                    .img,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1,
+                    &alloc->regions[i]); // @Note Can multiple textures be stored in one img?
+        }
+
+        // Transition for reading in shader
+        for(u32 i = 0; i < alloc->to_upload_count; ++i) {
+            img_barrs[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR,
+            img_barrs[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR,
+            img_barrs[i].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
+            img_barrs[i].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT_KHR;
+            img_barrs[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            img_barrs[i].newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+        }
+
+        // Shader read transition
+        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+
+        vkEndCommandBuffer(alloc->graphics_cmd);
+    }
+
+    alloc->to_upload_count = Max_u32;
+    return SUCCESS;
+}
 // functions like this are such a waste of time to write...
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
         switch(accessor_format) {
