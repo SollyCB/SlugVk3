@@ -79,10 +79,12 @@ inline static Vec4 simd_acos_vec4(Vec4 *vec4) {
     Vec4 *acos = (Vec4*)&a;
     return *acos;
 } */
-inline static u32 simd_find_update_flags_u8(u32 count, u8 *flags, u8 find, u8 negate, u8 set, u8 clear, u32 *indices) {
+
+// For any flags with 'with' set but without 'without' set, set 'set' and clear 'clear'
+inline static u32 simd_find_update_flags_u8(u32 count, u8 *flags, u8 with, u8 without, u8 set, u8 clear, u32 *indices) {
     __m128i a;
-    __m128i b = _mm_set1_epi8(find | negate);
-    __m128i c = _mm_set1_epi8(find);
+    __m128i b = _mm_set1_epi8(with | without);
+    __m128i c = _mm_set1_epi8(with);
     __m128i d;
     __m128i e;
     u16 mask;
@@ -116,10 +118,11 @@ inline static u32 simd_find_update_flags_u8(u32 count, u8 *flags, u8 find, u8 ne
     }
     return cnt;
 }
-inline static u32 simd_find_flags_u8(u32 count, u8 *flags, u8 find, u8 negate, u32 *indices) {
+// Set 'without' to 0xff to find flags matching 0x0; Set 'with' to 0x0 to search for any flags without 'without' set
+inline static u32 simd_find_flags_u8(u32 count, u8 *flags, u8 with, u8 without, u32 *indices) {
     __m128i a;
-    __m128i b = _mm_set1_epi8(find | negate);
-    __m128i c = _mm_set1_epi8(find);
+    __m128i b = _mm_set1_epi8(with | without);
+    __m128i c = _mm_set1_epi8(with);
     u16 mask;
     u32 pc;
     u32 tz;

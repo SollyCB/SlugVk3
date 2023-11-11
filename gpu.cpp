@@ -1451,39 +1451,35 @@ u32 eject_repeat_indices(u32 count, u32 *indices) {
     }
     return count - dec;
 }
-static u32 find_contiguous_free(u32 count, u64 *bits, u32 offset, u32 req_count) {
-    u32 restore = bits[offset >> 6];
-    u64 mask = 0x01;
-    mask <<= offset & 63;
-    bits[offset >> 6] |= mask - 1;
-
+static u32 find_contiguous_free(u32 count, u64 *bits, u32 req_count) {
     u32 tz = 0;
-    u32 inc = (offset >> 6) << 6;
+    u32 inc = 0;
     u32 tail = 0;
     u32 shift = 0;
+    u64 mask;
 
-    for(u32 i = offset >> 6; i < count; ++i)
+    for(u32 i = 0; i < count; ++i)
         tz += pop_count64(~bits[i]);
 
     if (tz < req_count)
-        goto not_found;
+        return Max_u32;
 
-    for(u32 i = offset >> 6; i < count; ++i) {
-        if (bits[i] == 0) {
+    for(u32 i = 0; i < count; ++i) {
+        mask = bits[i];
+        if (mask == 0) {
             tail += 64;
             if (tail >= req_count)
-                goto found;
+                return inc;
             else
                 continue;
-        } else if (bits[i] == Max_u64) {
+        } else if (mask == Max_u64) {
             inc += 64;
             continue;
         }
 
-        mask = bits[i];
         tz = count_trailing_zeros_u64(mask);
         if (tz + tail >= req_count)
-            goto found;
+            return inc;
 
         tail = count_leading_zeros_u64(mask);
 
@@ -1500,7 +1496,7 @@ static u32 find_contiguous_free(u32 count, u64 *bits, u32 offset, u32 req_count)
         while(shift < 64 - tail) {
             tz = count_trailing_zeros_u64(mask);
             if (tz >= req_count)
-                goto found;
+                return inc;
 
             mask >>= tz;
             shift += tz;
@@ -1512,14 +1508,7 @@ static u32 find_contiguous_free(u32 count, u64 *bits, u32 offset, u32 req_count)
             inc += tz;
         }
     }
-
-    not_found: // goto label
-    bits[offset >> 6] = restore;
     return Max_u32;
-
-    found: // goto label
-    bits[offset >> 6] = restore;
-    return inc;
 }
 inline static void make_full(u32 count, u64 *bits, u32 offset, u32 range) {
     u64 mask = 0xffffffffffffffff;
@@ -3366,15 +3355,19 @@ Allocator_Result staging_queue_add(Allocator *alloc, u32 idx) {
         .dec = 1 // @Test Find effective inc and dec values
     };
     idx = adjust_allocation_weights(&w_args);
-    alloc->allocation_states[idx] |= TO_STAGE | TO_DRAW;
-    if (alloc->allocation_states[idx] & STAGED)
+    alloc->allocation_states[idx] |= TO_DRAW;
+    if (alloc->allocation_states[idx] & STAGED || alloc->allocation_states[idx] & TO_STAGE)
         return SUCCESS;
 
     // Ensure that allocations will not overlap into another's bit representation
     u64 bit_align_size = align(alloc->allocations[idx].size, alloc->stage_bit_granularity);
-    if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap)
+    if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
+        // If the queue add fails, we do not want stuff marked as to draw that is not also part of a queue.
+        alloc->allocation_states[idx] &= ~TO_DRAW;
         return QUEUE_FULL;
+    }
 
+    alloc->allocation_states[idx] |= TO_STAGE;
     alloc->staging_queue_byte_count += bit_align_size;
     alloc->to_stage_count++;
     return SUCCESS;
@@ -3394,17 +3387,17 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     // This section, although so similar across each allocator, cannot really be moved into its own function
     // cleanly, as the internal logic has to be so slightly different each time (such as which size to use, or
     // how to calculate the size). So it is easier to just inline it...
-    u32 free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
+    u32 free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, req_bits);
     Allocation *tmp;
     u32 *indices = alloc;
     u32 evict_idx;
     u32 count;
     if (free_block == Max_u32) {
-        count = find_flags(alloc->allocation_states, indices, STAGED, TO_DRAW);
+        count = find_flags(alloc->allocation_states, indices, STAGED, TO_DRAW | TO_UPLOAD);
         for(u32 i = count - 1; i != Max_u32; --i) {
             tmp = alloc->allocations[indices[i]];
             make_free(alloc->stage_mask_count, alloc->stage_masks, tmp->stage_offset, tmp->size);
-            free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
+            free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, req_bits);
             if (free_block != Max_u32) {
                 evict_idx = i;
                 // Only mark as having been evicted from stage buffer if actually going to be evicted (i.e. if
@@ -3420,7 +3413,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     free_block_found: // goto
 
     u64 block_size = free_block * alloc->stage_bit_granularity;
-    count = simd_find_flags_u8(alloc->allocation_states, indices, 0xff, STAGED);
+    count = simd_find_flags_u8(alloc->allocation_states, indices, 0x00, STAGED);
     u32 indices_final = alloc;
     u64 size = 0;
     for(u32 i = 0; i < count; ++i) {
@@ -3430,9 +3423,10 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
         else
             break;
     }
-    u32 tmp = find_flags_any(alloc->allocation_states, indices, TO_STAGE, STAGED);
-    memcpy(indices_final + count, indices, tmp * sizeof(u32));
-    count = eject_repeat_indices(count + tmp, indices_final);
+    // Find to stage indices here as opposed to storing them when adding to queue to guarantee that they are in order
+    simd_find_flags_u8(alloc->allocation_states, indices, TO_STAGE, 0x00);
+    memcpy(indices_final + count, indices, alloc->to_stage_count * sizeof(u32));
+    count = eject_repeat_indices(count + to_stage_count, indices_final);
 
     // I do not know if this is a naive implementation. The way the allocator
     // works is it takes a parsed gltf file, and then groups accessors/buffer
@@ -3457,6 +3451,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
 
         tmp->stage_offset = stage_offset;
         stage_offset += align(tmp->size, alloc->stage_bit_granularity);
+        alloc->allocation_states[indices[i]] &= ~TO_STAGE;
         alloc->allocation_states[indices[i]] |= STAGED;
         ASSERT(stage_offset + tmp->size <= alloc->stage_cap, "Allocator Stage Overflow");
     }
@@ -3484,15 +3479,18 @@ Allocator_Result upload_queue_add(Allocator *alloc, u32 idx) {
     };
     idx = adjust_allocation_weights(&w_args);
 
-    alloc->allocation_states[idx] |= TO_UPLOAD | TO_DRAW;
-    if (alloc->allocation_states[idx] & UPLOADED)
+    alloc->allocation_states[idx] |= TO_DRAW;
+    if (alloc->allocation_states[idx] & UPLOADED || alloc->allocation_states[idx] & TO_UPLOAD)
         return SUCCESS;
 
     // Alignment ensures that allocations will not overlap into another's bit representation
     u64 bit_align_size = align(alloc->allocations[idx].size, alloc->upload_bit_granularity);
-    if (bit_align_size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap)
+    if (bit_align_size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap) {
+        alloc->allocation_states[idx] &= ~TO_DRAW;
         return UPLOAD_QUEUE_FULL;
+    }
 
+    alloc->allocation_states[idx] |= TO_UPLOAD;
     alloc->upload_queue_byte_count += bit_align_size;
     alloc->to_upload_count++;
     return SUCCESS;
@@ -3516,13 +3514,13 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     u32 count;
     Allocation *tmp;
     u32 *indices = alloc;
-    u32 free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
+    u32 free_block = find_contiguous_free(alloc->upload_mask_count, alloc->upload_masks, req_bits);
     if (free_block == Max_u32) {
         count = find_flags(alloc->allocation_states, indices, UPLOADED, TO_DRAW);
         for(u32 i = count - 1; i != Max_u32; --i) {
             tmp = alloc->allocations[indices[i]];
             make_free(alloc->upload_mask_count, alloc->upload_masks, tmp->upload_offset, tmp->size);
-            free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
+            free_block = find_contiguous_free(alloc->upload_mask_count, alloc->upload_masks, req_bits);
             if (free_block != Max_u32) {
                 evict_idx = i;
                 // Only mark as evicted if allocations will actually be overwritten (i.e. if a free block is available)
@@ -3531,23 +3529,23 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
                 goto free_block_found; // jump over early return
             }
         }
-        return STAGE_FULL; // Too many allocations waiting to draw
+        return UPLOAD_FULL; // Too many allocations waiting to draw
     }
 
     free_block_found: // goto
 
     u64 block_size = free_block * alloc->upload_bit_granularity;
-    count = find_flags_any(alloc->allocation_states, indices, 0xff, UPLOADED);
+    count = simd_find_flags_u8(alloc->allocation_states, indices, 0x00, UPLOADED);
     u32 indices_final = alloc;
     u64 size = 0;
     for(u32 i = 0; i < count; ++i) {
         size += align(alloc->allocations[indices[i]].size, alloc->upload_bit_granularity);
-        if (block_size - size > alloc->upload_queue_byte_cap)
+        if (alloc->upload_queue_byte_count + size < block_size)
             indices_final[i] = indices[i];
         else
             break;
     }
-    u32 arb = find_flags_any(alloc->allocation_states, indices, TO_UPLOAD, UPLOADED);
+    u32 arb = simd_find_flags_u8(alloc->allocation_states, indices, TO_UPLOAD, UPLOADED);
     ASSERT(arb == alloc->to_upload_count, "UUUGHGHGHHGGHHH!!!"); // @Todo Remove this assert
     memcpy(indices_final + count, indices, alloc->to_upload_count * sizeof(u32));
     count = eject_repeat_indices(count + tmp, indices_final);
@@ -3647,9 +3645,21 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         vkEndCommandBuffer(alloc->graphics_cmd);
     }
 
-    alloc->upload_queue = Max_u64;
-    return true;
+    // @Note This could be perceived as a little premature, as the commands have not actually been
+    // submitted. However, the commands having been recorded constitutes upload complete from the
+    // ALLOCATOR's point of view: the draw commands will happen later in the same queue submission
+    // section later down the pipeline, which the allocator is not a part of. Furthermore, from the
+    // allocation's perspective, as they will be truly uploaded in the same point of the pipeline as
+    // the draw commands (the upload cmds will even be in the same batch as the draw commands if
+    // unified transfer), they cannot react to a TO_UPLOAD state. I cannot, call queue submit, wait
+    // for the semaphore, then set UPLOADED state, then call draw, as the draws are already
+    // submitted with the submission that the semaphore wait was signalling.
+    for(u32 i = 0; i < count; ++i) {
+        alloc->allocation_states[indices[i]] &= ~TO_UPLOAD;
+        alloc->allocation_states[indices[i]] |= UPLOADED;
+    }
 
+    alloc->to_upload_count = Max_u32;
     return SUCCESS;
 }
 Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *key) {
@@ -3727,17 +3737,20 @@ Allocator_Result tex_staging_queue_add(Allocator *alloc, u32 idx) {
         .dec = 1 // @Test Find effective inc and dec values
     };
     idx = adjust_allocation_weights(&w_args);
-    alloc->allocation_states[new_idx] |= TO_STAGE | TO_DRAW;
-    if (alloc->allocation_states[new_idx] & STAGED)
+    alloc->allocation_states[idx] |= TO_DRAW;
+    if (alloc->allocation_states[idx] & STAGED || alloc->allocation_states[idx] & TO_STAGE)
         return SUCCESS;
 
-    // Ensure that allocations will not overlap into another's bit representation
     Tex_Allocation *tmp = &alloc->allocations[idx];
     u64 img_size = tmp->width * tmp->height * 4;
+    // Ensure that allocations will not overlap into another's bit representation
     u64 bit_align_size = align(img_size, alloc->stage_bit_granularity);
-    if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap)
+    if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
+        alloc->allocation_states[idx] &= ~TO_DRAW;
         return QUEUE_FULL;
+    }
 
+    alloc->allocation_states[idx] |= TO_STAGE;
     alloc->staging_queue_byte_count += bit_align_size;
     alloc->to_stage_count++;
     return SUCCESS;
@@ -3754,7 +3767,7 @@ Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
         return SUCCESS;
     }
 
-    u32 free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
+    u32 free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, req_bits);
     Allocation *tmp;
     u32 *indices = alloc;
     u32 evict_idx;
@@ -3766,7 +3779,7 @@ Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
             tmp = alloc->allocations[indices[i]];
             img_size = tmp->width * tmp->height * 4;
             make_free(alloc->stage_mask_count, alloc->stage_masks, tmp->stage_offset, img_size);
-            free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
+            free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, req_bits);
             if (free_block != Max_u32) {
                 evict_idx = i;
                 // Only mark asc evicted if allocations will be overwritten (i.e. if free block is available)
@@ -3807,6 +3820,7 @@ Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
         img_size = img.width * img.height * 4;
         memcpy(alloc->stage_ptr + stage_offset, img.data, img_size);
         tmp->stage_offset = stage_offset;
+        alloc->allocation_states[indices[i]] &= ~TO_STAGE;
         alloc->allocation_states[indices[i]] |= STAGED;
         stage_offset += align(tmp->size, alloc->stage_bit_granularity);
         ASSERT(stage_offset + tmp->size <= alloc->stage_cap, "Allocator Stage Overflow");
@@ -3833,15 +3847,18 @@ Allocator_Result tex_upload_queue_add(Tex_Allocator *alloc, u32 idx) {
         .dec = 1 // @Test Find effective inc and dec values
     };
     idx = adjust_allocation_weights(&w_args);
-    alloc->allocation_states[idx] |= TO_UPLOAD | TO_DRAW;
-    if (alloc->allocation_states[idx] & UPLOADED)
+    alloc->allocation_states[idx] |= TO_DRAW;
+    if (alloc->allocation_states[idx] & UPLOADED || alloc->allocation_states[idx] & TO_UPLOAD)
         return SUCCESS;
 
     // Ensure that allocations will not overlap into another's bit representation
     Tex_Allocation *tmp = &alloc->allocations[idx];
-    if (tmp->size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap)
+    if (tmp->size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap) {
+        alloc->allocation_states[idx] &= ~TO_DRAW;
         return QUEUE_FULL;
+    }
 
+    alloc->allocation_states[idx] |= TO_UPLOAD;
     alloc->upload_queue_byte_count += bit_align_size;
     alloc->to_upload_count++;
     return SUCCESS;
@@ -3859,7 +3876,9 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
     }
 
     // @Todo I think these find free blocks have template args
-    u32 free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
+    u32 g = alloc->upload_bit_granularity;
+    u32 req_bits = alloc->upload_queue_byte_count / g;
+    u32 free_block = find_contiguous_free(alloc->upload_mask_count, alloc->upload_masks, req_bits);
     Allocation *tmp;
     u32 *indices = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16);
     u32 evict_idx;
@@ -3869,7 +3888,7 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
         for(u32 i = count - 1; i != Max_u32; --i) {
             tmp = alloc->allocations[indices[i]];
             make_free(alloc->upload_mask_count, alloc->upload_masks, tmp->upload_offset, tmp->size);
-            free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
+            free_block = find_contiguous_free(alloc->upload_mask_count, alloc->upload_masks, req_bits);
             if (free_block != Max_u32) {
                 evict_idx = i;
                 // Only mark as evicted if allocations will be overwritten (i.e. if free block is available)
@@ -4074,6 +4093,11 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
         vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
 
         vkEndCommandBuffer(alloc->graphics_cmd);
+    }
+    // @Note Potentially premature but justified (see equivalent note in regular allocator)
+    for(u32 i = 0; i < count; ++i) {
+        alloc->allocations[indices[i]] &= ~TO_UPLOAD;
+        alloc->allocations[indices[i]] |= UPLOADED;
     }
 
     alloc->to_upload_count = Max_u32;
