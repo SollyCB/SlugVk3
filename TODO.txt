@@ -1,38 +1,7 @@
-Current task is to add caching to the allocators/model map.
+2. find_contiguous_free(..) remove offsetting.
+3. simd_find_flags(..) for finding all flags except staged/uploaded
+4. block_size incorrect value: currently holds offset to block, needs size of block
 
-The implementation plan is that after all models have been added to a map, the map uploads all the
-highest weights while under the cap.
-
-Then when you queue models, if the submission function fails because too few allocations in the
-queue are cached, then the map calls this pseudo code:
-
-        // free cached allocation by weight (lowest to highest);
-        // check if thats enough space, if not keep freeing.
-        u32 lowest_kicked_index;
-        if (!submit_queue) {
-            while(!find_contiguous_free(allocator.masks)) {
-                make_free(cached_allocation_with_lowest_weight);
-                lowest_kicked_index = current_loop_interation;
-            }
-        }
-
-        // reset the queue so that the cached allocations are inserted at lower addresses
-        empty_queue();
-
-        // requeue any allocations that were kicked from cache in order of weight (highest to lowest)
-        // while there is space for them without overflowing into the block required for the uncached allocations
-        for(i = lowest_kicked_index; size_queued < size_required_for_uncached_allocations; ++i
-            queue_add(weighted_allocations)
-
-        // requeue the uncached allocations
-        for(i < previous_queue_count)
-            queue_add(uncached_allocations);
-
-To make this stuff work cleanly, I will probably have to rejig quite a bit of the allocator stuff.
-This is totally fine, as the bits related to syncing with the models themselves are the jank bits
-that need revising now I have more clear usage code (all the other stuff with those allocators
-is pretty cool, it really is just the sync stuff). I did want to be done with the allocators, but
-they are a craaaazy significant part of the engine so its ok. When they are completely finalised
-that is an enormous portion of the engine completed, and this really should be last day that I
-have to work on them since this really is a clear plan for caching allocations, which is the last
-aspect to complete.
+Done:
+1. make_free(..) correct args -- done
+5. recreate_images(..) should only recreate the images that have been left in an undefined state by the bind -- done

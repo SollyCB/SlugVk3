@@ -2752,14 +2752,13 @@ bool tex_upload_queue_submit(Tex_Allocator *alloc) {
     alloc->upload_queue = Max_u64; // Indicate it is safe to use upload queue again
     return true;
 }
-void recreate_images(Tex_Allocator *alloc) {
+void recreate_images(Tex_Allocator *alloc, u32 count, u32 *indices) {
     VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     VkDevice device = get_gpu_instance()->device;
     VkResult check;
     Tex_Allocation *tex;
-    for(u32 i = 0; i < alloc->allocation_count; ++i) {
-        tex = &alloc->textures[i];
-
+    for(u32 i = 0; i < count; ++i) {
+        tex = &alloc->allocations[indices[i]];
         info.imageType = VK_IMAGE_TYPE_2D;
         info.extent = {.width = tex->width, .height = tex->height, .depth = 1};
         info.mipLevels = 1;
@@ -2769,7 +2768,6 @@ void recreate_images(Tex_Allocator *alloc) {
         info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         info.format = VK_FORMAT_R8G8B8A8_SRGB;
-
         vkDestroyImage(device, tex->img, ALLOCATION_CALLBACKS);
         check = vkCreateImage(device, &info, ALLOCATION_CALLBACKS, &tex->img);
         DEBUG_OBJ_CREATION(vkCreateImage, check);
@@ -3308,14 +3306,6 @@ void free_static_model(Static_Model *model) {
 // @CurrentTask Allocator Redo (I have the hang of it now, this is the final system)
 //
 
-/*
-   Allocator To Implement: (I really think that everything else is done except file stuff).
-       fopening + freading + fwrite at correct file offset
-
-   Tex_Allocator To Implement:
-        @Todo
-*/
-
 Allocator_Result begin_allocation(Allocator *alloc) {
     ASSERT(alloc->to_stage_count == Max_u32, "");
     if (alloc->to_stage_count != Max_u32)
@@ -3401,6 +3391,9 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
         return SUCCESS;
     }
 
+    // This section, although so similar across each allocator, cannot really be moved into its own function
+    // cleanly, as the internal logic has to be so slightly different each time (such as which size to use, or
+    // how to calculate the size). So it is easier to just inline it...
     u32 free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
     Allocation *tmp;
     u32 *indices = alloc;
@@ -3410,11 +3403,14 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
         count = find_flags(alloc->allocation_states, indices, STAGED, TO_DRAW);
         for(u32 i = count - 1; i != Max_u32; --i) {
             tmp = alloc->allocations[indices[i]];
-            alloc->allocation_states[indices[i]] &= ~STAGED; // mark as having been evicted from stage buffer
-            make_free(alloc->stage_masks, tmp->stage_offset, tmp->size);
+            make_free(alloc->stage_mask_count, alloc->stage_masks, tmp->stage_offset, tmp->size);
             free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
             if (free_block != Max_u32) {
                 evict_idx = i;
+                // Only mark as having been evicted from stage buffer if actually going to be evicted (i.e. if
+                // sufficient free block is actually available)
+                for(u32 j = i; j < count; ++j)
+                    alloc->allocation_states[indices[i]] &= ~STAGED;
                 goto free_block_found; // jump over early return
             }
         }
@@ -3525,11 +3521,13 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         count = find_flags(alloc->allocation_states, indices, UPLOADED, TO_DRAW);
         for(u32 i = count - 1; i != Max_u32; --i) {
             tmp = alloc->allocations[indices[i]];
-            alloc->allocation_states[indices[i]] ^= UPLOADED; // mark as having been evicted from upload buffer
-            make_free(alloc->upload_masks, tmp->upload_offset, tmp->size);
+            make_free(alloc->upload_mask_count, alloc->upload_masks, tmp->upload_offset, tmp->size);
             free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
             if (free_block != Max_u32) {
                 evict_idx = i;
+                // Only mark as evicted if allocations will actually be overwritten (i.e. if a free block is available)
+                for(u32 j = i; j < count; ++j)
+                    alloc->allocation_states[indices[j]] &= ~UPLOADED;
                 goto free_block_found; // jump over early return
             }
         }
@@ -3767,11 +3765,13 @@ Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
         for(u32 i = count - 1; i != Max_u32; --i) {
             tmp = alloc->allocations[indices[i]];
             img_size = tmp->width * tmp->height * 4;
-            make_free(alloc->stage_masks, tmp->stage_offset, img_size); // @Todo Wrong args (also for not tex)
-            alloc->allocation_states[indices[i]] &= ~STAGED; // mark as having been evicted from stage buffer
+            make_free(alloc->stage_mask_count, alloc->stage_masks, tmp->stage_offset, img_size);
             free_block = find_contiguous_free(alloc->stage_masks, alloc->staging_queue_byte_count);
             if (free_block != Max_u32) {
                 evict_idx = i;
+                // Only mark asc evicted if allocations will be overwritten (i.e. if free block is available)
+                for(u32 j = i; j < count; ++j)
+                    alloc->allocation_states[indices[i]] &= ~STAGED;
                 goto free_block_found; // jump over early return
             }
         }
@@ -3868,11 +3868,13 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
         count = find_flags(alloc->allocation_states, indices, UPLOADED, TO_DRAW);
         for(u32 i = count - 1; i != Max_u32; --i) {
             tmp = alloc->allocations[indices[i]];
-            make_free(alloc->upload_masks, tmp->upload_offset, tmp->size); // @Todo Wrong args (also for not tex)
-            alloc->allocation_states[indices[i]] &= ~UPLOADED; // mark as having been evicted from upload buffer
+            make_free(alloc->upload_mask_count, alloc->upload_masks, tmp->upload_offset, tmp->size);
             free_block = find_contiguous_free(alloc->upload_masks, alloc->upload_queue_byte_count);
             if (free_block != Max_u32) {
                 evict_idx = i;
+                // Only mark as evicted if allocations will be overwritten (i.e. if free block is available)
+                for(u32 j = i; j < count; ++j)
+                    alloc->allocation_states[indices[i]] &= ~UPLOADED;
                 goto free_block_found; // jump over early return
             }
         }
@@ -3883,7 +3885,7 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
 
     // @Todo This is not the correct value, this is just the offset to the block, not the size of the block.
     // I need to write another function to get the size of the block.
-    //u64 block_size = free_block * alloc->upload_bit_granularity;
+    u64 block_size = free_block * alloc->upload_bit_granularity;
 
     // @Todo Check this works correctly. I am pretty sure it will match no flags (it will only match all flags set
     // except UPLOADED I think).
