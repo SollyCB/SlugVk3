@@ -1,10 +1,10 @@
-4. block_size incorrect value: currently holds offset to block, needs size of block
-6. underneath block_size usage, what is supposed to say _count says _cap in the if in the loop
-
 Done:
-1. make_free(..) correct args -- done
 2. find_contiguous_free(..) remove offsetting. -- done
-3. simd_find_flags(..) for finding all flags except staged/uploaded -- done
+3. simd_find_flags(..) for finding all flags except staged/uploaded (also check args order) -- done
 5. recreate_images(..) should only recreate the images that have been left in an undefined state by the bind -- done
 8. fix early return on allocation too large for queue in queue add leaving poor state -- done
 7. set allocation states to UPLOADED && clear TO_UPLOAD (+ stage equivalents) -- done
+9. make_free(..) requires update (see line 3420 to 3424) -- done
+1. make_free(..) correct args -- done
+4. block_size incorrect value: currently holds offset to block, needs size of block -- done
+
