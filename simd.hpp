@@ -80,8 +80,11 @@ inline static Vec4 simd_acos_vec4(Vec4 *vec4) {
     return *acos;
 } */
 
-// For any flags with 'with' set but without 'without' set, set 'set' and clear 'clear'
-inline static u32 simd_find_update_flags_u8(u32 count, u8 *flags, u8 with, u8 without, u8 set, u8 clear, u32 *indices) {
+// For any flags with 'with' set but without 'without' set, set 'set' and clear 'clear'.
+// **WARNING** Zeros flags which are beyond count but within align(count, 16) so as not to leave them undefined.
+// @Todo Make a safe version of this which restores the overlap flags, rather than zeroing them (I have not got a
+// use case yet. Not going to implement while unnecessary)
+inline static void simd_update_flags_u8(u32 count, u8 *flags, u8 with, u8 without, u8 set, u8 clear) {
     __m128i a;
     __m128i b = _mm_set1_epi8(with | without);
     __m128i c = _mm_set1_epi8(with);
@@ -107,16 +110,10 @@ inline static u32 simd_find_update_flags_u8(u32 count, u8 *flags, u8 with, u8 wi
         a = _mm_or_si128(a, e);
         _mm_store_si128((__m128i*)(flags + inc), a);
 
-        pc = pop_count16(mask);
-        for(u32 i = 0; i < pc; ++i) {
-            tz = count_trailing_zeros_u16(mask);
-            indices[cnt] = tz + inc;
-            mask ^= 1 << tz;
-            cnt++;
-        }
         inc += 16;
     }
-    return cnt;
+    tz = (16 - (count & 15)) & (Max_u32 + (u32)((count & 15) == 0));
+    memset(flags + count, 0, tz);
 }
 // Set 'without' to 0xff to find flags matching 0x0; Set 'with' to 0x0 to search for any flags without 'without' set
 inline static u32 simd_find_flags_u8(u32 count, u8 *flags, u8 with, u8 without, u32 *indices) {
@@ -128,7 +125,8 @@ inline static u32 simd_find_flags_u8(u32 count, u8 *flags, u8 with, u8 without, 
     u32 tz;
     u32 cnt = 0;
     u32 inc = 0;
-    while(inc < count) {
+    u32 max = (count - 16) & (Max_u32 + (u32)(count < 16));
+    while(inc < max) {
         a = _mm_load_si128((__m128i*)(flags + inc));
         a = _mm_and_si128(a, b);
         a = _mm_cmpeq_epi8(a, c);
@@ -141,6 +139,22 @@ inline static u32 simd_find_flags_u8(u32 count, u8 *flags, u8 with, u8 without, 
             cnt++;
         }
         inc += 16;
+    }
+    // Deal with simd matching beyond count
+    a = _mm_load_si128((__m128i*)(flags + inc));
+    a = _mm_and_si128(a, b);
+    a = _mm_cmpeq_epi8(a, c);
+    mask = _mm_movemask_epi8(a);
+    tz = 16 - (count & 15);
+    pc = Max_u32 + (u32)((count & 15) == 0);
+    mask <<= tz & pc;
+    mask >>= tz & pc;
+    pc = pop_count16(mask);
+    for(u32 i = 0; i < pc; ++i) {
+        tz = count_trailing_zeros_u16(mask);
+        indices[cnt] = tz + inc;
+        mask ^= 1 << tz;
+        cnt++;
     }
     return cnt;
 }

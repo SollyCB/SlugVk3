@@ -203,7 +203,7 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
 
         bool incompatible = false;
         if (mem_priority.memoryPriority == VK_FALSE) {
-            std::cerr << "Device Index " << i << " does not support Memory Priority\n";
+            println("Device Index %u does not support Memory Priority", i);
             incompatible = true;
         }
 
@@ -1239,7 +1239,7 @@ namespace model {
 #if 1
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 
-/*
+/* @Todo Update these notes.
     New Model Allocator Plan:
         The allocator's device buffer is represented by a large bit mask (an array of u64s)
         where each bit is some memory granularity (each bit could represent a Kb, Mb, etc).
@@ -1665,23 +1665,22 @@ u32 find_hash_idx(u32 count, u64 *hashes, u64 hash) {
     return (count_trailing_zeros_u16(mask) >> 3) + (inc - 2);
 }
 u32 find_lowest_flagged_weight(u32 count, u8 *weights) {
-    u32 shift = count & 15;
-    u32 pos = count - shift;
-    __m128i a = _mm_load_si128((__m128i*)(weights + pos));
-    __m128i b = _mm_set1_epi8(0b10000000);
+    u32 offset = count - (count & 15);
+    offset -= 16 & (Max_u32 + ((count & 15) > 0));
+    __m128i a = _mm_load_si128((__m128i*)(weights + offset));
+    __m128i b = _mm_set1_epi8(0b1000'0000);
     a = _mm_and_si128(a, b);
     u16 mask = _mm_movemask_epi8(a);
-    mask <<= 16 - shift; // Just in case weights beyond count are not zero'd
-    while(!mask) {
-        if (pos == 0)
+    while(!mask) { // static predict that lowest flagged is not immediate
+        if (offset == 0)
             return Max_u32;
-        pos -= 16;
+        offset -= 16;
 
-        a = _mm_load_si128((__m128i*)(weights + pos));
+        a = _mm_load_si128((__m128i*)(weights + offset));
         a = _mm_and_si128(a, b);
         mask = _mm_movemask_epi8(a);
     }
-    return pos + (15 - count_leading_zeros_u16(mask)); // 15 not 16 because leading zeros not inclusive
+    return offset + (15 - count_leading_zeros_u16(mask));
 }
 void recreate_images(Tex_Allocator *alloc, u32 count, u32 *indices) {
     VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -1706,7 +1705,7 @@ void recreate_images(Tex_Allocator *alloc, u32 count, u32 *indices) {
 }
     /* End Allocator Helper Algorithms */
     /* Model Texture and Vertex/Index Attribute Allocators */
-Allocator_Result begin_allocation(Allocator *alloc) {
+Allocator_Result begin_allocation(Allocator *alloc) { // @TODO CURRENT TASK!! Read the code you wrote lazy bones.
     ASSERT(alloc->to_stage_count == Max_u32, "");
     if (alloc->to_stage_count != Max_u32)
         return QUEUE_IN_USE;
@@ -1745,7 +1744,6 @@ Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 *key) {
     fclose(alloc->disk_storage);
     return SUCCESS;
 }
-
 Allocator_Result staging_queue_begin(Allocator *alloc) {
     if (alloc->to_stage_count != Max_u32)
         return QUEUE_IN_USE;
@@ -2025,7 +2023,6 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         VkDependencyInfo dep = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dep.memoryBarrierCount = 1;
         dep.pMemoryBarriers = &mem_barr;
-
         vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
 
         vkEndCommandBuffer(alloc->graphics_cmd);
@@ -2048,7 +2045,6 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         VkDependencyInfo dep_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dep_info.bufferMemoryBarrierCount = 1;
         dep_info.pBufferMemoryBarriers = &buf_barr;
-
         vkCmdPipelineBarrier2(alloc->transfer_cmd, &dep_info);
 
         vkEndCommandBuffer(alloc->transfer_cmd);
@@ -2059,7 +2055,6 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         buf_barr.srcAccessMask = 0x0;
         buf_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
         buf_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
-
         vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep_info);
 
         vkEndCommandBuffer(alloc->graphics_cmd);
@@ -2337,11 +2332,13 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
     for(u32 i = 0; i < count; ++i) {
         tmp = alloc->allocations[indices[i]];
         size += align(tmp->size, alloc->upload_bit_granularity);
-        if (size <= block_size - alloc->upload_queue_byte_count)
-            indices_final[i] = indices[i];
-        else
+        if (size > block_size - alloc->upload_queue_byte_count)
             break;
+
+        indices_final[i] = indices[i];
+        alloc->allocation_states[indices[i]] |= TO_UPLOAD;
     }
+
     simd_find_flags_u8(alloc->allocation_states, TO_UPLOAD, 0x00, indices);
     memcpy(indices_final + count, indices, tmp * sizeof(u32));
     count = eject_repeat_indices(count + alloc->to_upload_count, indices_final);
@@ -2363,14 +2360,16 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
         bind_infos[i].memoryOffset = upload_offset;
         upload_offset += alloc->bind_infos[i].size; // This size is aligned to bit granularity already
     }
-    if (vkBindImageMemory2(device, alloc->to_upload_count, bind_infos) != VK_SUCCESS) {
-        // @Todo Make this only recreate the undefined images, and reset the images' states to not uploaded.
-        recreate_images(alloc, indices);
+    if (vkBindImageMemory2(device, count, bind_infos) != VK_SUCCESS) {
+        // @Note Not quite sure what to do with failure here. Returning like this leaves the queue still
+        // full, which means the client can call retry and this point should just be reached instantly again.
+        // And then if the bind fails again they can reset the queue themselves. You could argue that the allocator
+        // should empty the queue and reset itself. But I will stick with this for now. Idk how serious a bind
+        // failure is really. In my case it should never happen as all my memory is allocated once.
+        recreate_images(alloc, count, indices);
         return BIND_IMAGE_FAIL;
     } else {
-        simd_find_update_flags_u8(alloc->allocation_count, alloc->allocation_states, TO_UPLOAD
-        for(u32 i = 0; i < count; ++i)
-            alloc->allocation_states[indices[i]] |= UPLOADED;
+        simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, TO_UPLOAD, 0x0, UPLOADED, TO_UPLOAD);
     }
 
     // Record copies and transitions
