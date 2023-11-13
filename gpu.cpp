@@ -1704,70 +1704,154 @@ void recreate_images(Tex_Allocator *alloc, u32 count, u32 *indices) {
     }
 }
     /* End Allocator Helper Algorithms */
+
     /* Model Texture and Vertex/Index Attribute Allocators */
+
+//
+//  ** Model Allocation implementation details (grep marker: ~MAID) **
+//  @Todo Explain the implementation.
+//
+
+// begin/continue/submit_allocation(..) explanation:
+//
+// The way that data is described in a gltf file makes it easier to incrementally
+// add an allocation to an allocator: we read the descriptions in each accessor
+// and buffer view, understand where vertex data/index data is. In this case,
+// it is helpful to track the allocation's size as we go. Furthermore, data
+// may be fragmented in the buffer (unlikely, but I do not trust the real world)
+// and so this way we can make like data contiguous, in case it is fragmented.
+// You begin an allocation, read the accessors and buffer views, and add to the
+// allocation at whatever stage is sensible (preferably when you encounter fragmentation,
+// or when the whole size is understood).
 Allocator_Result begin_allocation(Allocator *alloc) { // @TODO CURRENT TASK!! Read the code you wrote lazy bones.
     ASSERT(alloc->to_stage_count == Max_u32, "");
+    // Upon completing an allocation, '.to_stage_count' is set to Max_u32.
     if (alloc->to_stage_count != Max_u32)
         return QUEUE_IN_USE;
-
+    // '.allocations' is not a dynamic array.
     if (alloc->allocation_count == alloc->allocation_cap)
         return ALLOCATOR_FULL;
+
+    // Add the new allocation. The allocation count is only incremented
+    // once submit has been called. Therefore, if this allocation is cancelled,
+    // (which really it never should be) the left over data will just get overwritten.
     Allocation *tmp = &alloc->allocations[alloc->allocation_count];
     *tmp = {};
+
+    // Allocations are also written to a file managed by the allocator. In case allocations have to be evicted
+    // from the staging queue, they can be quickly reloaded from this disk storage, rather than the model file.
+    // (In a release ready production app, I would get rid of the gltf buffer files completely, and just have
+    // model data live in the allocator buffers, so no reading and rewriting, but this is a fine implementation
+    // for now. It proves the concept and is easily switched to the version described).
     tmp->disk_offset = alloc->disk_size;
-    alloc->disk = fopen(alloc->disk_storage, "wb"); // offset to disk size
+    alloc->disk = fopen(alloc->disk_storage, "wb");
 
     // staging queue must not be used during the allocation phase of the program. So it is safe to
     // reuse it here for tracking in-progress allocations.
     alloc->staging_queue_byte_count = 0;
     return SUCCESS;
 }
+// The pointer should be to a gltf buffer file read into memory. The allocator
+// then copies from this pointer into its staging buffer (if there is room),
+// and writes the data to its internal storage (I agree that this disk
+// copy is lame and slow. See the begin/continue/submit... explanation above
+// for what I would do for release).
 Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
-    u64 current_size = alloc->staging_queue_byte_count + size;
-    if (current_size > alloc->staging_queue_byte_cap)
-        return STAGE_FULL;
+    // @Note Test against upload cap assuming that the stage cap is at least as large
+    // as the upload cap.
+    u64 queue_size = align(alloc->staging_queue_byte_count + size, alloc->upload_bit_granularity);
+    if (queue_size > alloc->upload_queue_byte_cap) {
+        // Remove the current allocation from the allocator if overflow. (@Note There is probably
+        // a better way to handle this failure, but this is currently the simplest.)
+        alloc->bytes_staged -= alloc->staging_queue_byte_count;
+        alloc->disk_size -= alloc->staging_queue_byte_count;
+        return ALLOCATION_TOO_LARGE;
+    }
 
+    // Adding allocations to a the allocators should happen at a specific stage
+    // in the program, a stage which happens before using the '..queue..' functions
+    // below. Therefore, at this stage we can treat the allocator as a simple
+    // linear allocator. Since we already have the data in memory, if there is still
+    // room in the staging buffer, copy it in. (Note that allocations which are expected
+    // to be needed often should be added to the allocators first to take advantage of
+    // this pseudo caching.)
+    //
+    // @Note Sizes are not aligned here as these are *continued* allocations. Only
+    // the final allocation size should be aligned, obvs.
+    //
+    // 'size' is added to 'bytes_staged' everytime, so that in 'submit_allocation(..)'
+    // we can check if the size overflowed. If so, we can then remove the whole allocation
+    // from the stage buffer. Trying to track that here is more uglier.
+    alloc->bytes_staged += size;
+    if (align(alloc->bytes_staged, alloc->staging_queue_bit_granularity) < alloc->stage_cap) {
+        // ptr should be a pointer to model data pertinent to the in progress allocation, so we
+        // copy from the pointer, into the allocator.
+        memcpy(alloc->stage_ptr + (alloc->bytes_staged - size), ptr, size);
+    }
+
+    // Write the allocation to file (see 'begin/continue... explanation' above for explanation).
     fseek(alloc->disk_storage, 0, alloc->disk_size);
     fwrite(alloc->disk_storage, ptr, size); // offset at disk size;
     alloc->disk_size += size;
 
-    if (current_size + alloc->bytes_staged < alloc->stage_cap) {
-        memcpy(alloc->stage_ptr + alloc->staging_queue_byte_count, ptr, size);
-        alloc->staging_queue_byte_count += size;
-    }
+    alloc->allocations[alloc->allocation_count] += size;
+    alloc->staging_queue_byte_count += size;
     return SUCCESS;
 }
 Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 *key) {
+    u64 aligned_size = align(alloc->bytes_staged, alloc->staging_queue_bit_granularity);
+    if (aligned_size > alloc->stage_cap)
+        alloc->bytes_staged -= alloc->staging_queue_byte_count;
+    else
+        alloc->bytes_staged = aligned_size;
+
+    // '*key' is an index which corresponds to this allocation's index in the
+    // '.indices' field of the allocator. As the allocator is used, allocations
+    // will be shuffled around; this key is maintained to point to the correct
+    // allocation. (Read the implementation details above for details - grep for ~MAID.)
     *key = alloc->allocation_count;
     alloc->allocation_count++;
+
+    // Max_u32 indicates that the queue is safe to use again. This is used by 'begin_allocation(..)'.
     alloc->to_stage_count = Max_u32;
     fclose(alloc->disk_storage);
     return SUCCESS;
 }
 Allocator_Result staging_queue_begin(Allocator *alloc) {
+    // '.to_stage_count' set to max by queue submission, indicating it
+    // is safe to use again.
     if (alloc->to_stage_count != Max_u32)
         return QUEUE_IN_USE;
     alloc->to_stage_count = 0;
     alloc->staging_queue_byte_count = 0;
     return SUCCESS;
 }
-Allocator_Result staging_queue_add(Allocator *alloc, u32 idx) {
+Allocator_Result staging_queue_add(Allocator *alloc, u32 key) {
     Weight_Args w_args = {
         .count = alloc->allocation_count,
         .weights = alloc->allocation_weights,
         .states = alloc->allocation_allocation_states,
         .indices = alloc->allocation_indices,
         .allocations = alloc->allocations,
-        .idx = idx,
+        .idx = key,
         .inc = 3,
         .dec = 1 // @Test Find effective inc and dec values
     };
-    idx = adjust_allocation_weights(&w_args);
+    // Increment the weight of the desired allocation, decrease other weights.
+    // Shuffle data according to weights (don't worry, this is cheap and pays
+    // off. See the function implementation to understand better). Return the
+    // index of the desired allocation and its attributes (weight and state).
+    u32 idx = adjust_allocation_weights(&w_args);
     alloc->allocation_states[idx] |= TO_DRAW;
+    // If the allocation is already staged or marked to be staged, early return.
     if (alloc->allocation_states[idx] & STAGED || alloc->allocation_states[idx] & TO_STAGE)
         return SUCCESS;
 
-    // Ensure that allocations will not overlap into another's bit representation
+    // An allocation's location in staging memory is represented by a bit array (some u64s),
+    // with each bit representing some number of real bytes. Later in the submission function,
+    // in order to make space for new data, allocations can be evicted. This is done by clearing
+    // the bit representation of their data range (offset to size). If allocations' positions
+    // are not aligned to their bit representation, they are not accurately represented.
     u64 bit_align_size = align(alloc->allocations[idx].size, alloc->stage_bit_granularity);
     if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
         // If the queue add fails, we do not want stuff marked as to draw that is not also part of a queue.
@@ -1783,92 +1867,149 @@ Allocator_Result staging_queue_add(Allocator *alloc, u32 idx) {
 Allocator_Result staging_queue_submit(Allocator *alloc) {
     // If the to stage count is zero on queue submission, just assume that everything queued was already
     // cached, and we need not do anything. This is most likely, as vertex data should just be able to live in
-    // memory I am pretty certain. In case it can't (I would like to support even shit hardware, as everyone
-    // should) the same range searching functionality is implemented here for disk->stage (in the same way as
-    // stage->device)
+    // memory (I am pretty sure). However, if vertex data is ever too large for the staging buffer,
+    // allocations can be evicted and reloaded from the allocator's disk storage (see implementation above).
     if (alloc->to_stage_count == 0) {
         alloc->to_stage_count = Max_u32;
         return SUCCESS;
     }
 
-    // This section, although so similar across each allocator, cannot really be moved into its own function
-    // cleanly, as the internal logic has to be so slightly different each time (such as which size to use, or
-    // how to calculate the size). So it is easier to just inline it...
-    u32 g = alloc->stage_bit_granularity;
-    u32 req_bits = alloc->staging_queue_byte_count / g; // This size is aligned to g, so need to worry about remainder
+    Allocation  *tmp;
+    Allocation  *allocations = alloc->allocations;
+    Alloc_State *states      = alloc->allocation_states;
+    u64          queue_size  = alloc->staging_queue_byte_count;
+
+    u32 mask_count = alloc->stage_mask_count;
+    u64 *masks     = alloc->stage_masks;
+
+    u32 g          = alloc->stage_bit_granularity;
+    u32 req_bits   = alloc->staging_queue_byte_count / g; // This size is aligned to g (being the sum of aligned sizes), so need to worry about remainder
     u32 free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, req_bits);
-    Allocation *tmp;
-    u32 *indices = alloc;
+    u32 *indices   = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16); // Align 16 for SIMD
+
     u32 evict_idx;
     u32 count;
+
+    // @Note Although I would like to this section, cannot really be moved into its own function
+    // cleanly, as the internal logic has to be so slightly different each time (such as which size to use, or
+    // how to calculate the size). So it is easier to just inline it...
+    //
+    // Section Explanation:
+    // If no contiguous block of free memory, sufficient to hold the size of the staging queue is available in the
+    // staging buffer (as represented by the bit masks), find the allocations flagged as staged, but which are not
+    // flagged for staging, uploading or drawing; loop these allocations, starting at the allocation with the lowest
+    // weight (see implementation details above for what 'weight' means); mark the allocation's range as free in the
+    // bit mask, check if there is now a large enough size, and if so, break; if we have looped all allocations,
+    // return error code.
     if (free_block == Max_u32) {
-        // @Note Really this only needs to negate TO_DRAW, not TO_DRAW | TO_UPLOAD I think, but I am keeping it
-        // in case smtg changes, and this keeps things more robust for zero overhead.
-        count = simd_find_flags_u8(alloc->allocation_states, STAGED, TO_DRAW | TO_STAGE, indices);
+        // In case of failure, we need to restore the masks initial states. (Failure should be incredibly unlikely,
+        // if it ever happens at all. The code using the allocators should use them efficiently.)
+        u64 mask_copies = (u64*)malloc_t(sizeof(u64) * mask_count, 16);
+        memcpy(mask_copies, masks, sizeof(u64) * mask_count);
+
         u32 size;
         u32 offset;
+        count = simd_find_flags_u8(states, STAGED, TO_UPLOAD | TO_DRAW | TO_STAGE, indices);
         for(u32 i = count - 1; i != Max_u32; --i) {
-            tmp = alloc->allocations[indices[i]];
-            // @Todo Really g should always be power of 2, so these should be bit shifts, not divides
-            size = align(tmp->size, g) / g;
+            tmp = &allocations[indices[i]];
+
+            // @Note Really g should always be power of 2, so these should be bit shifts, not divides. I really do not
+            // like these divides...
+            size   = align(tmp->size,   g) / g;
             offset = align(tmp->offset, g) / g;
-            make_free(alloc->stage_mask_count, alloc->stage_masks, offset, size);
-            free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, req_bits);
+
+            make_free(mask_count, masks, offset, size);
+            free_block = find_contiguous_free(mask_count, masks, req_bits);
+
             if (free_block != Max_u32) {
-                evict_idx = i;
                 // Only mark as having been evicted from stage buffer if actually going to be evicted (i.e. if
-                // sufficient free block is actually available)
+                // sufficient free block is actually available).
+                // @Todo This should be implemented as simd_update_flags_u8(..) but with the ability to start
+                // from an offset. Doing this as a loop over individual u8s is very very lame.
                 for(u32 j = i; j < count; ++j)
-                    alloc->allocation_states[indices[i]] &= ~STAGED;
+                    states[indices[j]] &= ~STAGED;
+
+                evict_idx = i;
                 goto free_block_found; // jump over early return
             }
         }
+        memcpy(masks, mask_copies, sizeof(u64) * mask_count);
         return STAGE_FULL; // Too many allocations waiting to draw
     }
 
     free_block_found: // goto
 
-    u64 block_size = get_block_size(alloc->stage_mask_count, alloc->stage_masks, free_block) * g;
-    count = simd_find_flags_u8(alloc->allocation_states, 0x00, STAGED, indices);
-    u32 indices_final = alloc;
+    // Find how large free_block is.
+    u64 block_size = get_block_size(mask_count, masks, free_block) * g;
+
+    // Find the indices of all allocations which are not staged.
+    count = simd_find_flags_u8(states, 0x00, STAGED, indices);
+
+    // Loop the unstaged allocations, starting at the highest weight. If there is size available
+    // in the free block for the queued allocations and the current allocation in loop, add the
+    // allocation to the allocations we want to stage. If an allocation is already marked as
+    // to stage, add it to the list, but do not increase 'size', as its size will already be accounted
+    // for in the queue.
+    //
+    // @Note We must include these already to stage allocations in the loop in order to maintain correct
+    // ordering of the allocations. Otherwise, allocations which are not staged can appear
+    // earlier in 'final_indices' than allocations which have a higher weight but which are already
+    // marked to stage. (See implementation details above to understand why this is bad - grep ~MAID.)
+    u64 tmp;
     u64 size = 0;
     for(u32 i = 0; i < count; ++i) {
-        size += align(alloc->allocations[indices[i]].size, alloc->stage_bit_granularity);
-        if (size <= block_size - alloc->staging_queue_byte_count)
-            indices_final[i] = indices[i];
-        else
+        ASSERT((tmp == Max_u64 && (states[indices[i]] & TO_STAGE)  == 0  ||
+                tmp == 0       && (states[indices[i]] & TO_STAGE)) >  0, "");
+
+        // if state & TO_STAGE > 0 true then tmp = 0 else tmp = 11111...1
+        tmp = Max_u64 + (u64)((states[indices[i]] & TO_STAGE) > 0);
+
+        // if tmp == 0 them size += 0 else tmp == 11111...1, so size += align(alloc.size,...)
+        size += tmp & align(allocations[indices[i]].size, g);
+
+        if (size > block_size - queue_size) { // static predict that there will be room
             break;
+        } else {
+            states[indices[i]] |= TO_STAGE;
+        }
     }
-    // Find to stage indices here as opposed to storing them when adding to queue to guarantee that they are in order
-    simd_find_flags_u8(alloc->allocation_states, TO_STAGE, 0x00, indices);
-    memcpy(indices_final + count, indices, alloc->to_stage_count * sizeof(u32));
-    count = eject_repeat_indices(count + to_stage_count, indices_final);
+    // Get the final list of allocations to stage.
+    count = simd_find_flags_u8(states, TO_STAGE, 0x00, indices);
 
-    // I do not know if this is a naive implementation. The way the allocator works is it takes a parsed gltf
+    // @Note @Todo I do not know if this is a naive implementation. The way the allocator works is it takes a parsed gltf
     // file, and then groups accessors/buffer views into one allocation. So all of a model's vertex attribute
-    // data is put into one contiguous allocation. This may be pointless, as it seems sensible that the data
+    // data is put into one contiguous allocation which is rewritten to disk storage managed by the allocator, in
+    // case of an eviction. This may be pointless, as it seems sensible that the data
     // would already be laid out like this in the file. But I do not want to always rely on that fact (in a
-    // real company this would just be enforced, but wild world I will not trust). So I group the data
-    // together, then write it all into one file used by the allocator if its memory allocation is going to
-    // overflow. It's sort of dumb in the current state of the app, as these gltf files are read on every
-    // load, and then rewritten every load. However in production I would ditch the gltf files completely and
-    // just ship with the allocator files, obvs). So it will stay like this for now. Copying around data is
+    // real company this would just be enforced, but wild world I will not trust).
+    // It's sort of dumb in the current state of the app, as these gltf files are read and rewritten
+    // every time the program runs (but ofc in production I would ditch the gltf files completely and
+    // just ship with the allocator files, obvs). It will stay like this for now, as it is just a proof
+    // of concept and can easily be turned into the production equivalent. Copying around data is
     // the essence of computing *shrug*.
-    u64 stage_offset = free_block * alloc->stage_bit_granularity;
+    u64 stage_offset   = free_block * g;
     FILE *disk_storage = fopen(alloc->disk_storage);
+    void *stage_ptr    = alloc->stage_ptr;
     for(u32 i = 0; i < count; ++i) {
-        tmp = alloc->allocations[indices[i]];
-        fseek(alloc->disk_storage, 0, tmp->disk_offset);
-        fread(alloc->stage_ptr + stage_offset, 1, tmp->size, alloc->disk_storage);
+        tmp = allocations[indices[i]];
 
+        // Read the allocation's data from the allocator's disk copy of the data.
+        fseek(disk_storage, 0, tmp->disk_offset);
+        fread(stage_ptr + stage_offset, 1, tmp->size, disk_storage);
+
+        // Set the allocation's new stage offset and update its state.
         tmp->stage_offset = stage_offset;
-        stage_offset += align(tmp->size, alloc->stage_bit_granularity);
-        alloc->allocation_states[indices[i]] &= ~TO_STAGE;
-        alloc->allocation_states[indices[i]] |= STAGED;
+        states[indices[i]] &= ~TO_STAGE;
+        states[indices[i]] |= STAGED;
+
+        // Increment offset to point beyond the most recent allocation, aligned to the stage
+        // bit granularity.
+        stage_offset += align(tmp->size, g);
+
         ASSERT(stage_offset + tmp->size <= alloc->stage_cap, "Allocator Stage Overflow");
     }
-    fclose(alloc->disk_storage);
-    alloc->to_stage_count = Max_u32;
+    fclose(disk_storage);
+    alloc->to_stage_count = Max_u32; // Indicate that it is safe to begin a new queue.
     return SUCCESS;
 }
 Allocator_Result upload_queue_begin(Allocator *alloc) {
