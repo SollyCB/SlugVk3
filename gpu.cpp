@@ -1884,23 +1884,22 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
 
     u32 g          = alloc->stage_bit_granularity;
     u32 req_bits   = alloc->staging_queue_byte_count / g; // This size is aligned to g (being the sum of aligned sizes), so need to worry about remainder
-    u32 free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, req_bits);
+
+    u32 indices_count;
     u32 *indices   = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16); // Align 16 for SIMD
 
-    u32 evict_idx;
-    u32 count;
-
-    // @Note Although I would like to this section, cannot really be moved into its own function
+    // @Note Although I would like to, this section cannot really be moved into its own function
     // cleanly, as the internal logic has to be so slightly different each time (such as which size to use, or
-    // how to calculate the size). So it is easier to just inline it...
+    // how to calculate the size). So it is easier to just inline it and not fuss...
     //
     // Section Explanation:
-    // If no contiguous block of free memory, sufficient to hold the size of the staging queue is available in the
-    // staging buffer (as represented by the bit masks), find the allocations flagged as staged, but which are not
-    // flagged for staging, uploading or drawing; loop these allocations, starting at the allocation with the lowest
-    // weight (see implementation details above for what 'weight' means); mark the allocation's range as free in the
-    // bit mask, check if there is now a large enough size, and if so, break; if we have looped all allocations,
-    // return error code.
+    // If no contiguous block of free memory sufficient to hold the size of the stage queue is available in
+    // the stage buffer (as represented by the bit masks), find the allocations flagged as stageed, but which
+    // are not flagged for staging, uploading or drawing; loop these allocations, starting at the allocation
+    // with the lowest weight (see implementation details above for what 'weight' means); mark the
+    // allocation's range as free in the bit mask, check if there is now a large enough size, and if so,
+    // break; if we have otherwise looped all allocations and there is no room, so return error code.
+    u32 free_block = find_contiguous_free(alloc->stage_mask_count, alloc->stage_masks, req_bits);
     if (free_block == Max_u32) {
         // In case of failure, we need to restore the masks initial states. (Failure should be incredibly unlikely,
         // if it ever happens at all. The code using the allocators should use them efficiently.)
@@ -1909,8 +1908,8 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
 
         u32 size;
         u32 offset;
-        count = simd_find_flags_u8(states, STAGED, TO_UPLOAD | TO_DRAW | TO_STAGE, indices);
-        for(u32 i = count - 1; i != Max_u32; --i) {
+        indices_count = simd_find_flags_u8(states, STAGED, TO_UPLOAD | TO_DRAW | TO_STAGE, indices);
+        for(u32 i = indices_count - 1; i != Max_u32; --i) {
             tmp = &allocations[indices[i]];
 
             // @Note Really g should always be power of 2, so these should be bit shifts, not divides. I really do not
@@ -1918,12 +1917,14 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
             size   = align(tmp->size,   g) / g;
             offset = align(tmp->offset, g) / g;
 
+            // Clear the allocation's range in the bit masks, and check if there is now a large enough free block.
             make_free(mask_count, masks, offset, size);
             free_block = find_contiguous_free(mask_count, masks, req_bits);
 
             if (free_block != Max_u32) {
-                // Only mark as having been evicted from stage buffer if actually going to be evicted (i.e. if
-                // sufficient free block is actually available).
+                // Only mark allocations as having been evicted from staging buffer if they are actually going to be
+                // evicted (i.e. only if a sufficient free block is actually available).
+                //
                 // @Todo This should be implemented as simd_update_flags_u8(..) but with the ability to start
                 // from an offset. Doing this as a loop over individual u8s is very very lame.
                 for(u32 j = i; j < count; ++j)
@@ -1933,6 +1934,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
                 goto free_block_found; // jump over early return
             }
         }
+        // Restore the masks to before allocations were marked as free.
         memcpy(masks, mask_copies, sizeof(u64) * mask_count);
         return STAGE_FULL; // Too many allocations waiting to draw
     }
@@ -1942,51 +1944,35 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     // Find how large free_block is.
     u64 block_size = get_block_size(mask_count, masks, free_block) * g;
 
-    // Find the indices of all allocations which are not staged.
-    count = simd_find_flags_u8(states, 0x00, STAGED, indices);
+    // Find the indices of all allocations which are not staged and not marked as to stage.
+    indices_count = simd_find_flags_u8(states, 0x00, STAGED | TO_STAGE, indices);
 
-    // Loop the unstaged allocations, starting at the highest weight. If there is size available
-    // in the free block for the queued allocations and the current allocation in loop, add the
-    // allocation to the allocations we want to stage. If an allocation is already marked as
-    // to stage, add it to the list, but do not increase 'size', as its size will already be accounted
-    // for in the queue.
-    //
-    // @Note We must include these already to stage allocations in the loop in order to maintain correct
-    // ordering of the allocations. Otherwise, allocations which are not staged can appear
-    // earlier in 'final_indices' than allocations which have a higher weight but which are already
-    // marked to stage. (See implementation details above to understand why this is bad - grep ~MAID.)
-    u64 tmp;
+    // Loop the un-staged allocations (which are not already flagged as to stage), starting at the highest
+    // weight (lowest index). If there is size available in the free block for the queued allocations and the
+    // current allocation in loop, add the allocation to the list of allocations that we want to stage.
     u64 size = 0;
-    for(u32 i = 0; i < count; ++i) {
-        ASSERT((tmp == Max_u64 && (states[indices[i]] & TO_STAGE)  == 0  ||
-                tmp == 0       && (states[indices[i]] & TO_STAGE)) >  0, "");
-
-        // if state & TO_STAGE > 0 true then tmp = 0 else tmp = 11111...1
-        tmp = Max_u64 + (u64)((states[indices[i]] & TO_STAGE) > 0);
-
-        // if tmp == 0 them size += 0 else tmp == 11111...1, so size += align(alloc.size,...)
-        size += tmp & align(allocations[indices[i]].size, g);
-
-        if (size > block_size - queue_size) { // static predict that there will be room
+    for(u32 i = 0; i < indices_count; ++i) {
+        size += align(allocations[indices[i]].size, g);
+        // @Test This static predicts that there will be room for at least one allocation, it might be
+        // best to switch it around.
+        if (size > block_size - queue_size)
             break;
-        } else {
-            states[indices[i]] |= TO_STAGE;
-        }
+        else
+            states[indices[i]] |= TO_UPLOAD;
     }
     // Get the final list of allocations to stage.
-    count = simd_find_flags_u8(states, TO_STAGE, 0x00, indices);
+    indices_count = simd_find_flags_u8(states, TO_STAGE, 0x00, indices);
 
-    // @Note @Todo I do not know if this is a naive implementation. The way the allocator works is it takes a parsed gltf
-    // file, and then groups accessors/buffer views into one allocation. So all of a model's vertex attribute
-    // data is put into one contiguous allocation which is rewritten to disk storage managed by the allocator, in
-    // case of an eviction. This may be pointless, as it seems sensible that the data
+    // @Note @Todo I do not know if this is a naive implementation. The way the allocator works is it takes a
+    // parsed gltf file, and then groups accessors/buffer views into one allocation. So all of a model's
+    // vertex attribute data is put into one contiguous allocation which is rewritten to disk storage managed
+    // by the allocator, in case of an eviction. This may be pointless, as it seems sensible that the data
     // would already be laid out like this in the file. But I do not want to always rely on that fact (in a
-    // real company this would just be enforced, but wild world I will not trust).
-    // It's sort of dumb in the current state of the app, as these gltf files are read and rewritten
-    // every time the program runs (but ofc in production I would ditch the gltf files completely and
-    // just ship with the allocator files, obvs). It will stay like this for now, as it is just a proof
-    // of concept and can easily be turned into the production equivalent. Copying around data is
-    // the essence of computing *shrug*.
+    // real company this would just be enforced, but wild world I will not trust). It's sort of dumb in the
+    // current state of the app, as these gltf files are read and rewritten every time the program runs (but
+    // ofc in production I would ditch the gltf files completely and just ship with the allocator files,
+    // obvs). It will stay like this for now, as it is just a proof of concept and can easily be turned into
+    // the production equivalent. Copying around data is the essence of computing *shrug*.
     u64 stage_offset   = free_block * g;
     FILE *disk_storage = fopen(alloc->disk_storage);
     void *stage_ptr    = alloc->stage_ptr;
@@ -1999,8 +1985,6 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
 
         // Set the allocation's new stage offset and update its state.
         tmp->stage_offset = stage_offset;
-        states[indices[i]] &= ~TO_STAGE;
-        states[indices[i]] |= STAGED;
 
         // Increment offset to point beyond the most recent allocation, aligned to the stage
         // bit granularity.
@@ -2009,9 +1993,17 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
         ASSERT(stage_offset + tmp->size <= alloc->stage_cap, "Allocator Stage Overflow");
     }
     fclose(disk_storage);
+
+    // Mark allocations as staged.
+    simd_update_flags(allocation_count, states, TO_STAGE, 0x0, STAGED, TO_STAGE);
+
     alloc->to_stage_count = Max_u32; // Indicate that it is safe to begin a new queue.
     return SUCCESS;
 }
+// @Note Upload queue functions behave very similarly to the staging queue functions.
+// The implementation system and reasoning is almost entirely the same.
+// Although the differences are pretty trivial, they are significant and
+// annoying enough to collapse that the staging and upload functions should be separate (imo).
 Allocator_Result upload_queue_begin(Allocator *alloc) {
     if (alloc->to_upload_count != Max_u32)
         return QUEUE_IN_USE;
@@ -2026,21 +2018,30 @@ Allocator_Result upload_queue_add(Allocator *alloc, u32 idx) {
         .states = alloc->allocation_allocation_states,
         .indices = alloc->allocation_indices,
         .allocations = alloc->allocations,
-        .idx = idx,
+        .idx = key,
         .inc = 3,
-        .dec = 1, // @Test Find effective inc and dec values
+        .dec = 1 // @Test Find effective inc and dec values
     };
-    idx = adjust_allocation_weights(&w_args);
-
+    // Increment the weight of the desired allocation, decrease other weights.
+    // Shuffle data according to weights (don't worry, this is cheap and pays
+    // off. See the function implementation to understand better). Return the
+    // index of the desired allocation and its attributes (weight and state).
+    u32 idx = adjust_allocation_weights(&w_args);
     alloc->allocation_states[idx] |= TO_DRAW;
+    // If the allocation is already uploaded or marked to be uploaded, early return.
     if (alloc->allocation_states[idx] & UPLOADED || alloc->allocation_states[idx] & TO_UPLOAD)
         return SUCCESS;
 
-    // Alignment ensures that allocations will not overlap into another's bit representation
+    // An allocation's location in device memory is represented by a bit array (some u64s),
+    // with each bit representing some number of real bytes. Later in the submission function,
+    // in order to make space for new data, allocations can be evicted. This is done by clearing
+    // the bit representation of their data range (offset to size). If allocations' positions
+    // are not aligned to their bit representation, they are not accurately represented.
     u64 bit_align_size = align(alloc->allocations[idx].size, alloc->upload_bit_granularity);
     if (bit_align_size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap) {
+        // If the queue add fails, we do not want stuff marked as to draw that is not also part of a queue.
         alloc->allocation_states[idx] &= ~TO_DRAW;
-        return UPLOAD_QUEUE_FULL;
+        return QUEUE_FULL;
     }
 
     alloc->allocation_states[idx] |= TO_UPLOAD;
@@ -2050,81 +2051,119 @@ Allocator_Result upload_queue_add(Allocator *alloc, u32 idx) {
 }
 Allocator_Result upload_queue_submit(Allocator *alloc) {
     // If the to upload count is zero on queue submission, just assume that everything queued was already
-    // cached, and we need not do anything. This is most likely, as vertex data should just be able to live in
-    // memory I am pretty certain. In case it can't (I would like to support even shit hardware, as everyone
-    // should) the same range searching functionality is implemented here for disk->upload (in the same way as
-    // upload->device)
-    Gpu *gpu = get_gpu_instance();
-    Memory_Flags mem_flags = gpu->memory.flags;
-    // Really this should never be used. Upload queue shouldnt be used at all if UMA
-    if (alloc->to_upload_count == 0 || mem_flags & GPU_MEMORY_UMA) {
+    // cached, and we need not do anything.
+    if (alloc->to_upload_count == 0) {
         alloc->to_upload_count = Max_u32;
         return SUCCESS;
     }
 
-    u32 evict_idx;
-    u32 count;
-    Allocation *tmp;
-    u32 *indices = alloc;
-    u32 g = alloc->upload_bit_granularity;
-    u32 req_bits = alloc->upload_queue_byte_count / g; // This size is aligned to g, so need to worry about remainder
+    Allocation  *tmp;
+    Allocation  *allocations = alloc->allocations;
+    Alloc_State *states      = alloc->allocation_states;
+    u64          queue_size  = alloc->upload_queue_byte_count;
+
+    u32 mask_count = alloc->upload_mask_count;
+    u64 *masks     = alloc->upload_masks;
+
+    u32 g          = alloc->upload_bit_granularity;
+    u32 req_bits   = alloc->upload_queue_byte_count / g; // This size is aligned to g (being the sum of aligned sizes), so need to worry about remainder
+
+    u32 indices_count;
+    u32 *indices   = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16); // Align 16 for SIMD
+
+    // @Note Although I would like to, this section cannot really be moved into its own function
+    // cleanly, as the internal logic has to be so slightly different each time (such as which size to use, or
+    // how to calculate the size). So it is easier to just inline it and not fuss...
+    //
+    // Section Explanation:
+    // If no contiguous block of free memory sufficient to hold the size of the upload queue is available in
+    // the upload buffer (as represented by the bit masks), find the allocations flagged as uploaded, but
+    // which are not flagged for uploading or drawing; loop these allocations, starting at the allocation with
+    // the lowest weight (see implementation details above for what 'weight' means); mark the allocation's
+    // range as free in the bit mask, check if there is now a large enough size, and if so, break; if we have
+    // otherwise looped all allocations and there is no room, so return error code.
     u32 free_block = find_contiguous_free(alloc->upload_mask_count, alloc->upload_masks, req_bits);
     if (free_block == Max_u32) {
-        // @Note '| TO_UPLOAD' is unnecessary for now, see equivalent note in staging_queue_submit for justification.
-        count = simd_find_flags_u8(alloc->allocation_states, UPLOADED, TO_DRAW | TO_UPLOAD, indices);
+        // In case of failure, we need to restore the masks initial states. (Failure should be incredibly unlikely,
+        // if it ever happens at all. The code using the allocators should use them efficiently.)
+        u64 mask_copies = (u64*)malloc_t(sizeof(u64) * mask_count, 16);
+        memcpy(mask_copies, masks, sizeof(u64) * mask_count);
+
         u32 size;
         u32 offset;
-        for(u32 i = count - 1; i != Max_u32; --i) {
-            tmp = alloc->allocations[indices[i]];
-            size = align(tmp->size, g) / g;
-            offset = align(tmp->upload_offset, g) / g;
-            make_free(alloc->upload_mask_count, alloc->upload_masks, offset, size);
-            free_block = find_contiguous_free(alloc->upload_mask_count, alloc->upload_masks, req_bits);
+        indices_count = simd_find_flags_u8(states, UPLOADED, TO_UPLOAD | TO_DRAW, indices);
+        for(u32 i = indices_count - 1; i != Max_u32; --i) {
+            tmp = &allocations[indices[i]];
+
+            // @Note Really g should always be power of 2, so these should be bit shifts, not divides. I really do not
+            // like these divides...
+            //
+            // Find the allocations range (adjusted to the range in bits).
+            size   = align(tmp->size,   g) / g;
+            offset = align(tmp->offset, g) / g;
+
+            // Clear the allocation's range in the bit masks, and check if there is now a large enough free block.
+            make_free(mask_count, masks, offset, size);
+            free_block = find_contiguous_free(mask_count, masks, req_bits);
+
             if (free_block != Max_u32) {
-                evict_idx = i;
-                // Only mark as evicted if allocations will actually be overwritten (i.e. if a free block is available)
-                for(u32 j = i; j < count; ++j)
-                    alloc->allocation_states[indices[j]] &= ~UPLOADED;
+                // Only mark allocations as having been evicted from upload buffer if they are actually going to be
+                // evicted (i.e. only if a sufficient free block is actually available).
+                //
+                // @Todo This should be implemented as simd_update_flags_u8(..) but with the ability to start
+                // from an offset. Doing this as a loop over individual u8s is very very lame.
+                for(u32 j = i; j < indices_count; ++j)
+                    states[indices[j]] &= ~UPLOADED;
+
                 goto free_block_found; // jump over early return
             }
         }
+        // Restore the masks to before allocations were marked as free.
+        memcpy(masks, mask_copies, sizeof(u64) * mask_count);
         return UPLOAD_FULL; // Too many allocations waiting to draw
     }
 
     free_block_found: // goto
 
-    u64 block_size = get_block_size(alloc->upload_mask_count, alloc->upload_masks, free_block) * g;
-    count = simd_find_flags_u8(alloc->allocation_states, 0x00, UPLOADED, indices);
-    u32 indices_final = alloc;
+    // Find how large free_block is.
+    u64 block_size = get_block_size(mask_count, masks, free_block) * g;
+
+    // Find the indices of all allocations which are not uploaded and not marked as to upload.
+    indices_count = simd_find_flags_u8(states, 0x00, TO_UPLOAD | UPLOADED, indices);
+
+    // Loop the un-uploaded allocations (which are not already flagged as to upload, starting at the highest
+    // weight (lowest index). If there is size available in the free block for the queued allocations and the
+    // current allocation in loop, add the allocation to the list of allocations that we want to upload.
     u64 size = 0;
-    for(u32 i = 0; i < count; ++i) {
-        size += align(alloc->allocations[indices[i]].size, alloc->upload_bit_granularity);
-        if (size <= block_size - alloc->upload_queue_byte_count)
-            indices_final[i] = indices[i];
-        else
+    for(u32 i = 0; i < indices_count; ++i) {
+        size += align(allocations[indices[i]].size, g);
+        // @Test This static predicts that there will be room for at least one allocation, it might be
+        // best to switch it around.
+        if (size > block_size - queue_size)
             break;
+        else
+            states[indices[i]] |= TO_UPLOAD;
     }
-    u32 arb = simd_find_flags_u8(alloc->allocation_states, TO_UPLOAD, 0x00, indices);
-    ASSERT(arb == alloc->to_upload_count, "UUUGHGHGHHGGHHH!!!"); // @Todo Remove this assert
-    memcpy(indices_final + count, indices, alloc->to_upload_count * sizeof(u32));
-    count = eject_repeat_indices(count + tmp, indices_final);
+    // Get the final list of allocations to upload.
+    indices_count = simd_find_flags_u8(states, TO_UPLOAD, 0x00, indices);
 
-    //
-    // @Todo Check this upload code
-    //
-
-    VkBufferCopy2 *regions = (VkBufferCopy2*)malloc_t(sizeof(VkBufferCopy2) * count, 8);
+    // Create the upload regions information
+    VkBufferCopy2 *regions = (VkBufferCopy2*)malloc_t(sizeof(VkBufferCopy2) * indices_count, 8);
     u64 g = alloc->upload_bit_granularity;
     u64 upload_offset = free_block * g;
-    for(u32 i = 0; i < count; ++i) {
+    for(u32 i = 0; i < indices_count; ++i) {
         tmp = &alloc->allocations[indices[i]];
         regions[i] = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+        // @Note I would like to break up the 'Allocation' struct even further, separating out stage
+        // and upload offsets. But this loop deters me. Specifically the below two lines...
         regions[i].srcOffset = tmp->stage_offset;
-        regions[i].dstOffset = tmp->upload_offset;
+        regions[i].dstOffset = upload_offset;
         regions[i].size = tmp->size;
+        tmp->upload_offset = upload_offset;
         upload_offset = align(tmp->size, g);
     }
 
+    // Copy info
     VkCopyBufferInfo2 copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2};
     copy_info.srcBuffer = alloc->stage;
     copy_info.dstBuffer = alloc->upload;
@@ -2133,6 +2172,7 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
 
     VkDevice device = gpu->device;
 
+    // Allocate graphics command buffers
     VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     cmd_alloc_info.commandPool = alloc->graphics_pool;
     cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
@@ -2140,19 +2180,12 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmd);
     DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
 
-    if (mem_flags & GPU_MEMORY_DISCRETE_TRANSFER_BIT == 0) {
-        cmd_alloc_info.commandPool = alloc->transfer_pool;
-        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
-        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
-    }
-
     VkCommandBufferInheritanceInfo inheritance = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
     VkCommandBufferBeginInfo cmd_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     cmd_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     cmd_begin_info.pInheritanceInfo = &inheritance;
 
-    // Submit copies later with other commands that use the graphics queue
-    if (alloc->flags & (u8)Flags::UNIFIED_TRANSFER) {
+    if ((mem_flags & GPU_MEMORY_DISCRETE_TRANSFER_BIT) == 0) { // static predict discrete transfer
         vkBeginCommandBuffer(alloc->graphics_cmd, &cmd_begin_info);
 
         VkMemoryBarrier2 mem_barr = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -2168,20 +2201,25 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
 
         vkEndCommandBuffer(alloc->graphics_cmd);
 
-    // Submit copies now since transfer queue is discrete
     } else {
+        // Allocate transfer command buffers
+        cmd_alloc_info.commandPool = alloc->transfer_pool;
+        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
+        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+
         vkBeginCommandBuffer(alloc->transfer_cmd, &cmd_begin_info);
 
         vkCmdCopyBuffer2(alloc->transfer_cmd, &copy_info);
 
+        // Transfer queue release barrier
         VkBufferMemoryBarrier2 buf_barr = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
         buf_barr.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
         buf_barr.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
         buf_barr.srcQueueFamilyIndex = gpu->transfer_queue_index;
         buf_barr.dstQueueFamilyIndex = gpu->graphics_queue_index;
         buf_barr.buffer = alloc->upload;
-        buf_barr.offset = upload_begin;
-        buf_barr.size = align(upload_end, gpu->info.props.limits.nonCoherentAtomSize);
+        buf_barr.offset = free_block * g; // start of first allocation
+        buf_barr.size = upload_offset; // has been incremented beyond final allocation
 
         VkDependencyInfo dep_info = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dep_info.bufferMemoryBarrierCount = 1;
@@ -2192,6 +2230,7 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
 
         vkBeginCommandBuffer(alloc->graphics_cmd, &cmd_begin_info);
 
+        // Graphics queue acquire barrier
         buf_barr.srcStageMask = 0x0;
         buf_barr.srcAccessMask = 0x0;
         buf_barr.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
@@ -2209,10 +2248,7 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     // the same batch as the draw commands if unified transfer), they cannot react to a TO_UPLOAD state. I
     // cannot, call queue submit, wait for the semaphore, then set UPLOADED state, then call draw, as the
     // draws are already submitted with the submission that the semaphore wait was signalling.
-    for(u32 i = 0; i < count; ++i) {
-        alloc->allocation_states[indices[i]] &= ~TO_UPLOAD;
-        alloc->allocation_states[indices[i]] |= UPLOADED;
-    }
+    simd_update_flags_u8(allocation_count, states, TO_UPLOAD, 0x0, UPLOADED, TO_UPLOAD);
 
     alloc->to_upload_count = Max_u32;
     return SUCCESS;
