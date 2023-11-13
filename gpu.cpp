@@ -1715,35 +1715,27 @@ void recreate_images(Tex_Allocator *alloc, u32 count, u32 *indices) {
 // begin/continue/submit_allocation(..) explanation:
 //
 // The way that data is described in a gltf file makes it easier to incrementally
-// add an allocation to an allocator: we read the descriptions in each accessor
-// and buffer view, understand where vertex data/index data is. In this case,
-// it is helpful to track the allocation's size as we go. Furthermore, data
-// may be fragmented in the buffer (unlikely, but I do not trust the real world)
-// and so this way we can make like data contiguous, in case it is fragmented.
-// You begin an allocation, read the accessors and buffer views, and add to the
-// allocation at whatever stage is sensible (preferably when you encounter fragmentation,
-// or when the whole size is understood).
+// add an allocation to an allocator, as then an allocation can easily be built
+// up from the numerous accessors and buffer views described in the gltf buffer.
 Allocator_Result begin_allocation(Allocator *alloc) {
     ASSERT(alloc->to_stage_count == Max_u32, "");
     // Upon completing an allocation, '.to_stage_count' is set to Max_u32.
-    if (alloc->to_stage_count != Max_u32)
+    if (alloc->staging_queue_byte_count != Max_u64)
         return QUEUE_IN_USE;
+
     // '.allocations' is not a dynamic array.
-    if (alloc->allocation_count == alloc->allocation_cap)
+    if (alloc->allocation_count >= alloc->allocation_cap)
         return ALLOCATOR_FULL;
 
-    // Add the new allocation. The allocation count is only incremented
-    // once submit has been called. Therefore, if this allocation is cancelled,
-    // (which really it never should be) the left over data will just get overwritten.
-    Allocation *tmp = &alloc->allocations[alloc->allocation_count];
-    *tmp = {};
+    // Begin the new allocation. The allocation count is only incremented once submit has been called.
+    // Therefore, if this allocation is cancelled, (which really it never should be) the left over data will
+    // just get overwritten next time.
+    Allocation *p_allocation = &alloc->allocations[alloc->allocation_count];
+    *p_allocation = {};
 
-    // Allocations are also written to a file managed by the allocator. In case allocations have to be evicted
-    // from the staging queue, they can be quickly reloaded from this disk storage, rather than the model file.
-    // (In a release ready production app, I would get rid of the gltf buffer files completely, and just have
-    // model data live in the allocator buffers, so no reading and rewriting, but this is a fine implementation
-    // for now. It proves the concept and is easily switched to the version described).
-    tmp->disk_offset = alloc->disk_size;
+    // Open allocator disk storage (closes on allocation submission). Allocations are also written to a file
+    // managed by the allocator in case of evictions from staging buffer - grep '~MAID' for details.
+    p_allocation->disk_offset = alloc->disk_size;
     alloc->disk = fopen(alloc->disk_storage, "wb");
 
     // staging queue must not be used during the allocation phase of the program. So it is safe to
@@ -1751,22 +1743,17 @@ Allocator_Result begin_allocation(Allocator *alloc) {
     alloc->staging_queue_byte_count = 0;
     return SUCCESS;
 }
-// The pointer should be to a gltf buffer file read into memory. The allocator
-// then copies from this pointer into its staging buffer (if there is room),
-// and writes the data to its internal storage (I agree that this disk
-// copy is lame and slow. See the begin/continue/submit... explanation above
-// for what I would do for release).
 Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
-    // @Note Test against upload cap assuming that the stage cap is at least as large
-    // as the upload cap.
-    u64 queue_size = align(alloc->staging_queue_byte_count + size, alloc->upload_bit_granularity);
-    if (queue_size > alloc->upload_queue_byte_cap) {
-        // Remove the current allocation from the allocator if overflow. (@Note There is probably
-        // a better way to handle this failure, but this is currently the simplest.)
-        alloc->bytes_staged -= alloc->staging_queue_byte_count;
-        alloc->disk_size -= alloc->staging_queue_byte_count;
+    // @Note Test against upload cap, assuming that the stage cap is at least as large as the upload cap.
+    u64 new_aligned_queue_size = align(alloc->staging_queue_byte_count + size, alloc->upload_bit_granularity);
+    if (new_aligned_queue_size > alloc->upload_queue_byte_cap)
         return ALLOCATION_TOO_LARGE;
-    }
+
+    // 'ptr' should be a pointer to model data pertinent to this allocation. Read from
+    // this pointer into the allocator's disk storage.
+    fseek(alloc->disk_storage, 0, alloc->disk_size);
+    fwrite(alloc->disk_storage, ptr, size); // offset at disk size;
+    alloc->disk_size += size;
 
     // Adding allocations to a the allocators should happen at a specific stage
     // in the program, a stage which happens before using the '..queue..' functions
@@ -1777,47 +1764,31 @@ Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
     // this pseudo caching.)
     //
     // @Note Sizes are not aligned here as these are *continued* allocations. Only
-    // the final allocation size should be aligned, obvs.
-    //
-    // 'size' is added to 'bytes_staged' everytime, so that in 'submit_allocation(..)'
-    // we can check if the size overflowed. If so, we can then remove the whole allocation
-    // from the stage buffer. Trying to track that here is more uglier.
-    alloc->bytes_staged += size;
-    if (align(alloc->bytes_staged, alloc->staging_queue_bit_granularity) < alloc->stage_cap) {
-        // ptr should be a pointer to model data pertinent to the in progress allocation, so we
-        // copy from the pointer, into the allocator.
-        memcpy(alloc->stage_ptr + (alloc->bytes_staged - size), ptr, size);
-    }
+    // the final allocation size should be aligned, obvs. Also, bytes_staged is already aligned.
+    if (alloc->bytes_staged + new_aligned_queue_size < alloc->stage_cap)
+        memcpy(alloc->stage_ptr + alloc->bytes_staged + alloc->staging_queue_byte_count, ptr, size);
 
-    // Write the allocation to file (see 'begin/continue... explanation' above for explanation).
-    fseek(alloc->disk_storage, 0, alloc->disk_size);
-    fwrite(alloc->disk_storage, ptr, size); // offset at disk size;
-    alloc->disk_size += size;
-
-    alloc->allocations[alloc->allocation_count] += size;
     alloc->staging_queue_byte_count += size;
     return SUCCESS;
 }
 Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 *key) {
-    u64 aligned_size = align(alloc->bytes_staged, alloc->staging_queue_bit_granularity);
-    if (aligned_size > alloc->stage_cap)
-        alloc->bytes_staged -= alloc->staging_queue_byte_count;
-    else
-        alloc->bytes_staged = aligned_size;
+    // Set final allocation size and offset bytes_staged, aligned for the next allocation.
+    alloc->allocations[allocation_count].size = alloc->staging_queue_byte_size;
+    alloc->bytes_staged += align(alloc->staging_queue_byte_size, alloc->staging_queue_bit_granularity);
 
     // '*key' is an index which corresponds to this allocation's index in the
     // '.indices' field of the allocator. As the allocator is used, allocations
     // will be shuffled around; this key is maintained to point to the correct
-    // allocation. (Read the implementation details above for details - grep for ~MAID.)
+    // allocation. (Read the implementation details above for details - grep for '~MAID'.)
     *key = alloc->allocation_count;
     alloc->allocation_count++;
 
-    // Max_u32 indicates that the queue is safe to use again. This is used by 'begin_allocation(..)'.
-    alloc->to_stage_count = Max_u32;
+    // Max_u64 indicates that the queue is safe to use again. This is used by 'begin_allocation(..)'.
+    alloc->staging_queue_byte_size = Max_u64;
     fclose(alloc->disk_storage);
     return SUCCESS;
 }
-Allocator_Result staging_queue_begin(Allocator *alloc) {
+Allocator_Result staging_queue_begin(Allocator *alloc) { // @TODO CURRENT TASK!! Now read it all again, idiot.
     // '.to_stage_count' set to max by queue submission, indicating it
     // is safe to use again.
     if (alloc->to_stage_count != Max_u32)
@@ -1896,7 +1867,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     //
     // Section Explanation:
     // If no contiguous block of free memory sufficient to hold the size of the stage queue is available in
-    // the stage buffer (as represented by the bit masks), find the allocations flagged as stageed, but which
+    // the stage buffer (as represented by the bit masks), find the allocations flagged as staged, but which
     // are not flagged for staging, uploading or drawing; loop these allocations, starting at the allocation
     // with the lowest weight (see implementation details above for what 'weight' means); mark the
     // allocation's range as free in the bit mask, check if there is now a large enough size, and if so,
@@ -2352,6 +2323,9 @@ Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *k
     tmp->height = img.height;
     tmp->image = vk_img;
     tmp->size = align(req.size, alloc->upload_bit_granularity);
+
+    // Ensure these flags beyond allocation_count have not been messed with by SIMD overlap.
+    alloc->allocation_states[alloc->allocation_count] = 0x0;
 
     // Textures should be added to allocators at a specific stage in the program,
     // a stage which happens before any of the queue functions are used. Hence
