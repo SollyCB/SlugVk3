@@ -2008,6 +2008,8 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
 // Although the differences are pretty trivial, they are significant and
 // annoying enough to collapse that the staging and upload functions should be separate (imo).
 Allocator_Result upload_queue_begin(Allocator *alloc) {
+    // .to_upload_count is set to max upon successful queue submission, indicating the queue
+    // is safe to use again.
     if (alloc->to_upload_count != Max_u32)
         return QUEUE_IN_USE;
     alloc->to_upload_count = 0;
@@ -2016,10 +2018,10 @@ Allocator_Result upload_queue_begin(Allocator *alloc) {
 }
 Allocator_Result upload_queue_add(Allocator *alloc, u32 key) {
     Weight_Args w_args = {
-        .count = alloc->allocation_count,
-        .weights = alloc->allocation_weights,
-        .states = alloc->allocation_allocation_states,
-        .indices = alloc->allocation_indices,
+        .count       = alloc->allocation_count,
+        .weights     = alloc->allocation_weights,
+        .states      = alloc->allocation_allocation_states,
+        .indices     = alloc->allocation_indices,
         .allocations = alloc->allocations,
         .idx = key,
         .inc = 3,
@@ -2031,6 +2033,7 @@ Allocator_Result upload_queue_add(Allocator *alloc, u32 key) {
     // index of the desired allocation and its attributes (weight and state).
     u32 idx = adjust_allocation_weights(&w_args);
     alloc->allocation_states[idx] |= TO_DRAW;
+
     // If the allocation is already uploaded or marked to be uploaded, early return.
     if (alloc->allocation_states[idx] & UPLOADED || alloc->allocation_states[idx] & TO_UPLOAD)
         return SUCCESS;
@@ -2060,10 +2063,12 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         return SUCCESS;
     }
 
-    Allocation  *tmp;
-    Allocation  *allocations = alloc->allocations;
-    Alloc_State *states      = alloc->allocation_states;
-    u64          queue_size  = alloc->upload_queue_byte_count;
+    Allocation   allocation;
+    Allocation  *p_allocation;
+    Allocation  *allocations      = alloc->allocations;
+    Alloc_State *states           = alloc->allocation_states;
+    u32          allocation_count = alloc->allocation_count;
+    u64          queue_size       = alloc->upload_queue_byte_count;
 
     u32 mask_count = alloc->upload_mask_count;
     u64 *masks     = alloc->upload_masks;
@@ -2071,6 +2076,7 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     u32 g          = alloc->upload_bit_granularity;
     u32 req_bits   = alloc->upload_queue_byte_count / g; // This size is aligned to g (being the sum of aligned sizes), so need to worry about remainder
 
+    u32 idx;
     u32 indices_count;
     u32 *indices   = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16); // Align 16 for SIMD
 
@@ -2092,21 +2098,21 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         u64 mask_copies = (u64*)malloc_t(sizeof(u64) * mask_count, 16);
         memcpy(mask_copies, masks, sizeof(u64) * mask_count);
 
-        u32 size;
-        u32 offset;
-        indices_count = simd_find_flags_u8(states, UPLOADED, TO_UPLOAD | TO_DRAW, indices);
+        u32 bit_size;
+        u32 bit_offset;
+        indices_count = simd_find_flags_u8(allocation_count, states, UPLOADED, TO_UPLOAD | TO_DRAW, indices);
         for(u32 i = indices_count - 1; i != Max_u32; --i) {
-            tmp = &allocations[indices[i]];
+            idx = indices[i];
 
-            // @Note Really g should always be power of 2, so these should be bit shifts, not divides. I really do not
-            // like these divides...
+            // @Note Really g should always be power of 2, so these should be bit shifts, not divides. I really
+            // do not like these divides...
             //
-            // Find the allocations range (adjusted to the range in bits).
-            size   = align(tmp->size,   g) / g;
-            offset = align(tmp->offset, g) / g;
+            // Find the allocation's range (adjusted to the range in bits).
+            bit_size   = align(alloc->allocations[idx].size,   g) / g;
+            bit_offset = align(alloc->allocations[idx].upload_offset, g) / g;
 
             // Clear the allocation's range in the bit masks, and check if there is now a large enough free block.
-            make_free(mask_count, masks, offset, size);
+            make_free(mask_count, masks, bit_offset, bit_size);
             free_block = find_contiguous_free(mask_count, masks, req_bits);
 
             if (free_block != Max_u32) {
@@ -2126,7 +2132,7 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         return UPLOAD_FULL; // Too many allocations waiting to draw
     }
 
-    free_block_found: // goto
+    free_block_found: // goto label
 
     // Find how large free_block is.
     u64 block_size = get_block_size(mask_count, masks, free_block) * g;
@@ -2139,7 +2145,10 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     // current allocation in loop, add the allocation to the list of allocations that we want to upload.
     u64 size = 0;
     for(u32 i = 0; i < indices_count; ++i) {
-        size += align(allocations[indices[i]].size, g);
+        idx = indices[i];
+        // Memory offsets must be aligned to match their bit representation.
+        size += align(allocations[idx].size, g);
+
         // @Test This static predicts that there will be room for at least one allocation, it might be
         // best to switch it around.
         if (size > block_size - queue_size)
@@ -2151,20 +2160,27 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     indices_count = simd_find_flags_u8(states, TO_UPLOAD, 0x00, indices);
 
     // Create the upload regions information
+    u64 upload_offset      = free_block * g;
     VkBufferCopy2 *regions = (VkBufferCopy2*)malloc_t(sizeof(VkBufferCopy2) * indices_count, 8);
-    u64 g = alloc->upload_bit_granularity;
-    u64 upload_offset = free_block * g;
+
     for(u32 i = 0; i < indices_count; ++i) {
-        tmp = &alloc->allocations[indices[i]];
-        tmp->upload_offset = upload_offset;
+        p_allocation = &alloc->allocations[indices[i]];
+        p_allocation->upload_offset = upload_offset;
 
         regions[i]           = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
-        regions[i].srcOffset = tmp->stage_offset; // @Note I would like to break up the 'Allocation' struct even further, separating out stage
-        regions[i].dstOffset = tmp->upload_offset;     // and upload offsets. But this loop deters me. Specifically these two lines...
-        regions[i].size      = tmp->size;
+        regions[i].srcOffset = p_allocation->stage_offset;  // @Note I would like to break up the 'Allocation' struct even further, separating out stage
+        regions[i].dstOffset = p_allocation->upload_offset; // and upload offsets. But this loop deters me. Specifically these two lines...
+        regions[i].size      = p_allocation->size;
 
-        upload_offset = align(tmp->size, g);
+        upload_offset = align(p_allocation->size, g);
     }
+
+    Gpu *gpu        = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    //
+    // Record copy commands and the pipeline barriers into secondary command buffers stored in the allocator.
+    //
 
     // Copy info
     VkCopyBufferInfo2 copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2};
@@ -2172,8 +2188,6 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     copy_info.dstBuffer         = alloc->upload;
     copy_info.regionCount       = region_count;
     copy_info.pRegions          = regions;
-
-    VkDevice device = gpu->device;
 
     // Allocate graphics command buffers
     VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -2189,12 +2203,17 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     cmd_begin_info.flags                       = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     cmd_begin_info.pInheritanceInfo            = &inheritance;
 
-    //
-    // Record the copy commands and the pipeline barriers into secondary command buffers stored in the allocator.
-    //
-    if ((mem_flags & GPU_MEMORY_DISCRETE_TRANSFER_BIT) == 0) { // static predict discrete transfer
-        vkBeginCommandBuffer(alloc->graphics_cmd, &cmd_begin_info);
+    VkCommandBuffer graphics_cmd = alloc->grahics_cmd;
+    u32 graphics_queue_index     = gpu->graphics_queue_idx;
+    u32 transfer_queue_index     = gpu->transfer_queue_idx;
+    if (graphics_queue_index == transfer_queue_index) { // static predict discrete transfer
+        vkBeginCommandBuffer(graphics_cmd, &cmd_begin_info);
 
+        //
+        // Only a memory barrier is required withou queue ownership transfer
+        //
+
+        // Copy memory barrier
         VkMemoryBarrier2 mem_barr = {VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         mem_barr.srcStageMask     = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
         mem_barr.srcAccessMask    = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
@@ -2204,25 +2223,33 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         VkDependencyInfo dep   = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dep.memoryBarrierCount = 1;
         dep.pMemoryBarriers    = &mem_barr;
-        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+        vkCmdPipelineBarrier2(graphics_cmd, &dep);
 
-        vkEndCommandBuffer(alloc->graphics_cmd);
+        vkEndCommandBuffer(graphics_cmd);
     } else {
         // Allocate transfer command buffers
         cmd_alloc_info.commandPool = alloc->transfer_pool;
+
         check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
         DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
 
-        vkBeginCommandBuffer(alloc->transfer_cmd, &cmd_begin_info);
+        VkCommandBuffer transfer_cmd = alloc->transfer_cmd;
+        vkBeginCommandBuffer(transfer_cmd, &cmd_begin_info);
 
-        vkCmdCopyBuffer2(alloc->transfer_cmd, &copy_info);
+        vkCmdCopyBuffer2(transfer_cmd, &copy_info);
 
-        // Transfer queue release barrier
+        //
+        // Buffer barrier required for queue ownership transfer
+        //
+
+        // Transfer queue release buffer barrier
         VkBufferMemoryBarrier2 buf_barr = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
         buf_barr.srcStageMask           = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
         buf_barr.srcAccessMask          = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
-        buf_barr.srcQueueFamilyIndex    = gpu->transfer_queue_index;
-        buf_barr.dstQueueFamilyIndex    = gpu->graphics_queue_index;
+        buf_barr.dstStageMask           = 0x0; // Ignore dst on release operation
+        buf_barr.dstAccessMask          = 0x0;
+        buf_barr.srcQueueFamilyIndex    = transfer_queue_index;
+        buf_barr.dstQueueFamilyIndex    = graphics_queue_index;
         buf_barr.buffer                 = alloc->upload;
         buf_barr.offset                 = free_block * g; // start of first allocation
         buf_barr.size                   = upload_offset; // has been incremented beyond final allocation
@@ -2230,20 +2257,20 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
         VkDependencyInfo dep_info         = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
         dep_info.bufferMemoryBarrierCount = 1;
         dep_info.pBufferMemoryBarriers    = &buf_barr;
-        vkCmdPipelineBarrier2(alloc->transfer_cmd, &dep_info);
+        vkCmdPipelineBarrier2(transfer_cmd, &dep_info);
 
-        vkEndCommandBuffer(alloc->transfer_cmd);
+        vkEndCommandBuffer(transfer_cmd);
 
-        vkBeginCommandBuffer(alloc->graphics_cmd, &cmd_begin_info);
+        vkBeginCommandBuffer(graphics_cmd, &cmd_begin_info);
 
         // Graphics queue acquire barrier
-        buf_barr.srcStageMask  = 0x0;
+        buf_barr.srcStageMask  = 0x0; // Ignore src on acquire operation
         buf_barr.srcAccessMask = 0x0;
         buf_barr.dstStageMask  = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT_KHR;
         buf_barr.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT_KHR;
-        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep_info);
+        vkCmdPipelineBarrier2(graphics_cmd, &dep_info);
 
-        vkEndCommandBuffer(alloc->graphics_cmd);
+        vkEndCommandBuffer(graphics_cmd);
     }
 
     // @Note This could be perceived as a little premature, as the commands have not actually been submitted.
@@ -2504,6 +2531,7 @@ Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
 
         memcpy(stage_ptr + stage_offset, image.data, image_size);
         p_allocation->stage_offset = stage_offset;
+
         // @Todo I so despise that I did not get the temp allocator working with this. Take another look.
         free_image(&image);
 
@@ -2515,7 +2543,13 @@ Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
     alloc->to_stage_count = Max_u32;
     return SUCCESS;
 }
+// @Note Upload queue functions behave very similarly to the staging queue functions.
+// The implementation system and reasoning is almost entirely the same.
+// Although the differences are pretty trivial, they are significant and
+// annoying enough to collapse that the staging and upload functions should be separate (imo).
 Allocator_Result tex_upload_queue_begin(Tex_Allocator *alloc) {
+    // .to_upload_count is set to max upon successful queue submission, indicating the queue
+    // is safe to use again.
     if (alloc->to_upload_count != Max_u32)
         return QUEUE_IN_USE;
     alloc->to_upload_count = 0;
@@ -2524,67 +2558,111 @@ Allocator_Result tex_upload_queue_begin(Tex_Allocator *alloc) {
 }
 Allocator_Result tex_upload_queue_add(Tex_Allocator *alloc, u32 idx) {
     Weight_Args w_args = {
-        .count = alloc->allocation_count,
-        .weights = alloc->allocation_weights,
-        .states = alloc->allocation_allocation_states,
-        .indices = alloc->allocation_indices,
+        .count       = alloc->allocation_count,
+        .weights     = alloc->allocation_weights,
+        .states      = alloc->allocation_allocation_states,
+        .indices     = alloc->allocation_indices,
         .allocations = alloc->allocations,
         .idx = idx,
         .inc = 3,
         .dec = 1 // @Test Find effective inc and dec values
     };
+    // Increment the weight of the desired allocation, decrease other weights.
+    // Shuffle data according to weights (don't worry, this is cheap and pays
+    // off. See the function implementation to understand better). Return the
+    // index of the desired allocation and its attributes (weight and state).
     idx = adjust_allocation_weights(&w_args);
     alloc->allocation_states[idx] |= TO_DRAW;
+
+    // If the allocation is already uploaded or marked to be uploaded, early return.
     if (alloc->allocation_states[idx] & UPLOADED || alloc->allocation_states[idx] & TO_UPLOAD)
         return SUCCESS;
 
-    // Ensure that allocations will not overlap into another's bit representation
-    Tex_Allocation *tmp = &alloc->allocations[idx];
-    if (tmp->size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap) {
+    // An allocation's location in device memory is represented by a bit array (some u64s),
+    // with each bit representing some number of real bytes. Later in the submission function,
+    // in order to make space for new data, allocations can be evicted. This is done by clearing
+    // the bit representation of their data range (offset to size). If allocations' positions
+    // are not aligned to their bit representation, they are not accurately represented.
+    //
+    // @Note .size is already aligned to upload bit granularity.
+    u64 size = alloc->allocations[idx].size;
+    if (size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap) {
+        // If the queue add fails, we do not want stuff marked as to draw that is not also part of a queue.
         alloc->allocation_states[idx] &= ~TO_DRAW;
         return QUEUE_FULL;
     }
 
-    alloc->allocation_states[idx] |= TO_UPLOAD;
-    alloc->upload_queue_byte_count += bit_align_size;
+    alloc->allocation_states[idx]  |= TO_UPLOAD;
+    alloc->upload_queue_byte_count += size;
     alloc->to_upload_count++;
     return SUCCESS;
 }
 Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
     // If the to upload count is zero on queue submission, just assume that everything queued was already
-    // cached, and we need not do anything. This is most likely, as vertex data should just be able to live in
-    // memory I am pretty certain. In case it can't (I would like to support even shit hardware, as everyone
-    // should) the same range searching functionality is implemented here for disk->upload (in the same way as
-    // upload->device)
+    // cached, and we need not do anything.
     if (alloc->to_upload_count == 0) {
         alloc->to_upload_count = Max_u32;
         return SUCCESS;
     }
 
-    // @Todo I think these find free blocks have template args
-    u32 g = alloc->upload_bit_granularity;
-    u32 req_bits = alloc->upload_queue_byte_count / g;
+    Allocation  *allocations      = alloc->allocations;
+    Alloc_State *states           = alloc->allocation_states;
+    u32          allocation_count = alloc->allocation_count;
+    u64          queue_size       = alloc->upload_queue_byte_count;
+
+    u32 mask_count = alloc->upload_mask_count;
+    u64 *masks     = alloc->upload_masks;
+    u32 g          = alloc->upload_bit_granularity;
+    u32 req_bits   = queue_size / g; // This size is aligned to g (being the sum of aligned sizes), so need to worry about remainder
+
+    u32 idx;
+    u32 indices_count;
+    u32 *indices = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16); // Align 16 for SIMD
+
+    // @Note Although I would like to, this section cannot really be moved into its own function
+    // cleanly, as the internal logic has to be so slightly different each time (such as which size to use, or
+    // how to calculate the size). So it is easier to just inline it and not fuss...
+    //
+    // Section Explanation:
+    // If no contiguous block of free memory sufficient to hold the size of the upload queue is available in
+    // the upload buffer (as represented by the bit masks), find the allocations flagged as uploaded, but
+    // which are not flagged for uploading or drawing; loop these allocations, starting at the allocation with
+    // the lowest weight (see implementation details above for what 'weight' means); mark the allocation's
+    // range as free in the bit mask, check if there is now a large enough size, and if so, break; if we have
+    // otherwise looped all allocations and there is no room, so return error code.
     u32 free_block = find_contiguous_free(alloc->upload_mask_count, alloc->upload_masks, req_bits);
-    Allocation *tmp;
-    u32 *indices = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16);
-    u32 evict_idx;
-    u32 count;
     if (free_block == Max_u32) {
-        // @Note '| TO_UPLOAD' is unnecessary for now, see equivalent note in staging_queue_submit for justification.
-        count = simd_find_flags_u8(alloc->allocation_states, UPLOADED, TO_DRAW | TO_UPLOAD, indices);
-        u32 size;
-        u32 offset;
+        // In case of failure, we need to restore the masks initial states. (Failure should be incredibly unlikely,
+        // if it ever happens at all. The code using the allocators should use them efficiently.)
+        u64 mask_copies = (u64*)malloc_t(sizeof(u64) * mask_count, 16);
+        memcpy(mask_copies, masks, sizeof(u64) * mask_count);
+
+        u32 bit_size;
+        u32 bit_offset;
+        indices_count = simd_find_flags_u8(allocation_count, states, UPLOADED, TO_DRAW | TO_UPLOAD, indices);
         for(u32 i = count - 1; i != Max_u32; --i) {
-            tmp = alloc->allocations[indices[i]];
-            size = align(tmp->size, g);
-            offset = align(tmp->stage_offset, g);
-            make_free(alloc->upload_mask_count, alloc->upload_masks, offset, size);
-            free_block = find_contiguous_free(alloc->upload_mask_count, alloc->upload_masks, req_bits);
+            idx = indices[i];
+
+            // @Note Really g should always be power of 2, so these should be bit shifts, not divides. I really
+            // do not like these divides...
+            //
+            // Find the allocation's range (adjusted to the range in bits).
+            bit_size   = align(allocations[idx].size, g);
+            bit_offset = align(allocations[idx].upload_offset, g);
+
+            // Clear the allocation's range in the bit masks, and check if there is now a large enough free block.
+            make_free(mask_count, masks, bit_offset, bit_size);
+            free_block = find_contiguous_free(mask_count, masks, req_bits);
+
             if (free_block != Max_u32) {
-                evict_idx = i;
-                // Only mark as evicted if allocations will be overwritten (i.e. if free block is available)
-                for(u32 j = i; j < count; ++j)
-                    alloc->allocation_states[indices[i]] &= ~UPLOADED;
+                // Only mark allocations as having been evicted from upload buffer if they are actually going to be
+                // evicted (i.e. only if a sufficient free block is actually available).
+                //
+                // @Todo This should be implemented as simd_update_flags_u8(..) but with the ability to start
+                // from an offset. Doing this as a loop over individual u8s is very very lame.
+                for(u32 j = i; j < indices_count; ++j)
+                    alloc->allocation_states[indices[j]] &= ~UPLOADED;
+
                 goto free_block_found; // jump over early return
             }
         }
@@ -2593,43 +2671,58 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
 
     free_block_found: // goto label
 
-    // @Todo This is not the correct value, this is just the offset to the block, not the size of the block.
-    // I need to write another function to get the size of the block.
-    u64 block_size = get_block_size(alloc->upload_mask_count, alloc->upload_masks, free_block) * g;
-    count = simd_find_flags_u8(alloc->allocation_states, 0x00, UPLOADED, indices);
-    u32 *indices_final = (u32*)malloc_t(sizeof(u32) * alloc->allocation_count, 16);
+    // Find how large free_block is.
+    u64 block_size = get_block_size(mask_count, masks, free_block) * g;
+
+    // Find the indices of all allocations which are not uploaded and not marked as to upload.
+    indices_count = simd_find_flags_u8(states, 0x00, TO_UPLOAD | UPLOADED, indices);
+
+    // Loop the un-uploaded allocations (which are not already flagged as to upload, starting at the highest
+    // weight (lowest index). If there is size available in the free block for the queued allocations and the
+    // current allocation in loop, add the allocation to the list of allocations that we want to upload.
     u64 size = 0;
-    for(u32 i = 0; i < count; ++i) {
-        tmp = alloc->allocations[indices[i]];
-        size += align(tmp->size, alloc->upload_bit_granularity);
-        if (size > block_size - alloc->upload_queue_byte_count)
+    for(u32 i = 0; i < indices_count; ++i) {
+        idx = indices[i];
+        // VkImage memreq sizes are already aligned to upload bit granularity. Memory offsets must be
+        // aligned to match their bit representation.
+        size += allocations[idx].size;
+
+        // @Test This static predicts that there will be room for at least one allocation, it might be
+        // best to switch it around.
+        if (size > block_size - queue_size)
             break;
-
-        indices_final[i] = indices[i];
-        alloc->allocation_states[indices[i]] |= TO_UPLOAD;
+        else
+            states[idx] |= TO_UPLOAD;
     }
+    // Get the final list of allocations to upload.
+    indices_count = simd_find_flags_u8(states, TO_UPLOAD, 0x00, indices);
 
-    simd_find_flags_u8(alloc->allocation_states, TO_UPLOAD, 0x00, indices);
-    memcpy(indices_final + count, indices, tmp * sizeof(u32));
-    count = eject_repeat_indices(count + alloc->to_upload_count, indices_final);
+    // Create bind infos
+    u64 upload_offset = free_block * g;
+    VkBindImageMemoryInfo *bind_infos =
+        (VkBindImageMemoryInfo*)malloc_t(sizeof(VkBindImageMemoryInfo) * indices_count, 8);
 
-    u64 upload_offset = free_block * alloc->upload_bit_granularity;
-    Gpu *gpu = get_gpu_instance();
-    VkDevice device = gpu->device;
-    VkBindImageMemoryInfo *bind_infos = (VkBindImageMemoryInfo*)malloc_t(sizeof(VkBindImageMemoryInfo) *
-                                                                         alloc->allocation_count, 8);
-    u64 alignment;
-    VkMemoryRequirements mem_req;
+    Allocation  *p_allocation;
     for(u32 i = 0; i < count; ++i) {
-        tmp = alloc->allocations[indices_final[i]];
-        tmp->upload_offset = upload_offset;
-        bind_infos[i] = {VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO};
-        bind_infos[i].image = tmp->img;
-        bind_infos[i].memory = alloc->upload;
-        // Already aligned to bit granularity which must be sufficient
+        p_allocation                = &allocations[indices[i]];
+        p_allocation->upload_offset = upload_offset;
+
+        bind_infos[i]              = {VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO};
+        bind_infos[i].image        = p_allocation->img;
+        bind_infos[i].memory       = alloc->upload;
         bind_infos[i].memoryOffset = upload_offset;
-        upload_offset += alloc->bind_infos[i].size; // This size is aligned to bit granularity already
+
+        upload_offset += p_allocation->size; // VkImage memreq sizes have already been aligned to g
     }
+
+    Gpu *gpu        = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    // Bind images to memory - from the spec:-
+    //      "If vkBindImageMemory2 fails, and bindInfoCount was greater than one, then the
+    //       images referenced by pBindInfos will be in an indeterminate state, and must not be
+    //       used. Applications should destroy these images."
+    // ...hence recreate_images(..) and the note on what to do about failure.
     if (vkBindImageMemory2(device, count, bind_infos) != VK_SUCCESS) {
         // @Note Not quite sure what to do with failure here. Returning like this leaves the queue still
         // full, which means the client can call retry and this point should just be reached instantly again.
@@ -2642,157 +2735,191 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
         simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, TO_UPLOAD, 0x0, UPLOADED, TO_UPLOAD);
     }
 
-    // Record copies and transitions
+    //
+    // Record the copy commands and the pipeline barriers into secondary command buffers stored in the allocator.
+    //
+
+    // Allocate graphics command buffers
     VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cmd_alloc_info.commandPool = alloc->graphics_pool;
-    cmd_alloc_info.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
-    cmd_alloc_info.commandBufferCount = 1;
+    cmd_alloc_info.commandPool                 = alloc->graphics_pool;
+    cmd_alloc_info.level                       = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    cmd_alloc_info.commandBufferCount          = 1;
 
     auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmd);
     DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
 
-    u32 transfer_queue_idx = gpu->transfer_queue_index;
-    u32 graphics_queue_idx = gpu->graphics_queue_index;
-
-    if (transfer_queue_idx != graphics_queue_idx) {
-        cmd_alloc_info.commandPool = alloc->transfer_pool;
-        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
-        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
-    }
-
     VkCommandBufferInheritanceInfo inheritance = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
-    VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    begin_info.pInheritanceInfo = &inheritance;
+    VkCommandBufferBeginInfo begin_info        = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin_info.flags                           = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    begin_info.pInheritanceInfo                = &inheritance;
 
+    // Allocate image barriers
     VkImageMemoryBarrier2 *barrs =
-        (VkImageMemoryBarrier2*)malloc_t(sizeof(VkImageMemoryBarrier2) * alloc->to_upload_count, 8);
+        (VkImageMemoryBarrier2*)malloc_t(sizeof(VkImageMemoryBarrier2) * indices_count, 8);
 
-    // Transition for buffer copy
-    for(u32 i = 0; i < count; ++i) {
-        tmp = &alloc->allocations[indices[i]];
+    // Setup image layout transition for optimal transfer
+    for(u32 i = 0; i < indices_count; ++i) {
         barrs[i] = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-        barrs[i].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
-        barrs[i].dstAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
-        barrs[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        barrs[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+        // Ignore src, previous layout does not matter. Same for queue families.
+        barrs[i].dstStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR;
+        barrs[i].dstAccessMask       = VK_ACCESS_2_MEMORY_WRITE_BIT_KHR;
+        barrs[i].oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrs[i].newLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrs[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrs[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrs[i].image = tmp->img;
+        barrs[i].image               = alloc->allocations[indices[i]];
+
+        // @Todo Switch to an image format which actually has mipmapping (ktx2)
         barrs[i].subresourceRange = {
-            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .baseMipLevel = 0,
-            .levelCount = 1,
+            .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+            .baseMipLevel   = 0,
+            .levelCount     = 1,
             .baseArrayLayer = 0,
-            .layerCount = 1,
+            .layerCount     = 1,
         };
     }
 
-    VkDependencyInfo dep = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dep.imageMemoryBarrierCount = alloc->to_upload_count;
-    dep.pImageMemoryBarriers = barrs;
+    // This info is persistent across all transitions, so fill in once here
+    VkDependencyInfo dep        = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = indices_count;
+    dep.pImageMemoryBarriers    = barrs;
 
-    VkBufferImageCopy2 region = {VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_2};
-    VkCopyBufferToImageInfo2 copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_2};
-    copy_info.srcBuffer = alloc->stage;
-    copy_info.regionCount = 1; // Can I store multiple textures in one image??
-    copy_info.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    copy_info.pRegions = &region;
+    // This info is persistent across all copy commands, so fill in once here
+    VkBufferImageCopy2 region          = {VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
+    VkCopyBufferToImageInfo2 copy_info = {VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2};
+    copy_info.srcBuffer                = alloc->stage;
+    copy_info.regionCount              = 1; // @Note Can I store multiple textures in one image??
+    copy_info.dstImageLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    copy_info.pRegions                 = &region;
+
+    // Create local copies
+    VkCommandBuffer graphics_cmd = alloc->graphics_cmd;
+    u32 transfer_queue_index     = gpu->transfer_queue_index;
+    u32 graphics_queue_index     = gpu->graphics_queue_index;
+    Allocation allocation;
 
     // if NOT discrete transfer queue (static predict discrete transfer)
-    if (gpu->memory.flags & GPU_MEMORY_DISCRETE_TRANSFER_BIT == 0) {
-        vkBeginCommandBuffer(alloc->graphics_cmd, &begin_info);
+    if (transfer_queue_index == graphics_queue_index) {
+        vkBeginCommandBuffer(graphics_cmd, &begin_info);
 
-        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
-        for(u32 i = 0; i < count; ++i) {
-            tmp = &alloc->allocations[indices[i]];
-            region.bufferOffset = tmp->stage_offset;
-            region.bufferRowLength = tmp->width;
-            region.bufferImageHeight = tmp->height;
-            region.subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            };
+        // Barrier to transition image to optimal transfer layout
+        vkCmdPipelineBarrier2(graphics_cmd, &dep);
+
+        // Fill in copy regions
+        for(u32 i = 0; i < indices_count; ++i) {
+            allocation = allocations[indices[i]];
+
+            region.bufferOffset      = allocation.stage_offset;
+            region.bufferRowLength   = allocation.width;
+            region.bufferImageHeight = allocation.height;
             region.imageOffset = {.x = 0, .y = 0, .z = 0};
-            region.imageExtent = {.width = tmp->width, .height = tmp->height, .depth = 1};
-            copy_info.dstImage = tmp->image;
-            vkCmdCopyBufferToImage2(alloc->graphics_cmd, &copy_info);
+            region.imageExtent = {.width = allocation.width, .height = allocation.height, .depth = 1};
+
+            region.subresourceRange  = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel       = 0,
+                .baseArrayLayer = 0,
+                .layerCount     = 1,
+            };
+
+            // Copy image data
+            copy_info.dstImage = allocation.image;
+            vkCmdCopyBufferToImage2(graphics_cmd, &copy_info);
         }
-        // Transition for reading in shader
-        for(u32 i = 0; i < alloc->to_upload_count; ++i) {
-            barrs[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR,
+
+        // Barrier to transition image to optimal shader read layout
+        for(u32 i = 0; i < indices_count; ++i) {
+            barrs[i].srcStageMask  = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR,
             barrs[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR,
-            barrs[i].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
+            barrs[i].dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
             barrs[i].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT_KHR;
-            barrs[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            barrs[i].newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+            barrs[i].oldLayout     = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrs[i].newLayout     = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
         }
-        // Shader read transition
-        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+        vkCmdPipelineBarrier2(graphics_cmd, &dep);
 
-        vkEndCommandBuffer(alloc->graphics_cmd);
+        vkEndCommandBuffer(graphics_cmd);
     } else {
-        vkBeginCommandBuffer(alloc->transfer_cmd, &begin_info);
+        cmd_alloc_info.commandPool = alloc->transfer_pool;
 
-        vkCmdPipelineBarrier2(alloc->transfer_cmd, &dep);
+        // Allocate transfer command buffer
+        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
+        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+
+        VkCommandBuffer transfer_cmd = alloc->transfer_cmd;
+        vkBeginCommandBuffer(transfer_cmd, &begin_info);
+
+        // Barrier to transition image to optimal transfer layout
+        vkCmdPipelineBarrier2(transfer_cmd, &dep);
+
+        // Fill in copy regions
         for(u32 i = 0; i < count; ++i) {
-            tmp = &alloc->allocations[indices[i]];
-            region.bufferOffset = tmp->stage_offset;
-            region.bufferRowLength = tmp->width;
-            region.bufferImageHeight = tmp->height;
-            region.subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .mipLevel = 0,
+            allocation = alloc->allocations[indices[i]];
+
+            region.bufferOffset      = allocation.stage_offset;
+            region.bufferRowLength   = allocation.width;
+            region.bufferImageHeight = allocation.height;
+            region.imageOffset       = {.x = 0, .y = 0, .z = 0};
+            region.imageExtent       = {.width = allocation.width, .height = allocation.height, .depth = 1};
+
+            region.subresourceRange  = {
+                .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel       = 0,
                 .baseArrayLayer = 0,
-                .layerCount = 1,
+                .layerCount     = 1,
             };
-            region.imageOffset = {.x = 0, .y = 0, .z = 0};
-            region.imageExtent = {.width = tmp->width, .height = tmp->height, .depth = 1};
-            copy_info.dstImage = tmp->image;
+
+            // Copy image data
+            copy_info.dstImage = allocation.image;
             vkCmdCopyBufferToImage2(alloc->transfer_cmd, &copy_info);
         }
-        // Transition for reading in shader
-        for(u32 i = 0; i < alloc->to_upload_count; ++i) {
-            barrs[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR,
-            barrs[i].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR,
-            barrs[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            barrs[i].newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
-            barrs[i].srcQueueFamilyIndex = gpu->transfer_queue_idx;
-            barrs[i].dstQueueFamilyIndex = gpu->graphics_queue_idx;
+
+        // Queue ownership release + transition image to shader read optimal layout
+        for(u32 i = 0; i < indices_count; ++i) {
+            barrs[i].srcStageMask        = VK_PIPELINE_STAGE_2_TRANSFER_BIT_KHR,
+            barrs[i].srcAccessMask       = VK_ACCESS_2_TRANSFER_WRITE_BIT_KHR,
+            barrs[i].oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrs[i].newLayout           = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+            barrs[i].srcQueueFamilyIndex = transfer_queue_index;
+            barrs[i].dstQueueFamilyIndex = graphics_queue_index;
         }
-        // Shader read transition
-        vkCmdPipelineBarrier2(alloc->transfer_cmd, &dep);
+        vkCmdPipelineBarrier2(transfer_cmd, &dep);
 
-        vkEndCommandBuffer(alloc->transfer_cmd);
+        vkEndCommandBuffer(transfer_cmd);
 
-        vkBeginCommandBuffer(alloc->graphics_cmd, &begin_info);
+        vkBeginCommandBuffer(graphics_cmd, &begin_info);
 
-        // Transition for reading in shader
-        for(u32 i = 0; i < alloc->to_upload_count; ++i) {
-            barrs[i].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
-            barrs[i].dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT_KHR;
-            barrs[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            barrs[i].newLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
-            barrs[i].srcQueueFamilyIndex = gpu->transfer_queue_idx;
-            barrs[i].dstQueueFamilyIndex = gpu->graphics_queue_idx;
+        // Queue ownership acquire + transition image to shader read optimal layout
+        for(u32 i = 0; i < indices_count; ++i) {
+            barrs[i].dstStageMask        = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
+            barrs[i].dstAccessMask       = VK_ACCESS_2_SHADER_READ_BIT_KHR;
+            barrs[i].oldLayout           = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrs[i].newLayout           = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
+            barrs[i].srcQueueFamilyIndex = transfer_queue_index;
+            barrs[i].dstQueueFamilyIndex = graphics_queue_index;
         }
-        vkCmdPipelineBarrier2(alloc->graphics_cmd, &dep);
+        vkCmdPipelineBarrier2(graphics_cmd, &dep);
 
-        vkEndCommandBuffer(alloc->graphics_cmd);
+        vkEndCommandBuffer(graphics_cmd);
     }
-    // @Note Potentially premature but justified (see equivalent note in regular allocator)
-    for(u32 i = 0; i < count; ++i) {
-        alloc->allocations[indices[i]] &= ~TO_UPLOAD;
-        alloc->allocations[indices[i]] |= UPLOADED;
-    }
+
+    // @Note This could be perceived as a little premature, as the commands have not actually been submitted.
+    // However, the commands having been recorded constitutes upload complete from the ALLOCATOR's point of
+    // view: the draw commands will happen later in the same queue submission section later down the pipeline,
+    // which the allocator is not a part of. Furthermore, from the allocation's perspective, as they will be
+    // truly uploaded in the same point of the pipeline as the draw commands (the upload cmds will even be in
+    // the same batch as the draw commands if unified transfer), they cannot react to a TO_UPLOAD state. I
+    // cannot, call queue submit, wait for the semaphore, then set UPLOADED state, then call draw, as the
+    // draws are already submitted with the submission that the semaphore wait was signalling.
+    simd_update_flags_u8(allocation_count, states, TO_UPLOAD, 0x0, UPLOADED, TO_UPLOAD);
 
     alloc->to_upload_count = Max_u32;
     return SUCCESS;
 }
-    /* Model Texture and Vertex/Index Attribute Allocators */
-    /* Sampler Allocator */
+    /* End Model Texture and Vertex/Index Attribute Allocators */
+
+    /* Begin Sampler Allocator */
 Sampler_Allocator create_sampler_allocator(u32 cap) {
     Sampler_Allocator ret = {};
 
