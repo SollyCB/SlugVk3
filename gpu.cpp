@@ -2174,9 +2174,8 @@ Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
 
     // 'ptr' should be a pointer to model data pertinent to this allocation. Read from
     // this pointer into the allocator's disk storage.
-    fseek(alloc->disk, alloc->disk_size, SEEK_SET);
+    fseek(alloc->disk, alloc->disk_size + alloc->staging_queue_byte_count, SEEK_SET);
     fwrite(ptr, 1, size, alloc->disk); // offset at disk size;
-    alloc->disk_size += size;
 
     // Adding allocations to a the allocators should happen at a specific stage
     // in the program, a stage which happens before using the '..queue..' functions
@@ -2215,9 +2214,10 @@ Allocator_Result submit_allocation(Allocator *alloc, u32 *key) {
     if (aligned_bytes_staged <= alloc->stage_cap) {
         //states     [allocation_count]             |= ALLOCATION_STATE_STAGED_BIT;
         allocations[allocation_count].stage_offset = alloc->bytes_staged;
+        alloc->bytes_staged                        = aligned_bytes_staged;
     }
-    alloc->bytes_staged                = aligned_bytes_staged;
     allocations[allocation_count].size = alloc->staging_queue_byte_count;
+    alloc->disk_size                  += allocations[allocation_count].size;
 
     // '*key' is an index which corresponds to this allocation's index in the
     // '.indices' field of the allocator. As the allocator is used, allocations
