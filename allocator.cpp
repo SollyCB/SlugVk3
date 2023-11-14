@@ -83,7 +83,7 @@ u8 *realloc_h(u8 *ptr, u64 new_size) {
     u64 old_size = tlsf_block_size((void*)ptr);
     Heap_Allocator *allocator = get_instance_heap();
     allocator->used -= old_size;
-    ptr = (u8*)tlsf_realloc(allocator->tlsf_handle, ptr, new_size);
+    ptr = (u8*)tlsf_realloc(allocator->tlsf_handle, ptr, align(new_size, 16));
     allocator->used += tlsf_block_size((void*)ptr);
     return ptr;
 }

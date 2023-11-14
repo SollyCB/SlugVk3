@@ -9,6 +9,8 @@
 #include "image.hpp"
 #include "simd.hpp"
 
+#define ALLOCATOR_MEMORY_FOOTPRINT true
+
 namespace gpu {
 
 #if DEBUG
@@ -751,7 +753,7 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
         VERTEX_STAGE_COUNT,
         gpu->memory.vertex_bufs_stage,
         gpu->memory.vertex_mem_stage,
-        gpu->memory.vert_ptrs,
+        gpu->memory.vertex_ptrs,
         VERTEX_STAGE_SIZE,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
         0.4,
@@ -783,7 +785,7 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
         TEXTURE_STAGE_COUNT,
         gpu->memory.texture_bufs_stage,
         gpu->memory.texture_mem_stage,
-        gpu->memory.tex_ptrs,
+        gpu->memory.texture_ptrs,
         TEXTURE_STAGE_SIZE,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         0,
@@ -802,7 +804,7 @@ void setup_memory_discrete(u32 device_mem_type, u32 host_mem_type, u32 both_mem_
         VERTEX_STAGE_COUNT,
         gpu->memory.vertex_bufs_stage,
         gpu->memory.vertex_mem_stage,
-        gpu->memory.vert_ptrs,
+        gpu->memory.vertex_ptrs,
         VERTEX_STAGE_SIZE,
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         0.0,
@@ -822,7 +824,7 @@ void setup_memory_discrete(u32 device_mem_type, u32 host_mem_type, u32 both_mem_
         TEXTURE_STAGE_COUNT,
         gpu->memory.texture_bufs_stage,
         gpu->memory.texture_mem_stage,
-        gpu->memory.tex_ptrs,
+        gpu->memory.texture_ptrs,
         TEXTURE_STAGE_SIZE,
         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
         0,
@@ -1861,13 +1863,31 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
     ASSERT(config->stage_bit_granularity  % 2 == 0, "Bit granularity must be a power of 2");
     ASSERT(config->upload_bit_granularity % 2 == 0, "Bit granularity must be a power of 2");
 
-    ASSERT(config->stage_cap   & (config->stage_bit_granularity   - 1) == 0,
+    if (config->stage_bit_granularity  % 2 != 0 ||
+        config->upload_bit_granularity % 2 != 0)
+    {
+        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+
+    ASSERT(config->stage_cap  % config->stage_bit_granularity  == 0,
           "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
-    ASSERT(config->uploads_cap & (config->upload_bit_granularity  - 1) == 0,
+    ASSERT(config->upload_cap % config->upload_bit_granularity == 0,
           "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
 
-    if (config->stage_cap   & (config->stage_bit_granularity   - 1) != 0 ||
-        config->uploads_cap & (config->upload_bit_granularity  - 1) != 0)
+    if (config->stage_cap   % config->stage_bit_granularity  != 0 ||
+        config->upload_cap  % config->upload_bit_granularity != 0)
+    {
+        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+
+    Gpu *gpu = get_gpu_instance();
+    ASSERT(config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0,
+          "Bit granularity must be aligned to the optimal buffer copy offset alignment");
+    ASSERT(config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0,
+          "Bit granularity must be aligned to the optimal buffer copy offset alignment");
+
+    if (config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0 ||
+        config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0)
     {
         return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
@@ -1879,13 +1899,15 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
     ret.upload_queue_byte_cap  = config->upload_queue_byte_cap;
     ret.allocation_cap         = config->allocation_cap;
     ret.stage_cap              = config->stage_cap;
-    ret.upload_cap             = config->upload_cap;
     ret.stage_bit_granularity  = config->stage_bit_granularity;
     ret.upload_bit_granularity = config->upload_bit_granularity;
+    ret.stage_ptr              = config->stage_ptr;
+    ret.stage                  = config->stage;
+    ret.upload                 = config->upload;
 
     // Its so fucking funny that this is how EVERY std::string exists lol
-    char *string = malloc_h(config->disk_storage.len, 1);
-    memcpy(string, config->disk_storage.len, config->disk_storage.str);
+    char *string = (char*)malloc_h(config->disk_storage.len + 1, 1);
+    memcpy(string, config->disk_storage.str, config->disk_storage.len + 1);
     ret.disk_storage = {.len = config->disk_storage.len, .str = string};
 
     u32 allocation_cap = ret.allocation_cap;
@@ -1894,12 +1916,11 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
     ret.allocation_indices =                    (u32*) malloc_h(sizeof(u32)                    * allocation_cap, 16);
     ret.allocation_weights =                     (u8*) malloc_h(sizeof(u8)                     * allocation_cap, 16);
 
-    ret.stage_mask_count  = ret.stage_cap  / ret.stage_bit_granularity;
-    ret.upload_mask_count = ret.upload_cap / ret.upload_bit_granularity;
+    ret.stage_mask_count  = config->stage_cap  / (64 * ret.stage_bit_granularity);
+    ret.upload_mask_count = config->upload_cap / (64 * ret.upload_bit_granularity);
     ret.stage_masks       = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count,  16);
     ret.upload_masks      = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 16);
 
-    Gpu *gpu = get_gpu_instance();
     VkDevice device = gpu->device;
 
     VkCommandPoolCreateInfo cmd_pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -1916,6 +1937,12 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
         DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
     }
 
+    // Indicate that queues are safe to use
+    ret.staging_queue_byte_count = Max_u64;
+    ret.to_stage_count           = Max_u32;
+    ret.upload_queue_byte_count  = Max_u64;
+    ret.to_upload_count          = Max_u32;
+
     // Fill return value
     *allocator = ret;
 
@@ -1928,27 +1955,27 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
     total_memory_footprint += align(sizeof(u32)                    * ret.allocation_cap,    16);
     total_memory_footprint += align(sizeof(u32)                    * ret.allocation_cap,    16);
 
-    println("Allocator Memory Footprint (file name: %c)", ret.disk_storage.str);
-    println("           stage_masks: %u", align(sizeof(u64)                    * ret.stage_mask_count,  16));
-    println("          upload_masks: %u", align(sizeof(u64)                    * ret.upload_mask_count, 16));
-    println("           allocations: %u", align(sizeof(Allocation)             * ret.allocation_cap,    16));
-    println("     allocation_states: %u", align(sizeof(Allocation_State_Flags) * ret.allocation_cap,    16));
-    println("    allocation_indices: %u", align(sizeof(u32)                    * ret.allocation_cap,    16));
-    println("    allocation_weights: %u", align(sizeof(u8)                     * ret.allocation_cap,    16));
-    println("    total footprint = %u", total_memory_footprint);
+    println("Allocator Memory Footprint (file name: %c):", ret.disk_storage.str);
+    println("        %u stage_masks: %u",ret.stage_mask_count , align(sizeof(u64)                    * ret.stage_mask_count,  16));
+    println("       %u upload_masks: %u",ret.upload_mask_count, align(sizeof(u64)                    * ret.upload_mask_count, 16));
+    println("        %u allocations: %u",ret.allocation_cap   , align(sizeof(Allocation)             * ret.allocation_cap,    16));
+    println("  %u allocation_states: %u",ret.allocation_cap   , align(sizeof(Allocation_State_Flags) * ret.allocation_cap,    16));
+    println(" %u allocation_indices: %u",ret.allocation_cap   , align(sizeof(u32)                    * ret.allocation_cap,    16));
+    println(" %u allocation_weights: %u",ret.allocation_cap   , align(sizeof(u8)                     * ret.allocation_cap,    16));
+    println(" total footprint = %u", total_memory_footprint);
     #endif
 
     return ALLOCATOR_RESULT_SUCCESS;
 }
 void destroy_allocator(Allocator *alloc) {
-    Gpu *gpu        = get_gpu_instance()
+    Gpu *gpu        = get_gpu_instance();
     VkDevice device = gpu->device;
 
-    vkDestroyCommandPool(device, alloc->graphics_cmd_pool);
+    vkDestroyCommandPool(device, alloc->graphics_cmd_pool, ALLOCATION_CALLBACKS);
     if (gpu->transfer_queue_index != gpu->graphics_queue_index)
-        vkDestroyCommandPool(device, alloc->transfer_cmd_pool);
+        vkDestroyCommandPool(device, alloc->transfer_cmd_pool, ALLOCATION_CALLBACKS);
 
-    free_h(alloc->disk_storage.str);
+    free_h((void*)alloc->disk_storage.str);
     free_h(alloc->allocations);
     free_h(alloc->allocation_states);
     free_h(alloc->allocation_indices);
@@ -1958,46 +1985,65 @@ void destroy_allocator(Allocator *alloc) {
 
     *alloc = {};
 }
-Tex_Allocator create_tex_allocator(Tex_Allocator_Config *config) {
+Allocator_Result create_tex_allocator(Tex_Allocator_Config *config, Tex_Allocator *allocator) {
     ASSERT(config->stage_bit_granularity  % 2 == 0, "Bit granularity must be a power of 2");
     ASSERT(config->upload_bit_granularity % 2 == 0, "Bit granularity must be a power of 2");
 
-    ASSERT(config->stage_cap   & (config->stage_bit_granularity   - 1) == 0,
-          "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
-    ASSERT(config->uploads_cap & (config->upload_bit_granularity  - 1) == 0,
-          "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
-
-    if (config->stage_cap   & (config->stage_bit_granularity   - 1) != 0 ||
-        config->uploads_cap & (config->upload_bit_granularity  - 1) != 0)
+    if (config->stage_bit_granularity  % 2 != 0 ||
+        config->upload_bit_granularity % 2 != 0)
     {
         return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
-    Allocator ret = {};
+    ASSERT(config->stage_cap  % config->stage_bit_granularity  == 0,
+          "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
+    ASSERT(config->upload_cap % config->upload_bit_granularity == 0,
+          "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
+
+    if (config->stage_cap   % config->stage_bit_granularity  != 0 ||
+        config->upload_cap  % config->upload_bit_granularity != 0)
+    {
+        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+
+    Gpu *gpu = get_gpu_instance();
+    ASSERT(config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0,
+          "Bit granularity must be aligned to the optimal buffer copy offset alignment");
+    ASSERT(config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0,
+          "Bit granularity must be aligned to the optimal buffer copy offset alignment");
+
+    if (config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0 ||
+        config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0)
+    {
+        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+
+    Tex_Allocator ret = {};
     ret.allocation_cap         = config->allocation_cap;
     ret.to_stage_cap           = config->to_stage_cap;
     ret.staging_queue_byte_cap = config->staging_queue_byte_cap;
     ret.upload_queue_byte_cap  = config->upload_queue_byte_cap;
     ret.allocation_cap         = config->allocation_cap;
     ret.stage_cap              = config->stage_cap;
-    ret.upload_cap             = config->upload_cap;
     ret.stage_bit_granularity  = config->stage_bit_granularity;
     ret.upload_bit_granularity = config->upload_bit_granularity;
     ret.string_buffer          = create_string_buffer(config->string_buffer_size);
+    ret.stage_ptr              = config->stage_ptr;
+    ret.stage                  = config->stage;
+    ret.upload                 = config->upload;
 
     u32 allocation_cap = ret.allocation_cap;
-    ret.allocations        =             (Allocation*) malloc_h(sizeof(Allocation)             * allocation_cap, 16);
+    ret.allocations        =         (Tex_Allocation*) malloc_h(sizeof(Allocation)             * allocation_cap, 16);
     ret.allocation_states  = (Allocation_State_Flags*) malloc_h(sizeof(Allocation_State_Flags) * allocation_cap, 16);
     ret.allocation_indices =                    (u32*) malloc_h(sizeof(u32)                    * allocation_cap, 16);
     ret.allocation_weights =                     (u8*) malloc_h(sizeof(u8)                     * allocation_cap, 16);
     ret.hashes             =                    (u64*) malloc_h(sizeof(u64)                    * allocation_cap, 16);
 
-    ret.stage_mask_count  = ret.stage_cap  / ret.stage_bit_granularity;
-    ret.upload_mask_count = ret.upload_cap / ret.upload_bit_granularity;
+    ret.stage_mask_count  = config->stage_cap  / (64 * ret.stage_bit_granularity);
+    ret.upload_mask_count = config->upload_cap / (64 * ret.upload_bit_granularity);
     ret.stage_masks       = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count,  16);
     ret.upload_masks      = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 16);
 
-    Gpu *gpu = get_gpu_instance();
     VkDevice device = gpu->device;
 
     VkCommandPoolCreateInfo cmd_pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -2014,6 +2060,12 @@ Tex_Allocator create_tex_allocator(Tex_Allocator_Config *config) {
         DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
     }
 
+    // Indicate that queues are safe to use
+    ret.staging_queue_byte_count = Max_u64;
+    ret.to_stage_count           = Max_u32;
+    ret.upload_queue_byte_count  = Max_u64;
+    ret.to_upload_count          = Max_u32;
+
     // Fill return value
     *allocator = ret;
 
@@ -2021,40 +2073,45 @@ Tex_Allocator create_tex_allocator(Tex_Allocator_Config *config) {
     u64 total_memory_footprint = 0;
     total_memory_footprint += align(sizeof(u64)                    * ret.stage_mask_count,  16);
     total_memory_footprint += align(sizeof(u64)                    * ret.upload_mask_count, 16);
-    total_memory_footprint += align(sizeof(Allocation)             * ret.allocation_cap,    16);
+    total_memory_footprint += align(sizeof(Tex_Allocation)         * ret.allocation_cap,    16);
     total_memory_footprint += align(sizeof(Allocation_State_Flags) * ret.allocation_cap,    16);
     total_memory_footprint += align(sizeof(u32)                    * ret.allocation_cap,    16);
     total_memory_footprint += align(sizeof(u32)                    * ret.allocation_cap,    16);
+    total_memory_footprint += align(sizeof(u64)                    * ret.allocation_cap,    16);
 
-    println("Allocator Memory Footprint (file name: %c)", ret.disk_storage.str);
-    println("           stage_masks: %u", align(sizeof(u64)                    * ret.stage_mask_count,  16));
-    println("          upload_masks: %u", align(sizeof(u64)                    * ret.upload_mask_count, 16));
-    println("           allocations: %u", align(sizeof(Allocation)             * ret.allocation_cap,    16));
-    println("     allocation_states: %u", align(sizeof(Allocation_State_Flags) * ret.allocation_cap,    16));
-    println("    allocation_indices: %u", align(sizeof(u32)                    * ret.allocation_cap,    16));
-    println("    allocation_weights: %u", align(sizeof(u8)                     * ret.allocation_cap,    16));
+    println("Tex_Allocator Memory Footprint:");
+    println("        %u stage_masks: %u",ret.stage_mask_count , align(sizeof(u64)                    * ret.stage_mask_count,  16));
+    println("       %u upload_masks: %u",ret.upload_mask_count, align(sizeof(u64)                    * ret.upload_mask_count, 16));
+    println("        %u allocations: %u",ret.allocation_cap   , align(sizeof(Allocation)             * ret.allocation_cap,    16));
+    println("  %u allocation_states: %u",ret.allocation_cap   , align(sizeof(Allocation_State_Flags) * ret.allocation_cap,    16));
+    println(" %u allocation_indices: %u",ret.allocation_cap   , align(sizeof(u32)                    * ret.allocation_cap,    16));
+    println(" %u allocation_weights: %u",ret.allocation_cap   , align(sizeof(u8)                     * ret.allocation_cap,    16));
+    println("             %u hashes: %u",ret.allocation_cap   , align(sizeof(u64)                    * ret.allocation_cap,    16));
     println("    total footprint = %u", total_memory_footprint);
     #endif
 
     return ALLOCATOR_RESULT_SUCCESS;
 }
 void destroy_tex_allocator(Tex_Allocator *alloc) {
-    Gpu *gpu        = get_gpu_instance()
+    Gpu *gpu        = get_gpu_instance();
     VkDevice device = gpu->device;
 
-    vkDestroyCommandPool(device, alloc->graphics_cmd_pool);
-    if (gpu->transfer_queue_index != gpu->graphics_queue_index)
-        vkDestroyCommandPool(device, alloc->transfer_cmd_pool);
+    for(u32 i = 0; i < alloc->allocation_count; ++i)
+        vkDestroyImage(device, alloc->allocations[i].image, ALLOCATION_CALLBACKS);
 
-    destroy_string_buffer(&alloc->disk_storage);
+    vkDestroyCommandPool(device, alloc->graphics_cmd_pool, ALLOCATION_CALLBACKS);
+    if (gpu->transfer_queue_index != gpu->graphics_queue_index)
+        vkDestroyCommandPool(device, alloc->transfer_cmd_pool, ALLOCATION_CALLBACKS);
+
+    destroy_string_buffer(&alloc->string_buffer);
 
     free_h(alloc->allocations);
     free_h(alloc->allocation_states);
     free_h(alloc->allocation_indices);
     free_h(alloc->allocation_weights);
+    free_h(alloc->hashes);
     free_h(alloc->stage_masks);
     free_h(alloc->upload_masks);
-    free_h(alloc->hashes);
 
     *alloc = {};
 }
@@ -2094,6 +2151,7 @@ Allocator_Result begin_allocation(Allocator *alloc) {
     // staging queue must not be used during the allocation phase of the program. So it is safe to
     // reuse it here for tracking in-progress allocations.
     alloc->staging_queue_byte_count = 0;
+    alloc->to_stage_count           = 0;
     return ALLOCATOR_RESULT_SUCCESS;
 }
 Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
@@ -2130,7 +2188,7 @@ Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
     alloc->staging_queue_byte_count += size;
     return ALLOCATOR_RESULT_SUCCESS;
 }
-Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 *key) {
+Allocator_Result submit_allocation(Allocator *alloc, u32 *key) {
     u32  allocation_count          = alloc->allocation_count;
     Allocation *allocations        = alloc->allocations;
     Allocation_State_Flags *states = alloc->allocation_states;
@@ -2159,6 +2217,7 @@ Allocator_Result submit_allocation(Allocator *alloc, u8 weight, u32 *key) {
 
     // Max_u64 indicates that the queue is safe to use again. This is used by 'begin_allocation(..)'.
     alloc->staging_queue_byte_count = Max_u64;
+    alloc->to_stage_count           = Max_u32;
     fclose(alloc->disk);
     return ALLOCATOR_RESULT_SUCCESS;
 }
@@ -2687,19 +2746,21 @@ Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *k
     alloc->hashes[alloc->allocation_count] = hash;
 
     // Images are forced to have four channels, as Vulkan can reject a format with fewer.
-    Image img    = load_image(file_name);
-    u64 img_size = img.width * img.height * 4;
+    Image image    = load_image(file_name);
+    u64 image_size = image.width * image.height * 4;
 
     // Ensure that the image can actually be staged.
-    ASSERT(img_size <= alloc->staging_queue_byte_cap, "Image too large for staging queue");
-    if (img_size > alloc->stage_cap)
+    ASSERT(image_size <= alloc->staging_queue_byte_cap, "Image too large for staging queue");
+    if (image_size > alloc->stage_cap) {
+        free_image(&image);
         return ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
+    }
 
     // VkImage info
     VkImageCreateInfo image_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     image_info.imageType         = VK_IMAGE_TYPE_2D;
     image_info.format            = VK_FORMAT_R8G8B8A8_SRGB;
-    image_info.extent            = {.width = img.width, .height = img.height, .depth = 1};
+    image_info.extent            = {.width = image.width, .height = image.height, .depth = 1};
     image_info.mipLevels         = 1;
     image_info.arrayLayers       = 1;
     image_info.samples           = get_global_settings()->sample_count;
@@ -2716,24 +2777,26 @@ Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *k
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(device, vk_image, &req);
 
-    ASSERT(req.alignment & (alloc->upload_bit_granularity - 1) == 0, "Bit Granularity must have sufficient alignment for any image");
+    ASSERT((req.alignment & (alloc->upload_bit_granularity - 1)) == 0, "Bit Granularity must have sufficient alignment for any image");
     ASSERT(req.size <= alloc->upload_queue_byte_cap, "Image too large for upload queue");
 
     // Check that alignment requirements are satisfied. Allocations' offsets must be
     // aligned to their bit representation (see implementation details - grep '~MAID').
-    if (req.alignment & (alloc->upload_bit_granularity - 1) != 0) {
+    if ((req.alignment & (alloc->upload_bit_granularity - 1)) != 0) {
         vkDestroyImage(device, vk_image, ALLOCATION_CALLBACKS);
+        free_image(&image);
         return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     } else if (req.size > alloc->upload_queue_byte_cap) {
         vkDestroyImage(device, vk_image, ALLOCATION_CALLBACKS);
+        free_image(&image);
         return ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
     }
 
     // Fill in allocation fields
     Tex_Allocation *p_allocation = &alloc->allocations[alloc->allocation_count];
     p_allocation->file_name      = string_buffer_get_string(&alloc->string_buffer, file_name);
-    p_allocation->width          = img.width;
-    p_allocation->height         = img.height;
+    p_allocation->width          = image.width;
+    p_allocation->height         = image.height;
     p_allocation->image          = vk_image;
     p_allocation->size           = align(req.size, alloc->upload_bit_granularity);
 
@@ -2747,14 +2810,16 @@ Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *k
     // at this stage we can treat the allocator as a simple linear allocator.
     // Since the image data is already in memory from reading its width and height,
     // if there is room in the staging buffer, copy it in.
-    u64 aligned_size = align(img_size, alloc->stage_bit_granularity);
+    u64 aligned_size = align(image_size, alloc->stage_bit_granularity);
     if (alloc->bytes_staged + aligned_size <= alloc->stage_cap) {
-        memcpy((u8*)alloc->stage_ptr + alloc->bytes_staged, img.data, img_size);
+        memcpy((u8*)alloc->stage_ptr + alloc->bytes_staged, image.data, image_size);
 
         p_allocation->stage_offset = alloc->bytes_staged;
         alloc->allocation_states[alloc->allocation_count] |= ALLOCATION_STATE_STAGED_BIT;
         alloc->bytes_staged += aligned_size;
     }
+    free_image(&image);
+
     *key = alloc->allocation_count;
     alloc->allocation_count++;
     return ALLOCATOR_RESULT_SUCCESS;
@@ -3444,58 +3509,81 @@ VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
         /* End Sampler Allocation */
 
             /* Model Loading */
-Model_Allocators init_allocators() {
+Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
     Gpu *gpu = get_gpu_instance();
 
-    // Index vertex allocators
-    Allocator_Config vertex_allocator_config = {
-        .allocation_cap         = 512,
-        .to_stage_cap           = 64,
-        .to_upload_cap          = 32,
-        .stage_bit_granularity  = 256,
-        .upload_bit_granularity = 256,
-        .staging_queue_byte_cap = VERTEX_STAGE_SIZE,
-        .upload_queue_byte_cap  = VERTEX_DEVICE_SIZE,
-        .stage_cap              = VERTEX_STAGE_SIZE,
-        .upload_cap             = VERTEX_DEVICE_SIZE,
-        .disk_storage           = "vertex_allocator_file.bin",
-        .stage                  = gpu->memory.vertex_bufs_stage[0],
-        .upload                 = gpu->memory.vertex_buf_device,
-    };
-    Allocator vertex_allocator = create_allocator(&vertex_allocator_config);
+    // Vertex allocator
+    Allocator_Config vertex_allocator_config = {};
 
-    Allocator_Config index_allocator_config = {
-        .allocation_cap         = 512,
-        .to_stage_cap           = 64,
-        .to_upload_cap          = 32,
-        .stage_bit_granularity  = 256,
-        .upload_bit_granularity = 256,
-        .staging_queue_byte_cap = INDEX_STAGE_SIZE,
-        .upload_queue_byte_cap  = INDEX_DEVICE_SIZE,
-        .stage_cap              = INDEX_STAGE_SIZE,
-        .upload_cap             = INDEX_DEVICE_SIZE,
-        .disk_storage           = "index_allocator_file.bin",
-        .stage                  = gpu->memory.index_bufs_stage[0],
-        .upload                 = gpu->memory.index_buf_device,
-    };
-    Allocator index_allocator = create_allocator(&index_allocator_config);
+    vertex_allocator_config.allocation_cap         = 512;
+    vertex_allocator_config.to_stage_cap           = 64;
+    vertex_allocator_config.to_upload_cap          = 32;
+    vertex_allocator_config.stage_bit_granularity  = 256;
+    vertex_allocator_config.upload_bit_granularity = 256;
+
+    vertex_allocator_config.staging_queue_byte_cap = VERTEX_STAGE_SIZE;
+    vertex_allocator_config.upload_queue_byte_cap  = VERTEX_DEVICE_SIZE;
+    vertex_allocator_config.stage_cap              = VERTEX_STAGE_SIZE;
+    vertex_allocator_config.upload_cap             = VERTEX_DEVICE_SIZE;
+
+    vertex_allocator_config.disk_storage           = cstr_to_string("allocator-files/vertex_allocator_file.bin");
+    vertex_allocator_config.stage_ptr              = gpu->memory.vertex_ptrs[0];
+    vertex_allocator_config.stage                  = gpu->memory.vertex_bufs_stage[0];
+    vertex_allocator_config.upload                 = gpu->memory.vertex_buf_device;
+
+    Allocator vertex_allocator;
+    Allocator_Result creation_result = create_allocator(&vertex_allocator_config, &vertex_allocator);
+    ASSERT(creation_result == ALLOCATOR_RESULT_SUCCESS, "");
+
+    // Index allocator
+    Allocator_Config index_allocator_config = {};
+
+    index_allocator_config.allocation_cap         = 512;
+    index_allocator_config.to_stage_cap           = 64;
+    index_allocator_config.to_upload_cap          = 32;
+    index_allocator_config.stage_bit_granularity  = 256;
+    index_allocator_config.upload_bit_granularity = 256;
+
+    index_allocator_config.staging_queue_byte_cap = INDEX_STAGE_SIZE;
+    index_allocator_config.upload_queue_byte_cap  = INDEX_DEVICE_SIZE;
+    index_allocator_config.stage_cap              = INDEX_STAGE_SIZE;
+    index_allocator_config.upload_cap             = INDEX_DEVICE_SIZE;
+
+    index_allocator_config.disk_storage           = cstr_to_string("allocator-files/index_allocator_file.bin");
+    index_allocator_config.stage_ptr              = gpu->memory.index_ptrs[0];
+    index_allocator_config.stage                  = gpu->memory.index_bufs_stage[0];
+    index_allocator_config.upload                 = gpu->memory.index_buf_device;
+
+    Allocator index_allocator;
+    creation_result = create_allocator(&index_allocator_config, &index_allocator);
+    ASSERT(creation_result == ALLOCATOR_RESULT_SUCCESS, "");
 
     // Tex allocator
-    Tex_Allocator_Config tex_allocator_config = {
-        .allocation_cap         = 512,
-        .to_stage_cap           = 64,
-        .to_upload_cap          = 32,
-        .stage_bit_granularity  = 256,
-        .upload_bit_granularity = 256,
-        .string_buffer_size     = 1024,
-        .staging_queue_byte_cap = INDEX_STAGE_SIZE,
-        .upload_queue_byte_cap  = INDEX_DEVICE_SIZE,
-        .stage_cap              = INDEX_STAGE_SIZE,
-        .upload_cap             = INDEX_DEVICE_SIZE,
-        .stage                  = gpu->memory.texture_bufs_stage[0],
-        .upload                 = gpu->memory.texture_mem_device,
-    };
-    Tex_Allocator tex_allocator = create_tex_allocator(&tex_allocator_config);
+    Tex_Allocator_Config tex_allocator_config = {};
+
+    tex_allocator_config.allocation_cap         = 512;
+    tex_allocator_config.to_stage_cap           = 64;
+    tex_allocator_config.to_upload_cap          = 32;
+    tex_allocator_config.stage_bit_granularity  = 256 * 4;
+    tex_allocator_config.upload_bit_granularity = 256 * 4;
+    tex_allocator_config.string_buffer_size     = 1024;
+
+    tex_allocator_config.staging_queue_byte_cap = TEXTURE_STAGE_SIZE;
+    tex_allocator_config.upload_queue_byte_cap  = TEXTURE_DEVICE_SIZE;
+    tex_allocator_config.stage_cap              = TEXTURE_STAGE_SIZE;
+    tex_allocator_config.upload_cap             = TEXTURE_DEVICE_SIZE;
+
+    tex_allocator_config.stage_ptr              = gpu->memory.texture_ptrs[0];
+    tex_allocator_config.stage                  = gpu->memory.texture_bufs_stage[0];
+    tex_allocator_config.upload                 = gpu->memory.texture_mem_device;
+
+    Tex_Allocator tex_allocator;
+    creation_result = create_tex_allocator(&tex_allocator_config, &tex_allocator);
+    ASSERT(creation_result == ALLOCATOR_RESULT_SUCCESS, "");
+    if (creation_result != ALLOCATOR_RESULT_SUCCESS) {
+        println("Tex_Allocator creation result: %u", creation_result);
+        return {};
+    }
 
     Sampler_Allocator sampler = create_sampler_allocator(0);
 

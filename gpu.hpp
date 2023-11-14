@@ -73,9 +73,9 @@ struct Gpu_Memory {
     VkDeviceMemory uniform_mem [UNIFORM_BUFFER_COUNT];
     VkBuffer       uniform_bufs[UNIFORM_BUFFER_COUNT];
 
-    void *vert_ptrs   [VERTEX_STAGE_COUNT];
+    void *vertex_ptrs   [VERTEX_STAGE_COUNT];
     void *index_ptrs  [INDEX_STAGE_COUNT];
-    void *tex_ptrs    [TEXTURE_STAGE_COUNT];
+    void *texture_ptrs    [TEXTURE_STAGE_COUNT];
     void *uniform_ptrs[UNIFORM_BUFFER_COUNT];
 
     Memory_Flags flags; // @Todo
@@ -367,6 +367,7 @@ struct Allocator_Config {
     u64 stage_cap;
     u64 upload_cap;
 
+    void    *stage_ptr;
     VkBuffer stage;
     VkBuffer upload;
     String   disk_storage;
@@ -451,6 +452,7 @@ struct Tex_Allocator_Config {
     u64 stage_cap;
     u64 upload_cap;
 
+    void          *stage_ptr;
     VkBuffer       stage;
     VkDeviceMemory upload;
 };
@@ -620,8 +622,8 @@ struct Model_Allocators {
     Tex_Allocator tex;
     Sampler_Allocator sampler;
 };
-struct Model_Allocation_Config {};
-Model_Allocators init_allocators(Model_Allocation_Config *config);
+struct Model_Allocators_Config {}; // @Unused
+Model_Allocators init_model_allocators(Model_Allocators_Config *config);
 void shutdown_allocators(Model_Allocators *allocs);
 
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);

@@ -4,6 +4,7 @@
 #include "typedef.h"
 #include "string.hpp"
 #include "stb_image.h"
+#include "print.hpp"
 
 struct Image {
     u32 width;
@@ -11,6 +12,9 @@ struct Image {
     u8 *data;
 };
 Image load_image(String *file_name);
-inline static void free_image(Image *image) { stbi_image_free(image->data); }
+inline static void free_image(Image *image) {
+    stbi_image_free(image->data);
+    println("freed a image");
+}
 
 #endif // include guard
