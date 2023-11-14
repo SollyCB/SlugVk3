@@ -54,10 +54,9 @@ int main() {
         cstr_to_string("CesiumMan.gltf"),
     };
     String model_names[model_count] = {
-        cstr_to_string("static_cube"),
+        cstr_to_string("static_cube"), // These should be turned into enum values.
         cstr_to_string("cesium_man"),
     };
-
 
     gpu::Model_Allocators_Config model_allocators_config = {}; // @Unused
     gpu::Model_Allocators model_allocators = gpu::init_model_allocators(&model_allocators_config);

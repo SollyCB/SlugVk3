@@ -9,7 +9,7 @@
 #include "image.hpp"
 #include "simd.hpp"
 
-#define ALLOCATOR_MEMORY_FOOTPRINT true
+#define ALLOCATOR_MEMORY_FOOTPRINT false
 
 namespace gpu {
 
@@ -2157,7 +2157,8 @@ Allocator_Result begin_allocation(Allocator *alloc) {
     // to a file managed by the allocator in case of evictions from staging buffer - grep '~MAID'
     // for details.
     p_allocation->disk_offset = alloc->disk_size;
-    alloc->disk = fopen(alloc->disk_storage.str, "wb");
+    if (!alloc->disk)
+        alloc->disk = fopen(alloc->disk_storage.str, "wb");
 
     // staging queue must not be used during the allocation phase of the program. So it is safe to
     // reuse it here for tracking in-progress allocations.
@@ -2174,8 +2175,7 @@ Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
 
     // 'ptr' should be a pointer to model data pertinent to this allocation. Read from
     // this pointer into the allocator's disk storage.
-    fseek(alloc->disk, alloc->disk_size + alloc->staging_queue_byte_count, SEEK_SET);
-    fwrite(ptr, 1, size, alloc->disk); // offset at disk size;
+    fwrite(ptr, 1, size, alloc->disk);
 
     // Adding allocations to a the allocators should happen at a specific stage
     // in the program, a stage which happens before using the '..queue..' functions
@@ -2212,12 +2212,13 @@ Allocator_Result submit_allocation(Allocator *alloc, u32 *key) {
     // If the allocation fitted into the staging queue, update state and stage offset.
     u64 aligned_bytes_staged = align(alloc->staging_queue_byte_count + alloc->bytes_staged, alloc->stage_bit_granularity);
     if (aligned_bytes_staged <= alloc->stage_cap) {
-        //states     [allocation_count]             |= ALLOCATION_STATE_STAGED_BIT;
+        //states     [allocation_count]             |= ALLOCATION_STATE_STAGED_BIT; commented out for testing
         allocations[allocation_count].stage_offset = alloc->bytes_staged;
         alloc->bytes_staged                        = aligned_bytes_staged;
     }
-    allocations[allocation_count].size = alloc->staging_queue_byte_count;
-    alloc->disk_size                  += allocations[allocation_count].size;
+    allocations[allocation_count].size        = alloc->staging_queue_byte_count;
+    allocations[allocation_count].disk_offset = alloc->disk_size;
+    alloc->disk_size                         += allocations[allocation_count].size;
 
     // '*key' is an index which corresponds to this allocation's index in the
     // '.indices' field of the allocator. As the allocator is used, allocations
@@ -2230,10 +2231,13 @@ Allocator_Result submit_allocation(Allocator *alloc, u32 *key) {
     // Max_u64 indicates that the queue is safe to use again. This is used by 'begin_allocation(..)'.
     alloc->staging_queue_byte_count = Max_u64;
     alloc->to_stage_count           = Max_u32;
-    fclose(alloc->disk);
     return ALLOCATOR_RESULT_SUCCESS;
 }
 Allocator_Result staging_queue_begin(Allocator *alloc) {
+    if (alloc->disk) { // Close the file: using the queue indicates allocation adding phase is complete.
+        fclose(alloc->disk);
+        alloc->disk = NULL;
+    }
     // '.to_stage_count' set to max by queue submission, indicating it
     // is safe to use again.
     if (alloc->to_stage_count != Max_u32)
@@ -3860,7 +3864,9 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             break;
         }
         case Data_Type::NONE:
+        {
             break;
+        }
         case Data_Type::UNIFORM:
             ASSERT(false, "No Uniform Data Allowed In Static Model");
             break;

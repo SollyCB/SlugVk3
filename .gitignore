@@ -3,6 +3,7 @@
 
 .cache/
 build/
+allocator-files/*
 
 external/glfw-shared-linux/docs/
 external/glfw-shared-linux/examples/
