@@ -51,31 +51,31 @@ enum Memory_Flag_Bits {
 };
 typedef u8 Memory_Flags;
 struct Gpu_Memory {
-    VkDeviceMemory depth_mem[DEPTH_ATTACHMENT_COUNT];
-    VkDeviceMemory color_mem[COLOR_ATTACHMENT_COUNT];
-    VkImage depth_attachments[DEPTH_ATTACHMENT_COUNT];
-    VkImage color_attachments[COLOR_ATTACHMENT_COUNT];
+    VkDeviceMemory depth_mem        [DEPTH_ATTACHMENT_COUNT];
+    VkDeviceMemory color_mem        [COLOR_ATTACHMENT_COUNT];
+    VkImage        depth_attachments[DEPTH_ATTACHMENT_COUNT];
+    VkImage        color_attachments[COLOR_ATTACHMENT_COUNT];
 
-    VkDeviceMemory vertex_mem_stage[VERTEX_STAGE_COUNT];
-    VkDeviceMemory index_mem_stage [INDEX_STAGE_COUNT];
-    VkBuffer vertex_bufs_stage[VERTEX_STAGE_COUNT];
-    VkBuffer index_bufs_stage [INDEX_STAGE_COUNT];
+    VkDeviceMemory vertex_mem_stage [VERTEX_STAGE_COUNT];
+    VkDeviceMemory index_mem_stage  [INDEX_STAGE_COUNT];
+    VkBuffer       vertex_bufs_stage[VERTEX_STAGE_COUNT];
+    VkBuffer       index_bufs_stage [INDEX_STAGE_COUNT];
 
     VkDeviceMemory vertex_mem_device; // will likely need multiple of these
     VkDeviceMemory index_mem_device;
-    VkBuffer vertex_buf_device;
-    VkBuffer index_buf_device;
+    VkBuffer       vertex_buf_device;
+    VkBuffer       index_buf_device;
 
-    VkDeviceMemory texture_mem_stage[TEXTURE_STAGE_COUNT];
-    VkBuffer texture_bufs_stage[TEXTURE_STAGE_COUNT];
+    VkDeviceMemory texture_mem_stage [TEXTURE_STAGE_COUNT];
+    VkBuffer       texture_bufs_stage[TEXTURE_STAGE_COUNT];
     VkDeviceMemory texture_mem_device;
 
-    VkDeviceMemory uniform_mem[UNIFORM_BUFFER_COUNT];
-    VkBuffer uniform_bufs[UNIFORM_BUFFER_COUNT];
+    VkDeviceMemory uniform_mem [UNIFORM_BUFFER_COUNT];
+    VkBuffer       uniform_bufs[UNIFORM_BUFFER_COUNT];
 
-    void *vert_ptrs[VERTEX_STAGE_COUNT];
-    void *index_ptrs[INDEX_STAGE_COUNT];
-    void *tex_ptrs[TEXTURE_STAGE_COUNT];
+    void *vert_ptrs   [VERTEX_STAGE_COUNT];
+    void *index_ptrs  [INDEX_STAGE_COUNT];
+    void *tex_ptrs    [TEXTURE_STAGE_COUNT];
     void *uniform_ptrs[UNIFORM_BUFFER_COUNT];
 
     Memory_Flags flags; // @Todo
@@ -315,7 +315,7 @@ struct Allocation {
 struct Allocator {
     u32  allocation_cap;
     u32  allocation_count;
-    u32 *allocation_indices;
+    u32 *allocation_indices; // @Note These can probably be u16, allowing for faster simd.
     u8  *allocation_weights;
 
     Allocation             *allocations;
@@ -347,7 +347,7 @@ struct Allocator {
     VkBuffer upload;
 
     u64    disk_size;
-    FILE   *disk;
+    FILE  *disk;
     String disk_storage;
 
     // Secondary command buffers
@@ -356,7 +356,21 @@ struct Allocator {
     VkCommandBuffer graphics_cmd;
     VkCommandBuffer transfer_cmd;
 };
-struct Allocator_Config {};
+struct Allocator_Config {
+    u32 allocation_cap;
+    u32 to_stage_cap;
+    u32 to_upload_cap;
+    u32 stage_bit_granularity;
+    u32 upload_bit_granularity;
+    u64 staging_queue_byte_cap;
+    u64 upload_queue_byte_cap;
+    u64 stage_cap;
+    u64 upload_cap;
+
+    VkBuffer stage;
+    VkBuffer upload;
+    String   disk_storage;
+};
 Allocator create_allocator (Allocator_Config *info);
 void      destroy_allocator(Allocator *alloc);
 
@@ -424,7 +438,22 @@ struct Tex_Allocator {
     VkCommandBuffer graphics_cmd;
     VkCommandBuffer transfer_cmd;
 };
-struct Tex_Allocator_Config {};
+struct Tex_Allocator_Config {
+    u32 allocation_cap;
+    u32 to_stage_cap;
+    u32 to_upload_cap;
+    u32 stage_bit_granularity;
+    u32 upload_bit_granularity;
+    u32 string_buffer_size;
+
+    u64 staging_queue_byte_cap;
+    u64 upload_queue_byte_cap;
+    u64 stage_cap;
+    u64 upload_cap;
+
+    VkBuffer       stage;
+    VkDeviceMemory upload;
+};
 Tex_Allocator create_tex_allocator (Tex_Allocator_Config *config);
 void          destroy_tex_allocator(Tex_Allocator *alloc);
 

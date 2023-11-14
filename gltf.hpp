@@ -5,6 +5,12 @@
 #include "string.hpp"
 #include "math.hpp"
 
+/*
+    After using the gltf parser for a bit, I think I should go back and revert the parser
+    to using counts, rather than the big contiguous block method. It was a good idea in principle,
+    and fun to try. But now I think that it is causing more harm that good.
+*/
+
 enum Gltf_Accessor_Type {
     GLTF_ACCESSOR_TYPE_NONE           = 0,
     GLTF_ACCESSOR_TYPE_SCALAR         = 1,
@@ -325,17 +331,17 @@ struct Gltf_Node {
 };
 
 enum Gltf_Sampler_Filter {
-    GLTF_SAMPLER_FILTER_NEAREST = 0, 
-    GLTF_SAMPLER_FILTER_LINEAR  = 1, 
+    GLTF_SAMPLER_FILTER_NEAREST = 0,
+    GLTF_SAMPLER_FILTER_LINEAR  = 1,
 };
 enum Gltf_Sampler_Mipmap_Mode {
     GLTF_SAMPLER_MIPMAP_MODE_NEAREST = 0,
     GLTF_SAMPLER_MIPMAP_MODE_LINEAR  = 1,
 };
 enum Gltf_Sampler_Address_Mode {
-    GLTF_SAMPLER_ADDRESS_MODE_REPEAT          = 0, 
-    GLTF_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT = 1, 
-    GLTF_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE   = 2, 
+    GLTF_SAMPLER_ADDRESS_MODE_REPEAT          = 0,
+    GLTF_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT = 1,
+    GLTF_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE   = 2,
 };
 struct Gltf_Sampler {
     int stride;
@@ -366,12 +372,12 @@ struct Gltf_Texture {
 };
 
 struct Gltf {
-    // Each arrayed field has a 'stride' member, which is the byte count required to reach 
+    // Each arrayed field has a 'stride' member, which is the byte count required to reach
     // the next array member;
     //
-    // All strides can be calculated from the other info in the struct, but some of these algorithms 
-    // are weird and incur unclear overhead. So for consistency's sake they will just be included, 
-    // regardless of the ease with which the strides can be calculated. 
+    // All strides can be calculated from the other info in the struct, but some of these algorithms
+    // are weird and incur unclear overhead. So for consistency's sake they will just be included,
+    // regardless of the ease with which the strides can be calculated.
     u32 total_primitive_count;
 
     int scene;

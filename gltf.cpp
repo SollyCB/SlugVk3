@@ -8,6 +8,13 @@
     #include "test.hpp"
 #endif
 
+/*  @Note:
+
+    After using the gltf parser for a bit, I think I should go back and revert the parser
+    to using counts, rather than the big contiguous block method. It was a good idea in principle,
+    and fun to try. But now I think that it is causing more harm that good.
+*/
+
 /*
     WARNING!! This parser has very strict memory alignment rules!!
 */
