@@ -1915,11 +1915,15 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
     ret.allocation_states  = (Allocation_State_Flags*) malloc_h(sizeof(Allocation_State_Flags) * allocation_cap, 16);
     ret.allocation_indices =                    (u32*) malloc_h(sizeof(u32)                    * allocation_cap, 16);
     ret.allocation_weights =                     (u8*) malloc_h(sizeof(u8)                     * allocation_cap, 16);
+    memset(ret.allocation_states,   0, sizeof(u8) * allocation_cap);
+    memset(ret.allocation_weights,  0, sizeof(u8) * allocation_cap);
 
     ret.stage_mask_count  = config->stage_cap  / (64 * ret.stage_bit_granularity);
     ret.upload_mask_count = config->upload_cap / (64 * ret.upload_bit_granularity);
     ret.stage_masks       = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count,  16);
     ret.upload_masks      = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 16);
+    memset(ret.stage_masks,  0, sizeof(u64) * ret.stage_mask_count);
+    memset(ret.upload_masks, 0, sizeof(u64) * ret.upload_mask_count);
 
     VkDevice device = gpu->device;
 
@@ -2039,10 +2043,17 @@ Allocator_Result create_tex_allocator(Tex_Allocator_Config *config, Tex_Allocato
     ret.allocation_weights =                     (u8*) malloc_h(sizeof(u8)                     * allocation_cap, 16);
     ret.hashes             =                    (u64*) malloc_h(sizeof(u64)                    * allocation_cap, 16);
 
+    memset(ret.allocation_states,   0, sizeof(u8)  * allocation_cap);
+    memset(ret.allocation_weights,  0, sizeof(u8)  * allocation_cap);
+    memset(ret.hashes,              0, sizeof(u64) * allocation_cap);
+
     ret.stage_mask_count  = config->stage_cap  / (64 * ret.stage_bit_granularity);
     ret.upload_mask_count = config->upload_cap / (64 * ret.upload_bit_granularity);
     ret.stage_masks       = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count,  16);
     ret.upload_masks      = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 16);
+
+    memset(ret.stage_masks,  0, sizeof(u64) * ret.stage_mask_count);
+    memset(ret.upload_masks, 0, sizeof(u64) * ret.upload_mask_count);
 
     VkDevice device = gpu->device;
 
@@ -2163,7 +2174,7 @@ Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
 
     // 'ptr' should be a pointer to model data pertinent to this allocation. Read from
     // this pointer into the allocator's disk storage.
-    fseek(alloc->disk, 0, alloc->disk_size);
+    fseek(alloc->disk, alloc->disk_size, SEEK_SET);
     fwrite(ptr, 1, size, alloc->disk); // offset at disk size;
     alloc->disk_size += size;
 
@@ -2182,7 +2193,7 @@ Allocator_Result continue_allocation(Allocator *alloc, u64 size, void *ptr) {
     // in the staging buffer, as bytes staged acts as the base offset for any new allocation, and is
     // not incremented until the allocation is successfully submitted. So any future allocation will
     // just overwrite this data.
-    if (alloc->bytes_staged + new_aligned_queue_size < alloc->to_stage_cap)
+    if (alloc->bytes_staged + new_aligned_queue_size < alloc->stage_cap)
         memcpy((u8*)alloc->stage_ptr + alloc->bytes_staged + alloc->staging_queue_byte_count, ptr, size);
 
     alloc->staging_queue_byte_count += size;
@@ -2202,7 +2213,7 @@ Allocator_Result submit_allocation(Allocator *alloc, u32 *key) {
     // If the allocation fitted into the staging queue, update state and stage offset.
     u64 aligned_bytes_staged = align(alloc->staging_queue_byte_count + alloc->bytes_staged, alloc->stage_bit_granularity);
     if (aligned_bytes_staged <= alloc->stage_cap) {
-        states     [allocation_count]             |= ALLOCATION_STATE_STAGED_BIT;
+        //states     [allocation_count]             |= ALLOCATION_STATE_STAGED_BIT;
         allocations[allocation_count].stage_offset = alloc->bytes_staged;
     }
     alloc->bytes_staged                = aligned_bytes_staged;
@@ -2213,6 +2224,7 @@ Allocator_Result submit_allocation(Allocator *alloc, u32 *key) {
     // will be shuffled around; this key is maintained to point to the correct
     // allocation. (Read the implementation details above for details - grep for '~MAID'.)
     *key = allocation_count;
+    alloc->allocation_indices[allocation_count] = allocation_count;
     alloc->allocation_count++;
 
     // Max_u64 indicates that the queue is safe to use again. This is used by 'begin_allocation(..)'.
@@ -2281,6 +2293,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     // the staging buffer, allocations can be evicted and reloaded from the allocator's disk storage
     // (see implementation above - grep '~MAID').
     if (alloc->to_stage_count == 0) {
+        println("All Data Cached On Queue Submission");
         alloc->to_stage_count = Max_u32;
         return ALLOCATOR_RESULT_SUCCESS;
     }
@@ -2385,7 +2398,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     indices_count = simd_find_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_STAGE_BIT, 0x00, indices);
 
     // Loop vars
-    u64 stage_offset = free_block * g;
+    u64   stage_offset = free_block * g;
     FILE *disk       = fopen(alloc->disk_storage.str, "rb");
     void *stage_ptr  = alloc->stage_ptr;
 
@@ -2396,8 +2409,13 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     for(u32 i = 0; i < indices_count; ++i) {
         idx = indices[i];
 
+        //
+        // @Todo Either writing to or reading from the allocator file or both not working properly I think.
+        // Looks like garbled shit is being copied into staging buffer.
+        //
+
         // Read the allocation's data from the allocator's disk copy of the data.
-        fseek(disk, 0, allocations[idx].disk_offset);
+        fseek(disk, allocations[idx].disk_offset, 0);
         fread((u8*)stage_ptr + stage_offset, 1, allocations[idx].size, disk);
 
         // Set the allocation's new stage offset and update its state.
@@ -2413,6 +2431,9 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
 
     // Mark all TO_STAGE allocations as STAGED, and clear TO_STAGE bit.
     simd_update_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_STAGE_BIT, 0x0, ALLOCATION_STATE_STAGED_BIT, ALLOCATION_STATE_TO_STAGE_BIT);
+
+    // Fill the bit masks where the data was copied to.
+    make_full(alloc->stage_mask_count, alloc->stage_masks, free_block, stage_offset / g);
 
     alloc->to_stage_count = Max_u32; // Indicate that it is safe to begin a new queue.
     return ALLOCATOR_RESULT_SUCCESS;
@@ -2593,6 +2614,9 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
 
         upload_offset += align(p_allocation->size, g);
     }
+
+    // Fill the bit masks where the data was copied to.
+    make_full(alloc->upload_mask_count, alloc->upload_masks, free_block, upload_offset / g);
 
     Gpu *gpu        = get_gpu_instance();
     VkDevice device = gpu->device;
@@ -2821,6 +2845,7 @@ Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *k
     free_image(&image);
 
     *key = alloc->allocation_count;
+    alloc->allocation_indices[alloc->allocation_count] = alloc->allocation_count;
     alloc->allocation_count++;
     return ALLOCATOR_RESULT_SUCCESS;
 }
@@ -3005,7 +3030,12 @@ Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
         // look.
         free_image(&image);
     }
+
+    // Set all TO_STAGE flagged allocations to STAGED and clear TO_STAGE bit.
     simd_update_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_STAGE_BIT, 0x0, ALLOCATION_STATE_STAGED_BIT, ALLOCATION_STATE_TO_STAGE_BIT);
+
+    // Fill the bit masks where the data was copied to.
+    make_full(alloc->stage_mask_count, alloc->stage_masks, free_block, stage_offset / g);
 
     alloc->to_stage_count = Max_u32;
     return ALLOCATOR_RESULT_SUCCESS;
@@ -3195,6 +3225,9 @@ Allocator_Result tex_upload_queue_submit(Tex_Allocator *alloc) {
 
         upload_offset += p_allocation->size; // VkImage memreq sizes have already been aligned to g
     }
+
+    // Fill the bit masks where the data was copied to.
+    make_full(alloc->upload_mask_count, alloc->upload_masks, free_block, upload_offset / g);
 
     Gpu *gpu        = get_gpu_instance();
     VkDevice device = gpu->device;

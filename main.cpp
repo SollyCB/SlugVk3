@@ -61,17 +61,30 @@ int main() {
 
     gpu::Model_Allocators_Config model_allocators_config = {}; // @Unused
     gpu::Model_Allocators model_allocators = gpu::init_model_allocators(&model_allocators_config);
-    gpu::Static_Model model[model_count];
+    gpu::Static_Model models[model_count];
     for(u32 i = 0; i < model_count; ++i) {
-        model[i] = gpu::load_static_model(&model_allocators, &model_files[i], &model_dirs[i]);
+        models[i] = gpu::load_static_model(&model_allocators, &model_files[i], &model_dirs[i]);
     }
+
+    gpu::Allocator_Result res;
+    res = gpu::staging_queue_begin(&model_allocators.vertex);
+    ASSERT(res == gpu::ALLOCATOR_RESULT_SUCCESS, "");
+
+    u32 vertex_key = model_allocators.vertex.allocation_indices[models[1].vertex_allocation_key];
+    gpu::Allocator *alloc = &model_allocators.vertex;
+
+    res = gpu::staging_queue_add(&model_allocators.vertex, vertex_key);
+    ASSERT(res == gpu::ALLOCATOR_RESULT_SUCCESS, "");
+
+    res = gpu::staging_queue_submit(&model_allocators.vertex);
+    ASSERT(res == gpu::ALLOCATOR_RESULT_SUCCESS, "");
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);
     }
 
     for(u32 i = 0; i < model_count; ++i) {
-        free_static_model(&model[i]);
+        free_static_model(&models[i]);
     }
 
     gpu::shutdown_allocators(&model_allocators);

@@ -12,9 +12,6 @@ struct Image {
     u8 *data;
 };
 Image load_image(String *file_name);
-inline static void free_image(Image *image) {
-    stbi_image_free(image->data);
-    println("freed a image");
-}
+inline static void free_image(Image *image) { stbi_image_free(image->data); }
 
 #endif // include guard
