@@ -58,21 +58,17 @@ int main() {
         cstr_to_string("cesium_man"),
     };
 
-    gpu::model::Model_Allocators model_allocs = gpu::model::init_allocators();
-    gpu::model::Static_Model_Map model_map = gpu::model::create_static_model_map(model_count, &model_allocs);
-
-    gpu::model::Static_Model model;
+    // @Todo setup the model allocators.
+    gpu::Static_Model model;
     for(u32 i = 0; i < model_count; ++i) {
-        model = gpu::model::load_static_model(&model_allocs, &model_files[i], &model_dirs[i]);
-        gpu::model::add_static_model(&model_map, &model_names[i], &model);
+        //model = gpu::load_static_model(&model_allocs, &model_files[i], &model_dirs[i]);
     }
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);
     }
 
-    gpu::model::destroy_static_model_map(&model_map);
-    gpu::model::shutdown_allocators(&model_allocs);
+    //gpu::shutdown_allocators(&model_allocs);
     gpu::destroy_descriptor_sets(&basic_set_allocation);
     gpu::destroy_shader_map(&shader_map);
     gpu::kill_window(gpu, window);
