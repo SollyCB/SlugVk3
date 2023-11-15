@@ -3662,7 +3662,11 @@ struct Buffer_View {
 };
 //
 // @Todo load_skinned_models(); <- this will also need to load animations
-// @Todo properly document this function...
+//
+//                  ** Todos for load_static_model(..) **
+//
+// @Todo Properly document this function.
+// @Todo Create more local copies of variables to cut down on the derefing.
 //
 // @Note I really do not like the amount of derefing inside loops in this function. But due to the
 // layout of gltf and the tree nature of the data, I assume that any model loader would look like
