@@ -1240,23 +1240,23 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 // types.
 struct Weight_Args {
     Allocation *allocations;
-    u8 *weights;
-    u8 *states;
+    u8  *weights;
+    u8  *states;
     u32 *indices;
-    u32 count;
-    u32 idx;
-    u8 inc;
-    u8 dec;
+    u32  count;
+    u32  idx;
+    u8   inc;
+    u8   dec;
 };
 struct Tex_Weight_Args {
     Tex_Allocation *allocations;
-    u8 *weights;
-    u8 *states;
+    u8  *weights;
+    u8  *states;
     u32 *indices;
-    u32 count;
-    u32 idx;
-    u8 inc;
-    u8 dec;
+    u32  count;
+    u32  idx;
+    u8   inc;
+    u8   dec;
 };
 static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u32 idx = args->indices[args->idx];
@@ -1412,71 +1412,59 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     indices[args->idx] = pos;
     return pos;
 }
-void adjust_sampler_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
-    //
-    // @Todo Add a little simd thing to search for a contiguous block of equal weights:
-    // It will almost certainly be the case that there will be loads of zero weights
-    // at the end of the array, and so when you load one of these, there has to be loads
-    // of pointless swaps, when you can just do one swap. I cba to add it right now...
-    //
-    u8 flag_bit = weights[idx] & 0b10000000;
-    weights[idx] &= 0b01111111;
-    if ((weights[idx] + inc + dec) <= 127)
-        weights[idx] += inc + dec;
-    else
-        weights[idx] = 127;
-    weights[idx] |= flag_bit;
+void adjust_sampler_weights2(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
+    // Find incremented weight
+    u8 w   = weights[idx];
+    u8 tmp = Max_u8 + (u8)(w + inc > w);
+    w = (w + inc) | tmp;
+    w &= 0b01111111;
 
-    // @Note Clamps like this should compile without branches, but if there is a way
-    // to do this without the 'if' (just to always be sure) I would like that...
-    for(u32 i = 0; i < count; ++i) {
-        flag_bit = weights[i] & 0b10000000;
-        weights[i] &= 0b01111111;
-        if ((weights[i] - dec) > weights[i])
-            weights[i] = 0;
-        else
-            weights[i] -= dec;
-        weights[i] |= flag_bit;
+    weights[idx] = Max_u8; // prevent matching itself
+    __m128i a;
+    __m128i b = _mm_set1_epi8(dec);
+    __m128i c = _mm_set1_epi8(w);
+    __m128i d;
+    __m128i e;
+    u32 offset = 0;
+    u32 pos    = Max_u32;
+    u32 tmp32;
+    u16 mask;
+
+    for(offset = 0; offset < count; offset += 16) {
+        // Decrement values
+        a = _mm_load_si128((__m128i*)(weights + offset));
+        d = _mm_cmpgt_epi8(a, b);
+        e = _mm_and_si128(b, d);
+        a = _mm_sub_epi8(a, e);
+        a = _mm_and_si128(a, d);
+        _mm_store_si128((__m128i*)(weights + offset), a);
+
+        // @Note Finding position could be moved into its own loop, where there would be fewer instructions and
+        // fewer iterations. However we would be looping the same data again *and* and having to index into
+        // the data rather than starting from beginning *and* finishing the loop on an unpredictable condition.
+        // Therefore I will do the work in more instructions, and on every iteration to avoid these costs as the
+        // work is so so cheap.
+        //
+        // Find new position
+        d     = _mm_cmplt_epi8(a, c);
+        mask  = _mm_movemask_epi8(d);
+
+        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32);
+        pos  -= pos & tmp32;
+        pos  += (count_trailing_zeros_u16(mask) + offset) & tmp32;
     }
 
-    // Find the index where the weight should be
-    // @Note higher weights exist closer to the beginning of the list, so loop backwards
-    u32 shift = idx & 15;
-    u32 pos = idx - shift;
-    __m128i a = _mm_load_si128((__m128i*)(weights + pos));
-    __m128i b = _mm_set1_epi8(weights[idx]);
-    __m128i c = _mm_set1_epi8(0b01111111);
-    a = _mm_and_si128(a, c); // flag bit irrelevant cmping weights
-    a = _mm_cmplt_epi8(a, b);
-    u16 mask = _mm_movemask_epi8(a);
-    mask <<= 16 - shift;
-    u32 new_idx = idx;
-    new_idx -= pop_count16(mask);
-    while(mask && pos) {
-        pos -= 16;
-        a = _mm_load_si128((__m128i*)(weights + pos));
-        a = _mm_and_si128(a, c);
-        a = _mm_cmplt_epi8(a, b);
-        mask = _mm_movemask_epi8(a);
-        new_idx -= pop_count16(mask);
-    }
+    u64 hash = hashes[idx];
 
-    //
-    // @Todo Don't fucking load and store weights and hashes in a loop!! They are single bytes!!
-    // SIMD this!!
-    //
+    // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
+    // would not need to be memcpyd, just swapped with pos.
+    memmove(weights + pos + 1, weights + pos, idx - pos);
+    memmove(hashes  + pos + 1, hashes  + pos, (idx - pos) * 8);
 
-    // Shift all lt weights towards the end of the list
-    u8 w = weights[idx];
-    for(u32 i = idx - 1; i >= new_idx && i != Max_u32; --i)
-        weights[i + 1] = weights[i];
-    weights[new_idx] = w;
+    weights[pos] = w;
+    hashes[pos]  = hash;
 
-    // Repeat weights for hashes
-    u64 h = hashes[idx];
-    for(u32 i = idx - 1; i >= new_idx && i != Max_u32; --i)
-        hashes[i + 1] = hashes[i];
-    hashes[new_idx] = h;
+    return;
 }
 /*
    eject_repeat_indices(..)
@@ -1513,33 +1501,34 @@ static u32 eject_repeat_indices(u32 count, u32 *indices) {
         b = _mm_set1_epi32(indices[i]);
         a = _mm_load_si128((__m128i*)(indices + inc));
         a = _mm_cmpeq_epi32(a, b);
-        mask = _mm_movemask_epi8(a);
+
+        mask  = _mm_movemask_epi8(a);
         mask &= mask_mask;
         mask ^= 1 << (4 * (i & 3)); // clear self match
         mask &= 0xffff >> (((4 - ((count - dec) & 3)) * ((u32)(count - dec < inc + 4))) << 2); // clear overflow matches beyond count
 
-        tmp = (u32)(pop_count16(mask) >= 1);
+        tmp  = (u32)(pop_count16(mask) >= 1);
         dec += tmp;
-        idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+        idx  = inc + (count_trailing_zeros_u16(mask) >> 2);
         idx *= tmp;
 
         // shuffle everything backwards if a dupe was found
-        move = (u32)(inc >= idx) & tmp;
+        move  = (u32)(inc >= idx) & tmp;
         mov_t = inc * move;
         mov_f = max_clamp32((count - dec) - 1, inc + 1) * move;
         indices[mov_t] = indices[mov_f];
 
-        move = (u32)(inc + 1 >= idx) & tmp;
+        move  = (u32)(inc + 1 >= idx) & tmp;
         mov_t = (inc + 1) * move;
         mov_f = max_clamp32(count - 1, inc + 2) * move;
         indices[mov_t] = indices[mov_f];
 
-        move = (u32)(inc + 2 >= idx) & tmp;
+        move  = (u32)(inc + 2 >= idx) & tmp;
         mov_t = (inc + 2) * move;
         mov_f = max_clamp32(count - 1, inc + 3) * move;
         indices[mov_t] = indices[mov_f];
 
-        move = (u32)(inc + 3 >= idx) & tmp;
+        move  = (u32)(inc + 3 >= idx) & tmp;
         mov_t = (inc + 3) * move;
         mov_f = max_clamp32(count - 1, inc + 4) * move;
         indices[mov_t] = indices[mov_f];
@@ -1548,12 +1537,13 @@ static u32 eject_repeat_indices(u32 count, u32 *indices) {
         while(inc + 4 < count - dec) { // do not check into potential overflow range in loop
             a = _mm_load_si128((__m128i*)(indices + inc));
             a = _mm_cmpeq_epi32(a, b);
+
             mask = _mm_movemask_epi8(a);
             mask &= mask_mask;
 
-            tmp = (u32)(pop_count16(mask) >= 1);
+            tmp  = (u32)(pop_count16(mask) >= 1);
             dec += tmp;
-            idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+            idx  = inc + (count_trailing_zeros_u16(mask) >> 2);
             idx *= tmp;
 
             move |= (u32)(inc >= idx) & tmp;
@@ -1582,13 +1572,14 @@ static u32 eject_repeat_indices(u32 count, u32 *indices) {
         // (avoids having to check loop iteration relative to inc)
         a = _mm_load_si128((__m128i*)(indices + inc));
         a = _mm_cmpeq_epi32(a, b);
-        mask = _mm_movemask_epi8(a);
+
+        mask  = _mm_movemask_epi8(a);
         mask &= mask_mask * ((u32)(inc < count - dec));
         mask &= 0xffff >> (((4 - ((count - dec) & 3)) << 2) * ((count - dec) & 3));
 
-        tmp = (u32)(pop_count16(mask) >= 1);
+        tmp  = (u32)(pop_count16(mask) >= 1);
         dec += tmp;
-        idx = inc + (count_trailing_zeros_u16(mask) >> 2);
+        idx  = inc + (count_trailing_zeros_u16(mask) >> 2);
         idx *= tmp;
 
         move |= (u32)(inc >= idx) & tmp;
@@ -1630,6 +1621,7 @@ static u32 find_contiguous_free(u32 count, u64 *bits, u32 req_count) {
 
     for(u32 i = 0; i < count; ++i) {
         mask = bits[i];
+
         if (mask == 0) {
             tail += 64;
             if (tail >= req_count)
@@ -1649,13 +1641,13 @@ static u32 find_contiguous_free(u32 count, u64 *bits, u32 req_count) {
 
         mask >>= tz;
         shift = tz;
-        inc = (i << 6) + shift;
+        inc   = (i << 6) + shift;
 
-        tz = count_trailing_zeros_u64(~mask);
+        tz     = count_trailing_zeros_u64(~mask);
         mask >>= tz;
         shift += tz;
-        inc += tz;
-        mask |= 0x8000000000000000 >> (shift - 1);
+        inc   += tz;
+        mask  |= 0x8000000000000000 >> (shift - 1);
 
         while(shift < 64 - tail) {
             tz = count_trailing_zeros_u64(mask);
@@ -1664,28 +1656,30 @@ static u32 find_contiguous_free(u32 count, u64 *bits, u32 req_count) {
 
             mask >>= tz;
             shift += tz;
-            inc += tz;
+            inc   += tz;
 
-            tz = count_trailing_zeros_u64(~mask);
+            tz     = count_trailing_zeros_u64(~mask);
             mask >>= tz;
             shift += tz;
-            inc += tz;
+            inc   += tz;
         }
     }
     return Max_u32;
 }
 static u32 get_block_size(u32 count, u64 *masks, u32 offset) {
     u32 mask_idx = offset >> 6;
-    u32 bit_idx = offset & 63;
-    u64 restore = masks[mask_idx];
+    u32 bit_idx  = offset & 63;
+    u64 restore  = masks[mask_idx];
 
     u64 mask = masks[mask_idx];
-    mask >>= bit_idx;
-    mask <<= bit_idx;
-    u32 pc = pop_count64(mask);
-    u32 tc = 64 & (Max_u32 + pc);
-    tc += count_trailing_zeros_u64(mask) & ~(Max_u32 + pc);
-    tc -= bit_idx;
+    mask   >>= bit_idx;
+    mask   <<= bit_idx;
+
+    u32 pc   = pop_count64(mask);
+    u32 tc   = 64 & (Max_u32 + pc);
+    tc      += count_trailing_zeros_u64(mask) & ~(Max_u32 + pc);
+    tc      -= bit_idx;
+
     if (tc + bit_idx == 64) {
         for(u32 i = mask_idx + 1; i < count; ++i) {
             if (pop_count64(masks[i]))
