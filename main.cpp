@@ -29,6 +29,9 @@ int main() {
 
     zero_temp();
 
+    gpu->shader_memory = gpu::init_shaders();
+
+    #if 0
     gpu::Shader_Map shader_map = gpu::create_shader_map(128);
 
     // Load Shaders
@@ -42,6 +45,7 @@ int main() {
     gpu::Set_Allocate_Info set_allocate_info =
         insert_shader_set(&shader_set_names[0], 2, basic_shader_files, &shader_map);
     gpu::Descriptor_Allocation basic_set_allocation = gpu::create_descriptor_sets(1, &set_allocate_info);
+    #endif
 
     // Load Models
     u32 model_count = 2;
@@ -87,8 +91,11 @@ int main() {
     }
 
     gpu::shutdown_allocators(&model_allocators);
+    gpu::shutdown_shaders(&gpu->shader_memory);
+    #if 0
     gpu::destroy_descriptor_sets(&basic_set_allocation);
     gpu::destroy_shader_map(&shader_map);
+    #endif
     gpu::kill_window(gpu, window);
     gpu::kill_gpu(gpu);
     glfw::kill_glfw(glfw);

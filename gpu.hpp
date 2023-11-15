@@ -17,6 +17,7 @@
 #include "hash_map.hpp"
 #include "math.hpp"
 #include "string.hpp"
+#include "shader.hpp" // include g_shader_file_names global array
 
 struct Settings {
     VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
@@ -51,34 +52,67 @@ enum Memory_Flag_Bits {
 };
 typedef u8 Memory_Flags;
 struct Gpu_Memory {
-    VkDeviceMemory depth_mem        [DEPTH_ATTACHMENT_COUNT];
-    VkDeviceMemory color_mem        [COLOR_ATTACHMENT_COUNT];
-    VkImage        depth_attachments[DEPTH_ATTACHMENT_COUNT];
-    VkImage        color_attachments[COLOR_ATTACHMENT_COUNT];
+    VkDeviceMemory depth_mem            [DEPTH_ATTACHMENT_COUNT];
+    VkDeviceMemory color_mem            [COLOR_ATTACHMENT_COUNT];
+    VkImage        depth_attachments    [DEPTH_ATTACHMENT_COUNT];
+    VkImage        color_attachments    [COLOR_ATTACHMENT_COUNT];
 
-    VkDeviceMemory vertex_mem_stage [VERTEX_STAGE_COUNT];
-    VkDeviceMemory index_mem_stage  [INDEX_STAGE_COUNT];
-    VkBuffer       vertex_bufs_stage[VERTEX_STAGE_COUNT];
-    VkBuffer       index_bufs_stage [INDEX_STAGE_COUNT];
+    VkDeviceMemory vertex_mem_stage     [VERTEX_STAGE_COUNT];
+    VkDeviceMemory index_mem_stage      [INDEX_STAGE_COUNT];
+    VkBuffer       vertex_bufs_stage    [VERTEX_STAGE_COUNT];
+    VkBuffer       index_bufs_stage     [INDEX_STAGE_COUNT];
 
-    VkDeviceMemory vertex_mem_device; // will likely need multiple of these
+    VkDeviceMemory vertex_mem_device;
     VkDeviceMemory index_mem_device;
     VkBuffer       vertex_buf_device;
     VkBuffer       index_buf_device;
 
-    VkDeviceMemory texture_mem_stage [TEXTURE_STAGE_COUNT];
-    VkBuffer       texture_bufs_stage[TEXTURE_STAGE_COUNT];
+    VkDeviceMemory texture_mem_stage    [TEXTURE_STAGE_COUNT];
+    VkBuffer       texture_bufs_stage   [TEXTURE_STAGE_COUNT];
     VkDeviceMemory texture_mem_device;
 
-    VkDeviceMemory uniform_mem [UNIFORM_BUFFER_COUNT];
-    VkBuffer       uniform_bufs[UNIFORM_BUFFER_COUNT];
+    VkDeviceMemory uniform_mem          [UNIFORM_BUFFER_COUNT];
+    VkBuffer       uniform_bufs         [UNIFORM_BUFFER_COUNT];
 
-    void *vertex_ptrs   [VERTEX_STAGE_COUNT];
-    void *index_ptrs  [INDEX_STAGE_COUNT];
-    void *texture_ptrs    [TEXTURE_STAGE_COUNT];
-    void *uniform_ptrs[UNIFORM_BUFFER_COUNT];
+    void *vertex_ptrs                   [VERTEX_STAGE_COUNT];
+    void *index_ptrs                    [INDEX_STAGE_COUNT];
+    void *texture_ptrs                  [TEXTURE_STAGE_COUNT];
+    void *uniform_ptrs                  [UNIFORM_BUFFER_COUNT];
 
-    Memory_Flags flags; // @Todo
+    Memory_Flags flags;
+};
+// @Todo Move descriptor pool memory to be managed like model allocators. Right now every shader just
+// has all its descriptors allocated individually, when really probably many can be reused. But this
+// really wont be a problem for a looong time, if ever (idk how much memory descriptor sets use).
+struct Shader_Set_Info {
+    u32 array_index; // index into the Shader_Memory descriptor set array
+    u32 layout_set; // set index inside glsl
+};
+struct Shader {
+    Shader_Id id;
+    u32 set_count;
+
+    Shader_Set_Info      *set_infos;
+    VkShaderModule        module;
+    VkShaderStageFlagBits stage;
+};
+struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with something better.
+    u32 shader_cap            = 128;
+    u32 descriptor_pool_cap   =   1; // The loneliest number :(
+    u32 descriptor_set_cap    = 128; // @Note Idk how low this is.
+
+    u32 shader_count;
+    u32 descriptor_pool_count;
+    u32 descriptor_set_count;
+
+    Shader                *shaders;
+    VkDescriptorPool      *descriptor_pools;
+    VkDescriptorSet       *descriptor_sets;
+    VkDescriptorSetLayout *descriptor_set_layouts;
+
+    // Each shader can reference max 8 descriptor sets (8 bind_indices, 8 set indices)
+    u32  shader_set_info_memory_block_size = 128 * 16;
+    Shader_Set_Info *shader_set_info_memory_block;
 };
 struct Gpu_Info {
     VkPhysicalDeviceProperties props;
@@ -99,6 +133,7 @@ struct Gpu {
     u32 transfer_queue_index;
 
     Gpu_Memory memory;
+    Shader_Memory shader_memory;
 };
 Gpu* get_gpu_instance();
 
@@ -152,13 +187,13 @@ VkSwapchainKHR recreate_swapchain(Gpu *gpu, Window *window);
 inline static VkViewport gpu_get_complete_screen_viewport()
 {
     VkViewport viewport = {};
-    viewport.x = 0;
-    viewport.y = 0;
-    VkExtent2D *extent = &get_window_instance()->info.imageExtent;
-    viewport.width = extent->width;
-    viewport.height = extent->height;
-    viewport.minDepth = 0.0;
-    viewport.maxDepth = 1.0;
+    viewport.x          = 0;
+    viewport.y          = 0;
+    VkExtent2D *extent  = &get_window_instance()->info.imageExtent;
+    viewport.width      = extent->width;
+    viewport.height     = extent->height;
+    viewport.minDepth   = 0.0;
+    viewport.maxDepth   = 1.0;
     return viewport;
 }
 inline static VkRect2D gpu_get_complete_screen_area()
@@ -174,6 +209,11 @@ inline static VkRect2D gpu_get_complete_screen_area()
 void allocate_memory();
 void free_memory();
 
+// Shaders
+Shader_Memory init_shaders();
+void          shutdown_shaders(Shader_Memory *mem);
+
+#if 0
 // Shaders -- @Todo Transition this to be something more like a shader builder.
 struct Shader { // @Todo Add state for hot reloading checks
     VkShaderStageFlagBits stage;
@@ -243,6 +283,7 @@ struct Pl_Layout_Info {
 };
 VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info);
 void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout);
+#endif
 
 
                                     /* Model Memory Management Begin */
@@ -490,11 +531,12 @@ struct Sampler_Allocator {
     u64 *hashes;
     u8  *weights;
 };
-// Set to cap to zero to let the allocator decide a size
-Sampler_Allocator create_sampler_allocator(u32 sampler_cap, float anisotropy);
-void destroy_sampler_allocator(Sampler_Allocator *alloc);
-u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
-VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash);
+// Set cap to zero to let the allocator decide a size
+Sampler_Allocator create_sampler_allocator (u32 sampler_cap, float anisotropy);
+void              destroy_sampler_allocator(Sampler_Allocator *alloc);
+
+u64               add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
+VkSampler         get_sampler(Sampler_Allocator *alloc, u64 hash);
 
     /* Model Memory Management End */
 

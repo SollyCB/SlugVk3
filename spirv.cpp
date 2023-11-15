@@ -15,7 +15,6 @@
 // InlineUniformBlock   = UniformConstant      , OpTypeStruct <-- (confusing because it is identical to uniform buffer, I think the spirv spec it has decorations)
 
 #include "spirv.hpp"
-#include "gpu.hpp"
 #include "builtin_wrappers.h"
 
 #if TEST
@@ -36,7 +35,7 @@ struct Spirv_Type {
 };
 
 inline static Spirv_Type* spirv_find_type(Spirv_Type *types, int *type_count, int id) {
-    // If there is an element in the array with a matching id, return it. 
+    // If there is an element in the array with a matching id, return it.
     // Else, return the next empty element in the array.
     for(int i = 0; i < *type_count; ++i) {
         if (types[i].id == id)
@@ -295,11 +294,11 @@ Parsed_Spirv parse_spirv(u64 byte_count, const u32 *spirv) {
 
 #if TEST
 static void test_parser();
-static void test_grouper(); 
+static void test_grouper();
 
 void test_spirv() {
     test_parser();
-    test_grouper();
+    //test_grouper(); <- unused
 }
 
 void test_parser() {
@@ -344,6 +343,7 @@ void test_parser() {
     END_TEST_MODULE();
 }
 
+#if 0
 void test_grouper() {
     BEGIN_TEST_MODULE("Spirv_Set", true, false);
 
@@ -408,4 +408,6 @@ void test_grouper() {
 
     END_TEST_MODULE();
 }
+#endif // disable test grouper
+
 #endif

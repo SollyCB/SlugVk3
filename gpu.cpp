@@ -8,6 +8,7 @@
 #include "gltf.hpp"
 #include "image.hpp"
 #include "simd.hpp"
+#include "shader.hpp"
 
 #define ALLOCATOR_MEMORY_FOOTPRINT false
 
@@ -972,6 +973,7 @@ void free_memory() {
     }
 }
 
+#if 0
 // `Shaders
 Shader_Map create_shader_map(u32 size) {
     Shader_Map ret;
@@ -1229,6 +1231,7 @@ VkPipelineShaderStageCreateInfo* create_pl_shaders(u32 count, Shader *shaders) {
     }
     return ret;
 }
+#endif
 
 // `Model Loading
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
@@ -1412,7 +1415,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     indices[args->idx] = pos;
     return pos;
 }
-void adjust_sampler_weights2(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
+void adjust_sampler_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
     // Find incremented weight
     u8 w   = weights[idx];
     u8 tmp = Max_u8 + (u8)(w + inc > w);
@@ -4111,16 +4114,183 @@ void free_static_model(Static_Model *model) {
     //free_h(model->nodes);
 }
 
-/* Begin Renderpass Creation */
-struct Renderpass_Builder { // Also builds framebuffers
-    u32 image_view_count;
-    VkImageView *image_views;
-    VkAttachmentDescription *attachment_descriptions;
-};
-struct Subpass_Builder { // Descriptions and dependencies
-};
+/* Shader Revamp */
 
-/* End Renderpass Creation */
+struct Set_Layout_Info {
+    u32 count;
+    VkDescriptorSetLayoutBinding *bindings;
+};
+Shader_Memory init_shaders() {
+    Shader_Memory ret = {};
+
+    ret.shaders                =                (Shader*) malloc_h(sizeof(Shader)                * ret.shader_cap,                8);
+    ret.descriptor_pools       =      (VkDescriptorPool*) malloc_h(sizeof(VkDescriptorPool)      * ret.descriptor_pool_cap,       8);
+    ret.descriptor_sets        =       (VkDescriptorSet*) malloc_h(sizeof(VkDescriptorSet)       * ret.descriptor_set_cap,        8);
+    ret.descriptor_set_layouts = (VkDescriptorSetLayout*) malloc_h(sizeof(VkDescriptorSetLayout) * ret.descriptor_set_cap, 8);
+
+    ret.shader_set_info_memory_block = (Shader_Set_Info*)malloc_h(sizeof(Shader_Set_Info) * ret.shader_set_info_memory_block_size, 8);
+
+    u32 shader_count = g_shader_file_count; // global shader count
+    const u32 *pcode;
+    u64 size;
+
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    u64 max_sets = gpu->info.props.limits.maxBoundDescriptorSets;
+    max_sets = max_sets > 128 ? 128 : max_sets; // Assume that if max sets is greater, so many would never be used in one shader.
+
+    Parsed_Spirv spirv;
+    u32 j;
+    u32 layout_set;
+    u32 binding_count;
+    u32 descriptor_counts[11];
+    u32 set_infos_block_offset;
+
+    VkDescriptorSetLayoutBinding *bindings = (VkDescriptorSetLayoutBinding*)malloc_t(sizeof(VkDescriptorSetLayoutBinding) * 128, 8);
+    VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+
+    VkResult check;
+    bool allocate_set = false;
+
+    Shader *pshader;
+    for(u32 i = 0; i < shader_count; ++i) {
+        pcode = (const u32*)file_read_bin_temp(g_shader_file_names[i], &size);
+        spirv = parse_spirv(size, pcode);
+
+        pshader            = &ret.shaders[ret.shader_count];
+       *pshader            = {};
+        pshader->id        = (Shader_Id)i;
+        pshader->stage     = spirv.stage;
+        pshader->set_infos = ret.shader_set_info_memory_block + set_infos_block_offset;
+
+        layout_set    = spirv.bindings[0].set;
+        binding_count = 0;
+        allocate_set  = false;
+
+        for(j = 0; j < spirv.binding_count; ++j) {
+            allocate_set = true; // Indicate that when the loop exits, there was an active set being parsed.
+
+            assert(spirv.bindings[j].set >= layout_set && "sets should be in increasing order (sorted at the end of parse_spirv(..))");
+
+            // If the  set index changes, the parse of the old set is complete and the layout can be created.
+            // @Note This works because sets are in order, see above assert.
+            if (layout_set < spirv.bindings[j].set) {
+
+                descriptor_set_layout_create_info.bindingCount = binding_count;
+                descriptor_set_layout_create_info.pBindings     = bindings;
+
+                check = vkCreateDescriptorSetLayout(
+                            device,
+                           &descriptor_set_layout_create_info,
+                            ALLOCATION_CALLBACKS,
+                           &ret.descriptor_set_layouts[ret.descriptor_set_count]);
+                DEBUG_OBJ_CREATION(vkCreateDescriptorSetLayout, check);
+
+                pshader->set_infos[pshader->set_count] = {ret.descriptor_set_count, layout_set};
+                pshader->set_count++;
+                ret.descriptor_set_count++;
+
+                assert(ret.descriptor_set_count <= ret.descriptor_set_cap);
+                if (ret.descriptor_set_count > ret.descriptor_set_cap)
+                    return {};
+
+                layout_set    = spirv.bindings[j].set;
+                binding_count = 0;
+            }
+
+            bindings[binding_count].stageFlags      = spirv.stage;
+            bindings[binding_count].binding         = spirv.bindings[j].binding;
+            bindings[binding_count].descriptorType  = spirv.bindings[j].type;
+            bindings[binding_count].descriptorCount = spirv.bindings[j].count;
+
+            binding_count++;
+            descriptor_counts[(u32)spirv.bindings[j].type] += spirv.bindings[j].count;
+        }
+
+        if (allocate_set) { // There was a set being parsed when loop exited, so wrap up the parse.
+
+            descriptor_set_layout_create_info.bindingCount = binding_count;
+            descriptor_set_layout_create_info.pBindings     = bindings;
+
+            check = vkCreateDescriptorSetLayout(
+                        device,
+                       &descriptor_set_layout_create_info,
+                        ALLOCATION_CALLBACKS,
+                       &ret.descriptor_set_layouts[ret.descriptor_set_count]);
+
+            DEBUG_OBJ_CREATION(vkCreateDescriptorSetLayout, check);
+            pshader->set_infos[pshader->set_count] = {ret.descriptor_set_count, layout_set};
+            pshader->set_count++;
+            ret.descriptor_set_count++;
+
+            assert(ret.descriptor_set_count <= ret.descriptor_set_cap);
+            if (ret.descriptor_set_count > ret.descriptor_set_cap)
+                return {};
+        }
+
+        set_infos_block_offset += pshader->set_count;
+        ret.shader_count++;
+
+        assert(ret.shader_count <= ret.shader_cap);
+        if (ret.shader_count > ret.shader_cap)
+            return {};
+    }
+
+    VkDescriptorPoolSize *pool_sizes = (VkDescriptorPoolSize*)malloc_t(sizeof(VkDescriptorPoolSize*) * 11, 8);
+    u32 pool_size_count = 0;
+    for(u32 i = 0; i < 11; ++i) {
+        if (descriptor_counts[i] == 0)
+            continue;
+
+        pool_sizes[pool_size_count].type = (VkDescriptorType)i;
+        pool_sizes[pool_size_count].descriptorCount = descriptor_counts[i];
+        pool_size_count++;
+    }
+
+    VkDescriptorPoolCreateInfo pool_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_create_info.maxSets       = ret.descriptor_set_count;
+    pool_create_info.poolSizeCount = pool_size_count;
+    pool_create_info.pPoolSizes    = pool_sizes;
+
+    check = vkCreateDescriptorPool(device, &pool_create_info, ALLOCATION_CALLBACKS, &ret.descriptor_pools[0]);
+    DEBUG_OBJ_CREATION(vkCreateDescriptorPool, check);
+
+    if (check != VK_SUCCESS)
+        return {};
+    else
+        ret.descriptor_pool_count++;
+
+    VkDescriptorSetAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate_info.descriptorPool     = ret.descriptor_pools[0];
+    allocate_info.descriptorSetCount = ret.descriptor_set_count;
+    allocate_info.pSetLayouts        = ret.descriptor_set_layouts;
+
+    check = vkAllocateDescriptorSets(device, &allocate_info, ret.descriptor_sets);
+    DEBUG_OBJ_CREATION(vkAllocateDescriptorSets, check);
+
+    if (check != VK_SUCCESS)
+        return {};
+
+    return ret;
+}
+void shutdown_shaders(Shader_Memory *mem) {
+    VkDevice device = get_gpu_instance()->device;
+
+    for(u32 i = 0; i < mem->shader_count; ++i)
+        vkDestroyShaderModule(device, mem->shaders[i].module, ALLOCATION_CALLBACKS);
+    for(u32 i = 0; i < mem->descriptor_pool_count; ++i)
+        vkDestroyDescriptorPool(device, mem->descriptor_pools[i], ALLOCATION_CALLBACKS);
+    for(u32 i = 0; i < mem->descriptor_set_count; ++i)
+        vkDestroyDescriptorSetLayout(device, mem->descriptor_set_layouts[i], ALLOCATION_CALLBACKS);
+
+    free_h(mem->shaders);
+    free_h(mem->descriptor_pools);
+    free_h(mem->descriptor_sets);
+    free_h(mem->descriptor_set_layouts);
+    free_h(mem->shader_set_info_memory_block);
+    *mem = {};
+}
 
         /*
            Below are the big lumpy functions that sometimes arise that I never want to
