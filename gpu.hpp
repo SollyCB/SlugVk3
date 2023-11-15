@@ -174,9 +174,8 @@ inline static VkRect2D gpu_get_complete_screen_area()
 void allocate_memory();
 void free_memory();
 
-// Shaders
-struct Shader {
-    // @Todo Add state for hot reloading checks
+// Shaders -- @Todo Transition this to be something more like a shader builder.
+struct Shader { // @Todo Add state for hot reloading checks
     VkShaderStageFlagBits stage;
     VkShaderModule module;
 };
@@ -195,6 +194,7 @@ struct Set_Layout_Info {
 Set_Layout_Info* group_spirv(u32 count, Parsed_Spirv *parsed_spirv, u32 *returned_set_count);
 void count_descriptors(u32 count, Set_Layout_Info *infos, u32 descriptor_counts[11]);
 
+// @Todo Transition away from string names to an enum system, and when you add a shader you add it to the enum.
 struct Shader_Set {
     u32 shader_count; // might not even need the counts as these will be retrieved by name
     u32 set_count;

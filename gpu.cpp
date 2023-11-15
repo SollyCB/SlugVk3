@@ -4110,6 +4110,23 @@ void free_static_model(Static_Model *model) {
     free_h(model->mats);
     //free_h(model->nodes);
 }
+
+/* Begin Renderpass Creation */
+struct Renderpass_Builder { // Also builds framebuffers
+    u32 image_view_count;
+    VkImageView *image_views;
+    VkAttachmentDescription *attachment_descriptions;
+};
+struct Subpass_Builder { // Descriptions and dependencies
+};
+
+/* End Renderpass Creation */
+
+        /*
+           Below are the big lumpy functions that sometimes arise that I never want to
+                       see and hardly have to use
+        */
+
 // functions like this are such a waste of time to write...
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
         switch(accessor_format) {

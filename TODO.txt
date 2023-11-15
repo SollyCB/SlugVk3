@@ -1,2 +1,23 @@
+1. Current thing:
+    Reimplement some of the shader code (should take two seconds) so that shaders are not so tied together into
+    'sets' so early in their lifetime. Dont collapse descriptors, allocate them per shader. I previously though
+    that there could be overlap between the descriptors used by each shader, therefore they could be reused. But
+    now this does not seem to be the case, I am fairly sure that resources between shaders in the same set are
+    pretty separate.
+
+    For now I want to implement it as descriptor sets are created and allocated for each shader at load time,
+    then they are just freed when the program ends. This can easily be improved later to used similar caching
+    and reloading features as the allocators, with the stages of caching as:
+        1. descriptors allocated
+        2. spirv in memory
+        3. unloaded
+    I could do this trivially now since I have experience in it, but really the model allocators are sooo much
+    more data than everything else that they are only where memory will really matter for a long time, so I
+    want to start implementing more actual rendering stuff now...
+
+    Hence now I want to work on the pipeline + renderpass + framebuffer builder struct. But in order to do
+    pipelines, I need to go over the shader setup, since they are the first thing in the pipeline list.
+
+                            ** Current Goal **
 I will feel like I have reached a mile stone when I have animated models/cesium-man and rendered
 it using the flow chart shown in deferred-renderer-flow-chart.png
