@@ -2169,9 +2169,9 @@ Allocator_Result begin_allocation(Allocator *alloc) {
     Allocation *p_allocation = &alloc->allocations[alloc->allocation_count];
     *p_allocation = {};
 
-    // Open allocator disk storage (closes on allocation submission). Allocations are also written
-    // to a file managed by the allocator in case of evictions from staging buffer - grep '~MAID'
-    // for details.
+    // Open allocator disk storage (closes when the staging queue is first used).
+    // Allocations are also written to a file managed by the allocator in case
+    // of evictions from staging buffer - grep '~MAID' for details.
     p_allocation->disk_offset = alloc->disk_size;
     if (!alloc->disk)
         alloc->disk = fopen(alloc->disk_storage.str, "wb");
@@ -2429,20 +2429,10 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     for(u32 i = 0; i < indices_count; ++i) {
         idx = indices[i];
 
-        //
-        // @Todo Either writing to or reading from the allocator file or both not working properly I think.
-        // Looks like garbled shit is being copied into staging buffer.
-        //
-
-        // Read the allocation's data from the allocator's disk copy of the data.
         fseek(disk, allocations[idx].disk_offset, 0);
         fread((u8*)stage_ptr + stage_offset, 1, allocations[idx].size, disk);
 
-        // Set the allocation's new stage offset and update its state.
         allocations[idx].stage_offset = stage_offset;
-
-        // Increment offset to point beyond the most recent allocation, aligned to the stage
-        // bit granularity.
         stage_offset += align(allocations[idx].size, g);
 
         ASSERT(stage_offset + allocations[idx].size <= alloc->stage_cap, "Allocator Stage Overflow");
@@ -2596,7 +2586,7 @@ Allocator_Result upload_queue_submit(Allocator *alloc) {
     // Find the indices of all allocations which are not uploaded and not marked as to upload.
     indices_count = simd_find_flags_u8(allocation_count, states, 0x00, ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_UPLOADED_BIT, indices);
 
-    // Loop the above allocations , starting at the highest weight. If there is size available in
+    // Loop the above allocations, starting at the highest weight. If there is size available in
     // the free block for the queued allocations and the current allocation in loop, add the
     // allocation to the list of allocations that we want to upload.
     u64 size = 0;
