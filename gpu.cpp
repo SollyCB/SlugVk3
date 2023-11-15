@@ -1262,7 +1262,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u32 idx = args->indices[args->idx];
 
     // Find incremented weight
-    u8 w = args->weights[idx];
+    u8 w   = args->weights[idx];
     u8 tmp = Max_u8 + (u8)(w + args->inc > w);
     w = (w + args->inc) | tmp;
     w &= 0b01111111;
@@ -1278,14 +1278,16 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u32 tmp32;
     u16 mask;
 
-    for(inc = 0; inc < args->count; inc += 16) {
+    u8 *weights = args->weights;
+    u32 count = args->count;
+    for(inc = 0; inc < count; inc += 16) {
         // Decrement values
-        a = _mm_load_si128((__m128i*)(args->weights + inc));
+        a = _mm_load_si128((__m128i*)(weights + inc));
         d = _mm_cmpgt_epi8(a, b);
         e = _mm_and_si128(b, d);
         a = _mm_sub_epi8(a, e);
         a = _mm_and_si128(a, d);
-        _mm_store_si128((__m128i*)(args->weights + inc), a);
+        _mm_store_si128((__m128i*)(weights + inc), a);
 
         // @Note Finding position could be moved into its own loop, where there would be fewer instructions and
         // fewer iterations. However we would be looping the same data again *and* and having to index into
@@ -1303,39 +1305,41 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     }
 
     Tex_Allocation allocation = args->allocations[idx];
-    u8 state = args->states[idx];
+    u8  state  = args->states[idx];
+    u8 *states = args->states;
 
     // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
     // would not need to be memcpyd, just swapped with pos.
-    memmove(args->weights + pos + 1, args->weights + pos, idx - pos);
-    memmove(args->states  + pos + 1, args->states  + pos, idx - pos);
+    memmove(weights + pos + 1, weights + pos, idx - pos);
+    memmove(states  + pos + 1, states  + pos, idx - pos);
 
-    args->weights[pos]     = w;
+    weights[pos] = w;
+    states[pos]  = state;
     args->allocations[pos] = allocation;
-    args->states[pos]      = state;
 
-    b   = _mm_set1_epi32(pos - 1);
-    c   = _mm_set1_epi32(idx);
+    b = _mm_set1_epi32(pos - 1);
+    c = _mm_set1_epi32(idx);
     inc = 0;
-    while(inc < args->count) {
-        a = _mm_load_si128((__m128i*)(args->indices + inc));
+    u32 *indices = args->indices;
+    while(inc < count) {
+        a = _mm_load_si128((__m128i*)(indices + inc));
         d = _mm_cmpgt_epi32(a, b);
         e = _mm_cmplt_epi32(a, c);
         d = _mm_and_si128(d, e);
         e = _mm_set1_epi32(0x01);
         d = _mm_and_si128(d, e);
         a = _mm_add_epi32(a, d);
-        _mm_store_si128((__m128i*)(args->indices + inc), a);
+        _mm_store_si128((__m128i*)(indices + inc), a);
         inc += 4;
     }
-    args->indices[args->idx] = pos;
+    indices[args->idx] = pos;
     return pos;
 }
 static u32 adjust_allocation_weights(Weight_Args *args) {
     u32 idx = args->indices[args->idx];
 
     // Find incremented weight
-    u8 w = args->weights[idx];
+    u8 w   = args->weights[idx];
     u8 tmp = Max_u8 + (u8)(w + args->inc > w);
     w = (w + args->inc) | tmp;
     w &= 0b01111111;
@@ -1351,14 +1355,16 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     u32 tmp32;
     u16 mask;
 
-    for(inc = 0; inc < args->count; inc += 16) {
+    u8 *weights = args->weights;
+    u32 count = args->count;
+    for(inc = 0; inc < count; inc += 16) {
         // Decrement values
-        a = _mm_load_si128((__m128i*)(args->weights + inc));
+        a = _mm_load_si128((__m128i*)(weights + inc));
         d = _mm_cmpgt_epi8(a, b);
         e = _mm_and_si128(b, d);
         a = _mm_sub_epi8(a, e);
         a = _mm_and_si128(a, d);
-        _mm_store_si128((__m128i*)(args->weights + inc), a);
+        _mm_store_si128((__m128i*)(weights + inc), a);
 
         // @Note Finding position could be moved into its own loop, where there would be fewer instructions and
         // fewer iterations. However we would be looping the same data again *and* and having to index into
@@ -1376,32 +1382,34 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     }
 
     Allocation allocation = args->allocations[idx];
-    u8 state = args->states[idx];
+    u8  state  = args->states[idx];
+    u8 *states = args->states;
 
     // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
     // would not need to be memcpyd, just swapped with pos.
-    memmove(args->weights + pos + 1, args->weights + pos, idx - pos);
-    memmove(args->states  + pos + 1, args->states  + pos, idx - pos);
+    memmove(weights + pos + 1, weights + pos, idx - pos);
+    memmove(states  + pos + 1, states  + pos, idx - pos);
 
-    args->weights[pos] = w;
+    weights[pos] = w;
+    states[pos]  = state;
     args->allocations[pos] = allocation;
-    args->states[pos] = state;
 
     b = _mm_set1_epi32(pos - 1);
     c = _mm_set1_epi32(idx);
     inc = 0;
-    while(inc < args->count) {
-        a = _mm_load_si128((__m128i*)(args->indices + inc));
+    u32 *indices = args->indices;
+    while(inc < count) {
+        a = _mm_load_si128((__m128i*)(indices + inc));
         d = _mm_cmpgt_epi32(a, b);
         e = _mm_cmplt_epi32(a, c);
         d = _mm_and_si128(d, e);
         e = _mm_set1_epi32(0x01);
         d = _mm_and_si128(d, e);
         a = _mm_add_epi32(a, d);
-        _mm_store_si128((__m128i*)(args->indices + inc), a);
+        _mm_store_si128((__m128i*)(indices + inc), a);
         inc += 4;
     }
-    args->indices[args->idx] = pos;
+    indices[args->idx] = pos;
     return pos;
 }
 void adjust_sampler_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
@@ -1805,6 +1813,7 @@ static bool is_range_free(u32 count, u64 *bits, u32 offset, u32 range) {
 static u32 find_hash_idx(u32 count, u64 *hashes, u64 hash) {
     __m128i a = _mm_load_si128((__m128i*)hashes);
     __m128i b = _mm_set1_epi64((__m64)hash);
+
     a = _mm_cmpeq_epi64(a, b);
     u16 mask = _mm_movemask_epi8(a);
     u32 inc = 2;
@@ -1822,9 +1831,11 @@ static u32 find_hash_idx(u32 count, u64 *hashes, u64 hash) {
 }
 static u32 find_lowest_flagged_weight(u32 count, u8 *weights) {
     u32 offset = count - (count & 15);
-    offset -= 16 & (Max_u32 + ((count & 15) > 0));
+
+    offset   -= 16 & (Max_u32 + ((count & 15) > 0));
     __m128i a = _mm_load_si128((__m128i*)(weights + offset));
     __m128i b = _mm_set1_epi8(0b1000'0000);
+
     a = _mm_and_si128(a, b);
     u16 mask = _mm_movemask_epi8(a);
     while(!mask) { // static predict that lowest flagged is not immediate
@@ -3520,6 +3531,7 @@ u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
     return hash;
 }
 VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
+    // This is a little lame as a list traversal, but it should be pretty quick in reality.
     u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
 
     ASSERT(h_idx != Max_u32, "Invalid Sampler Hash");
@@ -3527,21 +3539,24 @@ VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
         return NULL;
 
     adjust_sampler_weights(alloc->count, alloc->weights, alloc->hashes, h_idx, 5, 1);
-    Sampler *info = alloc->map.find_hash(hash);
-    float anisotropy = get_global_settings()->anisotropy;
+    Sampler *info    = alloc->map.find_hash(hash);
+
     if (!info->sampler) {
+        float anisotropy = get_global_settings()->anisotropy;
+
         VkSamplerCreateInfo create_info = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        create_info.magFilter = info->mag_filter;
-        create_info.minFilter = info->min_filter;
-        create_info.addressModeU = info->wrap_s;
-        create_info.addressModeV = info->wrap_t;
-        create_info.anisotropyEnable = anisotropy > 0 ? VK_TRUE : VK_FALSE;
-        create_info.maxAnisotropy = anisotropy;
+        create_info.magFilter           = info->mag_filter;
+        create_info.minFilter           = info->min_filter;
+        create_info.addressModeU        = info->wrap_s;
+        create_info.addressModeV        = info->wrap_t;
+        create_info.anisotropyEnable    = (VkBool32)(anisotropy > 0);
+        create_info.maxAnisotropy       = anisotropy;
 
         VkDevice device = get_gpu_instance()->device;
         if (alloc->active == alloc->device_cap) {
             u32 evict_idx = find_lowest_flagged_weight(alloc->count, alloc->weights);
             alloc->weights[evict_idx] &= 0b01111111;
+
             VkSampler *to_evict = &alloc->map.find_hash(alloc->hashes[evict_idx])->sampler;
             vkDestroySampler(device, *to_evict, ALLOCATION_CALLBACKS);
             *to_evict = NULL;

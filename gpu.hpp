@@ -488,7 +488,7 @@ struct Sampler_Allocator {
     HashMap<u64, Sampler> map;
 
     u64 *hashes;
-    u8 *weights;
+    u8  *weights;
 };
 // Set to cap to zero to let the allocator decide a size
 Sampler_Allocator create_sampler_allocator(u32 sampler_cap, float anisotropy);
