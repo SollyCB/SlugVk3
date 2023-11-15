@@ -1265,7 +1265,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u8 w = args->weights[idx];
     u8 tmp = Max_u8 + (u8)(w + args->inc > w);
     w = (w + args->inc) | tmp;
-    w &= 0b0111'1111;
+    w &= 0b01111111;
 
     args->weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
@@ -1277,8 +1277,9 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u32 pos = Max_u32;
     u32 tmp32;
     u16 mask;
-    // decrement all values
-    while(inc < args->count) {
+
+    for(inc = 0; inc < args->count; inc += 16) {
+        // Decrement values
         a = _mm_load_si128((__m128i*)(args->weights + inc));
         d = _mm_cmpgt_epi8(a, b);
         e = _mm_and_si128(b, d);
@@ -1286,31 +1287,35 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
         a = _mm_and_si128(a, d);
         _mm_store_si128((__m128i*)(args->weights + inc), a);
 
-        // OMG did I become stupider. Look at the sampler weights function: pos can just be updated by pop_count;
-        d = _mm_cmplt_epi8(a, c);
-        mask = _mm_movemask_epi8(d);
-        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32);
-        pos -= pos & tmp32;
-        pos += (count_trailing_zeros_u16(mask) + inc) & tmp32;
+        // @Note Finding position could be moved into its own loop, where there would be fewer instructions and
+        // fewer iterations. However we would be looping the same data again *and* and having to index into
+        // the data rather than starting from beginning *and* finishing the loop on an unpredictable condition.
+        // Therefore I will do the work in more instructions, and on every iteration to avoid these costs as the
+        // work is so so cheap.
+        //
+        // Find new position
+        d     = _mm_cmplt_epi8(a, c);
+        mask  = _mm_movemask_epi8(d);
 
-        inc += 16;
+        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32);
+        pos  -= pos & tmp32;
+        pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
     }
 
-    // @Todo Don't fucking load and store weights and states in a loop!! They are single bytes!!
-    // SIMD this!!
     Tex_Allocation allocation = args->allocations[idx];
     u8 state = args->states[idx];
-    for(u32 i = idx; i > pos; --i) {
-        args->weights[i] = args->weights[i-1];
-        args->allocations[i] = args->allocations[i-1];
-        args->states[i] = args->states[i-1];
-    }
-    args->weights[pos] = w;
-    args->allocations[pos] = allocation;
-    args->states[pos] = state;
 
-    b = _mm_set1_epi32(pos - 1);
-    c = _mm_set1_epi32(idx);
+    // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
+    // would not need to be memcpyd, just swapped with pos.
+    memmove(args->weights + pos + 1, args->weights + pos, idx - pos);
+    memmove(args->states  + pos + 1, args->states  + pos, idx - pos);
+
+    args->weights[pos]     = w;
+    args->allocations[pos] = allocation;
+    args->states[pos]      = state;
+
+    b   = _mm_set1_epi32(pos - 1);
+    c   = _mm_set1_epi32(idx);
     inc = 0;
     while(inc < args->count) {
         a = _mm_load_si128((__m128i*)(args->indices + inc));
@@ -1333,7 +1338,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     u8 w = args->weights[idx];
     u8 tmp = Max_u8 + (u8)(w + args->inc > w);
     w = (w + args->inc) | tmp;
-    w &= 0b0111'1111;
+    w &= 0b01111111;
 
     args->weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
@@ -1345,8 +1350,9 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     u32 pos = Max_u32;
     u32 tmp32;
     u16 mask;
-    // decrement all values
-    while(inc < args->count) {
+
+    for(inc = 0; inc < args->count; inc += 16) {
+        // Decrement values
         a = _mm_load_si128((__m128i*)(args->weights + inc));
         d = _mm_cmpgt_epi8(a, b);
         e = _mm_and_si128(b, d);
@@ -1354,24 +1360,29 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
         a = _mm_and_si128(a, d);
         _mm_store_si128((__m128i*)(args->weights + inc), a);
 
-        d = _mm_cmplt_epi8(a, c);
-        mask = _mm_movemask_epi8(d);
-        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32);
-        pos -= pos & tmp32;
-        pos += (count_trailing_zeros_u16(mask) + inc) & tmp32;
+        // @Note Finding position could be moved into its own loop, where there would be fewer instructions and
+        // fewer iterations. However we would be looping the same data again *and* and having to index into
+        // the data rather than starting from beginning *and* finishing the loop on an unpredictable condition.
+        // Therefore I will do the work in more instructions, and on every iteration to avoid these costs as the
+        // work is so so cheap.
+        //
+        // Find new position
+        d     = _mm_cmplt_epi8(a, c);
+        mask  = _mm_movemask_epi8(d);
 
-        inc += 16;
+        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32);
+        pos  -= pos & tmp32;
+        pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
     }
 
-    // @Todo Don't fucking load and store weights and states in a loop!! They are single bytes!!
-    // SIMD this!!
     Allocation allocation = args->allocations[idx];
     u8 state = args->states[idx];
-    for(u32 i = idx; i > pos; --i) {
-        args->weights[i] = args->weights[i-1];
-        args->allocations[i] = args->allocations[i-1];
-        args->states[i] = args->states[i-1];
-    }
+
+    // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
+    // would not need to be memcpyd, just swapped with pos.
+    memmove(args->weights + pos + 1, args->weights + pos, idx - pos);
+    memmove(args->states  + pos + 1, args->states  + pos, idx - pos);
+
     args->weights[pos] = w;
     args->allocations[pos] = allocation;
     args->states[pos] = state;
