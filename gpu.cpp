@@ -4144,8 +4144,9 @@ Shader_Memory init_shaders() {
     u32 j;
     u32 layout_set;
     u32 binding_count;
-    u32 descriptor_counts[11];
     u32 set_infos_block_offset;
+    u32 descriptor_counts[11];
+    memset(descriptor_counts, 0, sizeof(u32) * 11);
 
     VkDescriptorSetLayoutBinding *bindings = (VkDescriptorSetLayoutBinding*)malloc_t(sizeof(VkDescriptorSetLayoutBinding) * 128, 8);
     VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
