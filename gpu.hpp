@@ -19,6 +19,8 @@
 #include "string.hpp"
 #include "shader.hpp" // include g_shader_file_names global array
 
+namespace gpu {
+
 struct Settings {
     VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
     u32 mip_levels                     = 1;
@@ -26,8 +28,6 @@ struct Settings {
 };
 static Settings global_settings = {};
 inline static Settings* get_global_settings() { return &global_settings; }
-
-namespace gpu {
 
 static constexpr u32 DEPTH_ATTACHMENT_COUNT = 1;
 static constexpr u32 COLOR_ATTACHMENT_COUNT = 1;
@@ -83,7 +83,8 @@ struct Gpu_Memory {
 };
 // @Todo Move descriptor pool memory to be managed like model allocators. Right now every shader just
 // has all its descriptors allocated individually, when really probably many can be reused. But this
-// really wont be a problem for a looong time, if ever (idk how much memory descriptor sets use).
+// really wont be a problem for a looong time, if ever (idk how much memory descriptor sets use, but
+// I really cant imagine it is much compared to textures or vertex data).
 struct Shader_Set_Info {
     u32 array_index; // index into the Shader_Memory descriptor set array
     u32 layout_set; // set index inside glsl
@@ -184,8 +185,7 @@ VkSwapchainKHR create_swapchain(Gpu *gpu, VkSurfaceKHR vk_surface);
 void destroy_swapchain(VkDevice vk_device, Window *window);
 VkSwapchainKHR recreate_swapchain(Gpu *gpu, Window *window);
 
-inline static VkViewport gpu_get_complete_screen_viewport()
-{
+inline static VkViewport gpu_get_complete_screen_viewport() {
     VkViewport viewport = {};
     viewport.x          = 0;
     viewport.y          = 0;
@@ -196,8 +196,7 @@ inline static VkViewport gpu_get_complete_screen_viewport()
     viewport.maxDepth   = 1.0;
     return viewport;
 }
-inline static VkRect2D gpu_get_complete_screen_area()
-{
+inline static VkRect2D gpu_get_complete_screen_area() {
     VkRect2D rect = {
         .offset = {0, 0},
         .extent = get_window_instance()->info.imageExtent,
@@ -205,86 +204,13 @@ inline static VkRect2D gpu_get_complete_screen_area()
     return rect;
 }
 
-// Memory
+// Memory -- struct declarations above gpu
 void allocate_memory();
 void free_memory();
 
-// Shaders
+// Shaders -- struct declarations above gpu
 Shader_Memory init_shaders();
-void          shutdown_shaders(Shader_Memory *mem);
-
-#if 0
-// Shaders -- @Todo Transition this to be something more like a shader builder.
-struct Shader { // @Todo Add state for hot reloading checks
-    VkShaderStageFlagBits stage;
-    VkShaderModule module;
-};
-struct Shader_Info {
-    u32 count;
-    Shader *shaders;
-    Parsed_Spirv *spirv;
-};
-Shader_Info create_shaders(u32 count, String *file_names);
-void destroy_shaders(u32 count, Shader *shaders);
-
-struct Set_Layout_Info {
-    u32 count;
-    VkDescriptorSetLayoutBinding *bindings;
-};
-Set_Layout_Info* group_spirv(u32 count, Parsed_Spirv *parsed_spirv, u32 *returned_set_count);
-void count_descriptors(u32 count, Set_Layout_Info *infos, u32 descriptor_counts[11]);
-
-// @Todo Transition away from string names to an enum system, and when you add a shader you add it to the enum.
-struct Shader_Set {
-    u32 shader_count; // might not even need the counts as these will be retrieved by name
-    u32 set_count;
-
-    Shader *shaders;
-    VkDescriptorSet *sets;
-
-    VkPipelineLayout pl_layout;
-};
-struct Shader_Map {
-    HashMap<u64, Shader_Set> map;
-};
-struct Set_Allocate_Info {
-    u32 count;
-    Set_Layout_Info *infos; // for counting descriptor pool requirements
-    VkDescriptorSetLayout *layouts;
-    VkDescriptorSet *sets;
-};
-Shader_Map create_shader_map(u32 size);
-void destroy_shader_map(Shader_Map *map);
-Set_Allocate_Info insert_shader_set(String *set_name, u32 count, String *files, Shader_Map *map);
-Shader_Set* get_shader_set(String *set_name, Shader_Map *map);
-
-
-// Descriptors
-
-VkDescriptorSetLayout* create_set_layouts(u32 count, Set_Layout_Info *info);
-void destroy_set_layouts(u32 count, VkDescriptorSetLayout *layouts);
-
-struct Descriptor_Allocation {
-    VkDescriptorPool pool;
-};
-Descriptor_Allocation create_descriptor_sets(u32 count, Set_Allocate_Info *infos);
-void destroy_descriptor_sets(Descriptor_Allocation *allocation);
-
-//
-// @Todo Add function to count pool size required for some set of models
-//
-
-// `PipelineLayout
-struct Pl_Layout_Info {
-    u32 layout_count;
-    VkDescriptorSetLayout *layouts;
-    u32 push_constant_count;
-    VkPushConstantRange *push_constants;
-};
-VkPipelineLayout create_pl_layout(VkDevice device, Pl_Layout_Info *info);
-void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout);
-#endif
-
+void shutdown_shaders(Shader_Memory *mem);
 
                                     /* Model Memory Management Begin */
 
@@ -309,11 +235,11 @@ void destroy_pl_layout(VkDevice device, VkPipelineLayout pl_layout);
         - Weight is used to set a priority for the allocation. This effects how likely the allocation
           is to be in memory at any given time.
 
-********************************************************************************************************
-* THE ABOVE FUNCTIONS MUST NOT BE CALLED AFTER ANY OF THE BELOW FUNCTIONS. ADDING ALLOCATIONS/TEXTURES *
-* MUST BE DONE DURING SOME DEFINED STAGE OF THE PROGRAM, A STAGE WHICH OCCURS BEFORE QUEUEING STAGING  *
-* AND UPLOADS.                                                                                         *
-********************************************************************************************************
+    ********************************************************************************************************
+    * THE ABOVE FUNCTIONS MUST NOT BE CALLED AFTER ANY OF THE BELOW FUNCTIONS. ADDING ALLOCATIONS/TEXTURES *
+    * MUST BE DONE DURING SOME DEFINED STAGE OF THE PROGRAM, A STAGE WHICH OCCURS BEFORE QUEUEING STAGING  *
+    *                                         AND UPLOADS.                                                 *
+    ********************************************************************************************************
 
     queue_begin() prepares the allocator internal queue:
         - Returns QUEUE_IN_USE if submit has not been called since calling begin.
