@@ -38,7 +38,7 @@ inline uint64_t hash_bytes(void *data, size_t len, size_t seed = 0) {
 }
 
 inline void checked_mul(size_t &res, size_t mul) {
-    ASSERT(UINT64_MAX / res > mul, "u64 checked mul overflow");
+    assert(UINT64_MAX / res > mul && "u64 checked mul overflow");
     res = res * mul;
 }
 
@@ -183,7 +183,7 @@ struct HashMap {
 
                     // @Note Assumes this compiles to just the function call
                     c = insert_cpy(kv[group_index + tz].key , kv[group_index + tz].value);
-                    ASSERT(c, "Rehash Failure");
+                    assert(c && "Rehash Failure");
                 }
             }
 
@@ -202,7 +202,7 @@ struct HashMap {
         u32 tz;
         u64 inc = 0;
         while(inc < cap) {
-            ASSERT(inc <= cap, "Probe went too far");
+            assert(inc <= cap && "Probe went too far");
             gr = Group::get_from_index(group_index, data);
             mask = gr.is_empty();
 
@@ -228,8 +228,8 @@ struct HashMap {
         return false;
     }
     bool insert_ptr(K *key, V *value) {
-		ASSERT(key != nullptr, "pass key == nullptr to HashMap::insert_ptr");
-		ASSERT(value != nullptr, "pass value == nullptr to HashMap::insert_ptr");
+		assert(key != nullptr && "pass key == nullptr to HashMap::insert_ptr");
+		assert(value != nullptr && "pass value == nullptr to HashMap::insert_ptr");
 
         if (slots_left == 0) {
             u8 *old_data = data;
@@ -262,7 +262,7 @@ struct HashMap {
                     kv = (KeyValue*)(old_data + old_cap);
                     u64 exact_index = tz + group_index;
                     c = insert_ptr(&kv[exact_index].key, &kv[exact_index].value);
-                    ASSERT(c, "Rehash Failure");
+                    assert(c && "Rehash Failure");
                 }
             }
 
@@ -281,7 +281,7 @@ struct HashMap {
         u32 tz;
         u64 inc = 0;
         while(inc < cap) {
-            ASSERT(inc < cap, "Probe went too far");
+            assert(inc < cap && "Probe went too far");
             gr = Group::get_from_index(group_index, data);
             mask = gr.is_empty();
 
@@ -307,7 +307,7 @@ struct HashMap {
         return false;
     }
     bool insert_hash(u64 hash, V *value) {
-		ASSERT(value != nullptr, "pass value == nullptr to HashMap::insert_ptr");
+		assert(value != nullptr && "pass value == nullptr to HashMap::insert_ptr");
 
         bool c;
         if (slots_left == 0) {
@@ -342,7 +342,7 @@ struct HashMap {
 
                     // @Note Assumes this compiles to just the function call
                     c = insert_hash(kv[exact_index].key, &kv[exact_index].value);
-                    ASSERT(c, "Rehash Failure");
+                    assert(c && "Rehash Failure");
                 }
             }
 
@@ -360,7 +360,7 @@ struct HashMap {
         u32 tz;
         u64 inc = 0;
         while(inc < cap) {
-            ASSERT(inc < cap, "Probe went too far");
+            assert(inc < cap && "Probe went too far");
             gr = Group::get_from_index(group_index, data);
             mask = gr.is_empty();
 
@@ -423,7 +423,7 @@ struct HashMap {
     }
 
     V* find_ptr(K *key) {
-		ASSERT(key != nullptr, "pass key == nullptr to HashMap::find_ptr");
+		assert(key != nullptr && "pass key == nullptr to HashMap::find_ptr");
 
         u64 hash = hash_bytes((void*)key, sizeof(*key));
         u8 top7 = hash >> 57;

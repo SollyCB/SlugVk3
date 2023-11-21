@@ -608,7 +608,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
         void* pUserData)
 {
     if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
-        println("\nValidation Layer: %c", pCallbackData->pMessage);
+        println("\nValidation Layer: %s", pCallbackData->pMessage);
 
     return VK_FALSE;
 }

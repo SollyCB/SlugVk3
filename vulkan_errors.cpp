@@ -97,7 +97,8 @@ const char *match_vk_error(Vulkan_Result error) {
     case VULKAN_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT:
         return "VK_ERROR_INCOMPATIBLE_SHADER_BINARY_EXT";
     default:
-        ASSERT(false, "UNKOWN VULKAN ERROR CODE");
+        assert(false && "UNKOWN VULKAN ERROR CODE");
+        return NULL;
     };
 }
 #endif // if DEBUG

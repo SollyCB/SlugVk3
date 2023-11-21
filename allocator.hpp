@@ -48,7 +48,7 @@ inline void free_h(void *ptr) { // Free a heap allocation
     u64 size = tlsf_block_size(ptr);
 
     Heap_Allocator *allocator = get_instance_heap();
-    ASSERT(size <= allocator->used, "Heap Allocator Underflow");
+    assert(size <= allocator->used && "Heap Allocator Underflow");
     allocator->used -= size;
     tlsf_free(allocator->tlsf_handle, ptr);
 }

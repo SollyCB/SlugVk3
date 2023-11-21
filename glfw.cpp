@@ -4,7 +4,7 @@
 namespace glfw {
 
 static Glfw *s_Glfw;
-Glfw* get_glfw_instance() { 
+Glfw* get_glfw_instance() {
     return s_Glfw;
 }
 
@@ -34,7 +34,7 @@ void init_glfw() {
 
     Glfw *glfw = get_glfw_instance();
     glfw->window = glfwCreateWindow(640, 480, "GLFW Window", NULL, NULL);
-    ASSERT(glfw->window, "GLFW Fail To Create Window");
+    assert(glfw->window && "GLFW Fail To Create Window");
 
     // @Todo window resizing
 

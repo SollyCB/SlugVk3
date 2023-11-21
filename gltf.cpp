@@ -78,14 +78,14 @@ static inline int gltf_match_int(char c) {
     case '9':
         return 9;
     default:
-        ASSERT(false && "not an int", "");
+        assert(false && "not an int" && "");
         return -1;
     }
 }
 inline int gltf_ascii_to_int(const char *data, u64 *offset) {
     u64 inc = 0;
     if (!simd_skip_to_int(data, &inc, 128))
-        ASSERT(false, "Failed to find an integer in search range");
+        assert(false && "Failed to find an integer in search range");
 
     int accum = 0;
     while(data[inc] >= '0' && data[inc] <= '9') {
@@ -99,7 +99,7 @@ inline int gltf_ascii_to_int(const char *data, u64 *offset) {
 inline u64 gltf_ascii_to_u64(const char *data, u64 *offset) {
     u64 inc = 0;
     if (!simd_skip_to_int(data, &inc, 128))
-        ASSERT(false, "Failed to find an integer in search range");
+        assert(false && "Failed to find an integer in search range");
 
     u64 accum = 0;
     while(data[inc] >= '0' && data[inc] <= '9') {
@@ -188,7 +188,7 @@ Gltf parse_gltf(const char *filename) {
             gltf.scene = gltf_ascii_to_int(data + offset, &offset);
             continue;
         } else {
-            ASSERT(false, "This is not a top level gltf key");
+            assert(false && "This is not a top level gltf key");
         }
     }
 
@@ -653,7 +653,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
                 break;
             }
             default:
-                ASSERT(false, "Not a valid accessor component type");
+                assert(false && "Not a valid accessor component type");
                 break;
             } // switch component_type
 
@@ -700,7 +700,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
                 break;
             }
             default:
-                ASSERT(false, "Not a valid accessor component type");
+                assert(false && "Not a valid accessor component type");
                 break;
             } // switch component_type
 
@@ -747,7 +747,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
                 break;
             }
             default:
-                ASSERT(false, "Not a valid accessor component type");
+                assert(false && "Not a valid accessor component type");
                 break;
             } // switch component_type
 
@@ -794,7 +794,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
                 break;
             }
             default:
-                ASSERT(false, "Not a valid accessor component type");
+                assert(false && "Not a valid accessor component type");
                 break;
             } // switch component_type
 
@@ -841,7 +841,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
                 break;
             }
             default:
-                ASSERT(false, "Not a valid accessor component type");
+                assert(false && "Not a valid accessor component type");
                 break;
             } // switch component_type
 
@@ -888,7 +888,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
                 break;
             }
             default:
-                ASSERT(false, "Not a valid accessor component type");
+                assert(false && "Not a valid accessor component type");
                 break;
             } // switch component_type
 
@@ -935,14 +935,14 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
                 break;
             }
             default:
-                    ASSERT(false, "Invalid Accessor Type");
+                    assert(false && "Invalid Accessor Type");
             } // switch component_type
 
             break;
 
         } // case MAT4
         default:
-            ASSERT(false, "Not a valud accessor type");
+            assert(false && "Not a valud accessor type");
             break;
         } // switch type
     }
@@ -1102,7 +1102,7 @@ Gltf_Animation_Sampler* gltf_parse_animation_samplers(const char *data, u64 *off
                     simd_skip_passed_char(data + inc, &inc, '"'); // skip passed the end of the value
                     continue;
                 } else {
-                    ASSERT(false, "This is not a valid interpolation type");
+                    assert(false && "This is not a valid interpolation type");
                 }
                 simd_skip_passed_char(data + inc, &inc, '"');
                 continue;
@@ -1526,7 +1526,7 @@ Gltf_Mesh_Primitive* gltf_parse_mesh_primitives(const char *data, u64 *offset, i
                     primitive->topology = GLTF_PRIMITIVE_TOPOLOGY_LINE_LIST;
                     break;
                 case 2:
-                    ASSERT(false, "Vulkan does not seem to support this topology type");
+                    assert(false && "Vulkan does not seem to support this topology type");
                     primitive->topology = GLTF_PRIMITIVE_TOPOLOGY_LINE_LIST;
                     break;
                 case 3:
@@ -1561,11 +1561,15 @@ Gltf_Mesh_Primitive* gltf_parse_mesh_primitives(const char *data, u64 *offset, i
                 continue;
             } else if (simd_strcmp_short(data + inc, "attributesxxxxxx", 6) == 0) {
                 simd_skip_passed_char(data + inc, &inc, '{');
-                primitive->extra_attributes = gltf_parse_mesh_attributes(data + inc, &inc, &primitive->extra_attribute_count, false,
-                &primitive->position,
-                &primitive->tangent,
-                &primitive->normal,
-                &primitive->tex_coord_0);
+                primitive->extra_attributes = gltf_parse_mesh_attributes(
+                        data + inc,
+                        &inc,
+                        &primitive->extra_attribute_count,
+                        false,
+                        &primitive->position,
+                        &primitive->tangent,
+                        &primitive->normal,
+                        &primitive->tex_coord_0);
                 continue;
             }
         }
@@ -1748,7 +1752,7 @@ Gltf_Sampler* gltf_parse_samplers(const char *data, u64 *offset, int *sampler_co
                     sampler->mag_filter = GLTF_SAMPLER_FILTER_LINEAR;
                     break;
                 default:
-                    ASSERT(false, "This is not a valid filter setting");
+                    assert(false && "This is not a valid filter setting");
                 }
             } else if (simd_strcmp_short(data + inc, "minFilterxxxxxxx", 7) == 0) {
                 temp_int = gltf_ascii_to_int(data + inc, &inc);
@@ -1772,7 +1776,7 @@ Gltf_Sampler* gltf_parse_samplers(const char *data, u64 *offset, int *sampler_co
                     sampler->min_filter = GLTF_SAMPLER_FILTER_LINEAR;
                     break;
                 default:
-                    ASSERT(false, "This is not a valid filter setting");
+                    assert(false && "This is not a valid filter setting");
                 }
             }  else if (simd_strcmp_short(data + inc, "wrapSxxxxxxxxxxx", 11) == 0) {
                 temp_int = gltf_ascii_to_int(data + inc, &inc);
@@ -1787,7 +1791,7 @@ Gltf_Sampler* gltf_parse_samplers(const char *data, u64 *offset, int *sampler_co
                     sampler->wrap_u = GLTF_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
                     break;
                 default:
-                    ASSERT(false, "This is not a valid wrap setting");
+                    assert(false && "This is not a valid wrap setting");
                 }
             }  else if (simd_strcmp_short(data + inc, "wrapTxxxxxxxxxxx", 11) == 0) {
                 temp_int = gltf_ascii_to_int(data + inc, &inc);
@@ -1802,7 +1806,7 @@ Gltf_Sampler* gltf_parse_samplers(const char *data, u64 *offset, int *sampler_co
                     sampler->wrap_v = GLTF_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
                     break;
                 default:
-                    ASSERT(false, "This is not a valid wrap setting");
+                    assert(false && "This is not a valid wrap setting");
                 }
             }
         }
@@ -2001,34 +2005,34 @@ static void test_textures(Gltf_Texture *textures);
 
 void test_gltf() {
     Gltf gltf = parse_gltf("test/test_gltf.gltf");
-    ASSERT(gltf.total_primitive_count == 5, "Incorrect Total Primitive Count");
+    assert(gltf.total_primitive_count == 5 && "Incorrect Total Primitive Count");
 
     test_accessors(gltf.accessors);
-    ASSERT(gltf.accessor_count[-1] == 3, "Incorrect Accessor Count");
+    assert(gltf.accessor_count[-1] == 3 && "Incorrect Accessor Count");
     test_animations(gltf.animations);
-    ASSERT(gltf.animation_count[-1] == 4, "Incorrect Animation Count");
+    assert(gltf.animation_count[-1] == 4 && "Incorrect Animation Count");
     test_buffers(gltf.buffers);
-    ASSERT(gltf.buffer_count[-1] == 5, "Incorrect Buffer Count");
+    assert(gltf.buffer_count[-1] == 5 && "Incorrect Buffer Count");
     test_buffer_views(gltf.buffer_views);
-    ASSERT(gltf.buffer_view_count[-1] == 4, "Incorrect Buffer View Count");
+    assert(gltf.buffer_view_count[-1] == 4 && "Incorrect Buffer View Count");
     test_cameras(gltf.cameras);
-    ASSERT(gltf.camera_count[-1] == 3, "Incorrect Camera View Count");
+    assert(gltf.camera_count[-1] == 3 && "Incorrect Camera View Count");
     test_images(gltf.images);
-    ASSERT(gltf.image_count[-1] == 3, "Incorrect Image Count");
+    assert(gltf.image_count[-1] == 3 && "Incorrect Image Count");
     test_materials(gltf.materials);
-    ASSERT(gltf.material_count[-1] == 2, "Incorrect Material Count");
+    assert(gltf.material_count[-1] == 2 && "Incorrect Material Count");
     test_meshes(gltf.meshes);
-    ASSERT(gltf.mesh_count[-1] == 2, "Incorrect Mesh Count");
+    assert(gltf.mesh_count[-1] == 2 && "Incorrect Mesh Count");
     test_nodes(gltf.nodes);
-    ASSERT(gltf.node_count[-1] == 7, "Incorrect Node Count");
+    assert(gltf.node_count[-1] == 7 && "Incorrect Node Count");
     test_samplers(gltf.samplers);
-    ASSERT(gltf.sampler_count[-1] == 3, "Incorrect Sampler Count");
+    assert(gltf.sampler_count[-1] == 3 && "Incorrect Sampler Count");
     test_scenes(gltf.scenes);
-    ASSERT(gltf.scene_count[-1] == 3, "Incorrect Scene Count");
+    assert(gltf.scene_count[-1] == 3 && "Incorrect Scene Count");
     test_skins(gltf.skins);
-    ASSERT(gltf.skin_count[-1] == 4, "Incorrect Skin Count");
+    assert(gltf.skin_count[-1] == 4 && "Incorrect Skin Count");
     test_textures(gltf.textures);
-    ASSERT(gltf.texture_count[-1] == 4, "Incorrect Texture Count");
+    assert(gltf.texture_count[-1] == 4 && "Incorrect Texture Count");
 
     BEGIN_TEST_MODULE("Gltf_Indexing", true, false);
 

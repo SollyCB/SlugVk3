@@ -1,6 +1,6 @@
 #include "image.hpp"
 #include "allocator.hpp"
-#include "print.hpp"
+#include "print.h"
 
 
 /*
@@ -30,9 +30,9 @@ Image load_image(String *file_name) {
     u8* data = stbi_load(file_name->str, &x, &y, &n, 4); // Vulkan does not like fewer than 4 channels
 
     #if IMG_LOADER_SHOW_INFO
-    println("Info for Image: %c", file_name->str);
-    println("    width: %s", (s64)x);
-    println("    height: %s", (s64)y);
+    println("Info for Image: %s", file_name->str);
+    println("    width: %i", x); // See if this ever crashes without being cast to s64 (print always va_args integers to 64 and I thought this should cause crashes but it never has...)
+    println("    height: %i", y);
     #endif
 
     Image image;

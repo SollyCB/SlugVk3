@@ -1,10 +1,11 @@
 #include "allocator.hpp"
-#include "print.hpp"
+#include "print.h"
 #include "spirv.hpp"
 #include "gpu.hpp"
 #include "gltf.hpp"
 #include "glfw.hpp"
 #include "hash_map.hpp"
+#include "assert.h"
 
 #if TEST
    #include "test.hpp"
@@ -55,16 +56,16 @@ int main() {
 
     gpu::Allocator_Result res;
     res = gpu::staging_queue_begin(&model_allocators.vertex);
-    ASSERT(res == gpu::ALLOCATOR_RESULT_SUCCESS, "");
+    assert(res == gpu::ALLOCATOR_RESULT_SUCCESS);
 
     u32 vertex_key = model_allocators.vertex.allocation_indices[models[1].vertex_allocation_key];
     gpu::Allocator *alloc = &model_allocators.vertex;
 
     res = gpu::staging_queue_add(&model_allocators.vertex, vertex_key);
-    ASSERT(res == gpu::ALLOCATOR_RESULT_SUCCESS, "");
+    assert(res == gpu::ALLOCATOR_RESULT_SUCCESS);
 
     res = gpu::staging_queue_submit(&model_allocators.vertex);
-    ASSERT(res == gpu::ALLOCATOR_RESULT_SUCCESS, "");
+    assert(res == gpu::ALLOCATOR_RESULT_SUCCESS);
 
     while(!glfwWindowShouldClose(glfw->window)) {
         glfw::poll_and_get_input(glfw);

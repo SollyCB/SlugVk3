@@ -2,8 +2,8 @@
 #define SOL_BASIC_H_INCLUDE_GUARD_
 
 #include "typedef.h"
+#include "print.h"
 #include "assert.h"
-#include "print.hpp"
 #include "allocator.hpp"
 
 // @Todo move this to a more sensible file

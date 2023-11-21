@@ -1,31 +1,19 @@
 #ifndef SOL_PRINT_H_INCLUDE_GUARD_
 #define SOL_PRINT_H_INCLUDE_GUARD_
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
 #include <stdbool.h>
-#include <assert.h>
 
-#ifndef SOL_TYPEDEF
-typedef uint8_t  u8;
-typedef uint32_t u32;
-typedef uint64_t u64;
-typedef  int64_t s64;
-#endif
-
-#ifndef SOL_BUILTIN_WRAPPERS
-#ifndef _WIN32
-static inline int count_leading_zeros_u64(u64 mask) {
-    return __builtin_clzll(mask);
-}
-#else
-static inline int count_leading_zeros_u64(u64 mask) {
-    return __lzcnt64(mask);
-}
-#endif
-#endif
+#include "assert.h"
+#include "builtin_wrappers.h"
+#include "typedef.h"
 
 
                         /* Begin Print/Format Functions */
@@ -60,11 +48,18 @@ inline static void println(const char *fmt, ...) {
 
     fwrite(format_buffer, 1, tmp + 1, stdout);
 }
+#ifdef __cplusplus
+} // extern "C"
+#endif
 
                         /* Begin Print/Format Implementation */
 
 #ifndef SOL_PRINT // guard against print in sol.h
 #ifdef SOL_PRINT_IMPLEMENTATION
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 typedef enum {
     PRINT_HEX_BIT    = 0x00000001,
@@ -390,6 +385,11 @@ void string_format_backend(char *format_buffer, const char *fmt, va_list args) {
     va_end(args);
     format_buffer[buf_pos] = 0;
 }
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
 #endif // impl guard
 #endif // guard against sol.h including print impl
 #endif // include guard

@@ -2,6 +2,7 @@
 #define SOL_CAMERA_HPP_INCLUDE_GUARD_
 
 #include "math.hpp"
+#include "builtin_wrappers.h"
 
 struct Camera {
     Vec3 front;

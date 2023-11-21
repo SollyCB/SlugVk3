@@ -1,6 +1,6 @@
 #include <cstdlib>
 #include "allocator.hpp"
-#include "print.hpp"
+#include "print.h"
 
 const u64 DEFAULT_CAP_HEAP_ALLOCATOR = 32 * 1024 * 1024;
 const u64 DEFAULT_CAP_TEMP_ALLOCATOR = 32 * 1024 * 1024;
@@ -98,6 +98,6 @@ u8 *malloc_t(u64 size, u64 alignment) {
     u8 *ret = allocator->memory + allocator->used;
     allocator->used += size;
 
-    ASSERT(allocator->used <= allocator->capacity, "Temp Allocator Overflow");
+    assert(allocator->used <= allocator->capacity && "Temp Allocator Overflow");
     return ret;
 }

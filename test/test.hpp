@@ -12,6 +12,8 @@
 #include "../string.hpp"
 #include "../array.hpp"
 
+#include <iostream> // LAAAAAAAME!! @Todo refine this fucking test system lol...
+
 enum Test_Result {
     FAIL    = 0,
     PASS    = 0x01,
@@ -19,7 +21,7 @@ enum Test_Result {
     BROKEN  = 0x04,
 };
 
-// @Todo for now these are just heap string buffers to prevent code from interfering with tests 
+// @Todo for now these are just heap string buffers to prevent code from interfering with tests
 // (like emptying the temp allocator at whatever stage). Need to give tests their own temp allocators
 struct Test_Module {
     Dyn_Array<Heap_String_Buffer> failed_test_names;
@@ -51,7 +53,7 @@ void end_test_module(Test_Module *mod);
 #if TEST_LIST_BROKEN
 #define TEST_MSG_BROKEN(name) \
     std::cout << RED << "BROKEN TEST " << NC << "'" << name << "'\n";
-#else 
+#else
 #define TEST_MSG_BROKEN(name)
 #endif
 
@@ -60,7 +62,7 @@ void end_test_module(Test_Module *mod);
     std::cout << YELLOW << "Skip Test " << NC << "'" << name << "'\n";
 #define TEST_MSG_SKIP_BROKEN(name) \
     std::cout << YELLOW << "Warning: Skipping Broken Test " << NC << "'" << name << "'\n";
-#else 
+#else
 #define TEST_MSG_SKIPPED(name)
 #define TEST_MSG_SKIP_BROKEN(name)
 #endif
@@ -75,7 +77,7 @@ void end_test_module(Test_Module *mod);
 template<typename Arg1, typename Arg2>
 void test_eq(Test_Module *mod, const char *test_name, const char *function_name,
         const char *arg1_name, const char *arg2_name,
-        Arg1 arg1, Arg2 arg2, bool broken) 
+        Arg1 arg1, Arg2 arg2, bool broken)
 {
     if (broken) {
         TEST_MSG_BROKEN(test_name);
@@ -109,7 +111,7 @@ void test_eq(Test_Module *mod, const char *test_name, const char *function_name,
 template<typename Arg1, typename Arg2>
 void test_lt(Test_Module *mod, const char *test_name, const char *function_name,
         const char *arg1_name, const char *arg2_name,
-        Arg1 arg1, Arg2 arg2, bool broken) 
+        Arg1 arg1, Arg2 arg2, bool broken)
 {
     if (broken) {
         TEST_MSG_BROKEN(test_name);
@@ -143,7 +145,7 @@ void test_lt(Test_Module *mod, const char *test_name, const char *function_name,
 template<typename Arg1, typename Arg2>
 void test_floateq(Test_Module *mod, const char *test_name, const char *function_name,
         const char *arg1_name, const char *arg2_name,
-        Arg1 arg1, Arg2 arg2, bool broken) 
+        Arg1 arg1, Arg2 arg2, bool broken)
 {
     if (broken) {
         TEST_MSG_BROKEN(test_name);
@@ -180,7 +182,7 @@ void test_floateq(Test_Module *mod, const char *test_name, const char *function_
 template<typename Arg1, typename Arg2>
 void test_streq(Test_Module *mod, const char *test_name, const char *function_name,
         const char *arg1_name, const char *arg2_name,
-        Arg1 arg1, Arg2 arg2, bool broken) 
+        Arg1 arg1, Arg2 arg2, bool broken)
 {
     if (broken) {
         TEST_MSG_BROKEN(test_name);

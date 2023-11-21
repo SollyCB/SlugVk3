@@ -51,6 +51,7 @@ add_executable(Slug
     gltf.cpp
     string.cpp
     image.cpp
+    print.cpp
 
     external/tlsf.cpp
 

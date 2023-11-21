@@ -2,6 +2,7 @@
 #define SOL_ARRAY_HPP_INCLUDE_GUARD_
 
 #include "basic.h"
+#include "assert.h"
 
 // @Note Both of these could probably use u32s to measure length, as 4 billion items seems enough?? smtg to test
 
@@ -70,7 +71,7 @@ inline void grow_dyn_array(Dyn_Array<T> *array, u64 item_count) {
 template<typename T>
 inline T* append_to_static_array(Static_Array<T> *array) {
 #if DEBUG
-    ASSERT(array->len <= array->cap, "Static Array Overflow");
+    assert(array->len <= array->cap && "Static Array Overflow");
 #endif
     array->len++;
     return array->data + array->len - 1;
@@ -93,7 +94,7 @@ inline T* pop_last_dyn_array(Dyn_Array<T> *array) {
 template<typename T>
 inline void copy_to_static_array(Static_Array<T> *array, T *from, u64 item_count) {
 #if DEBUG
-    ASSERT(array->len + item_count <= array->cap, "Static Array Overflow");
+    assert(array->len + item_count <= array->cap && "Static Array Overflow");
 #endif
     memcpy(array->data + array->len, from, item_count * sizeof(T));
     array->len += item_count;
@@ -117,12 +118,12 @@ void cap_to_len_static_array(Static_Array<T> *array) {
 
 template<typename T>
 inline T* index_array(Static_Array<T> *array, u64 index) {
-    ASSERT(index < array->len, "Static Array Out of Bounds Access");
+    assert(index < array->len && "Static Array Out of Bounds Access");
     return array->data + index;
 }
 template<typename T>
 inline T* index_array(Dyn_Array<T> *array, u64 index) {
-    ASSERT(index < array->len, "Dyn Array Out of Bounds Access");
+    assert(index < array->len && "Dyn Array Out of Bounds Access");
     return array->data + index;
 }
 

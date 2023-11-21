@@ -48,7 +48,7 @@ inline static String string_buffer_get_string(String_Buffer *buf, String *str) {
     ret.str = (const char*)(buf->buf + buf->len);
 
     buf->len += ret.len + 1; // +1 for null byte
-    ASSERT(buf->len <= buf->cap, "String Buffer Overflow");
+    assert(buf->len <= buf->cap && "String Buffer Overflow");
     memcpy((char*)ret.str, str->str, ret.len); // copy null byte
     char *tmp = (char*)ret.str;
     tmp[ret.len] = '\0';
@@ -61,7 +61,7 @@ inline static String string_buffer_get_string(String_Buffer *buf, const char *cs
     ret.str = (const char*)(buf->buf + buf->len);
 
     buf->len += ret.len + 1; // +1 for null byte
-    ASSERT(buf->len <= buf->cap, "String Buffer Overflow");
+    assert(buf->len <= buf->cap && "String Buffer Overflow");
     memcpy((char*)ret.str, cstr, ret.len + 1); // copy null byte
 
     return ret;
@@ -97,7 +97,7 @@ inline void kill_heap_string_buffer(Heap_String_Buffer *string_buffer) {
 
 inline void copy_to_heap_string_buffer(Heap_String_Buffer *string_buffer, char *data,  u32 len) {
 #if DEBUG
-    ASSERT(string_buffer->len + len <= string_buffer->cap, "String Buffer Overflow");
+    assert(string_buffer->len + len <= string_buffer->cap && "String Buffer Overflow");
 #endif
 
     memcpy(string_buffer->data + string_buffer->len, data, len);
@@ -106,7 +106,7 @@ inline void copy_to_heap_string_buffer(Heap_String_Buffer *string_buffer, char *
 }
 inline void copy_to_temp_string_buffer(Temp_String_Buffer *string_buffer, char *data,  u32 len) {
 #if DEBUG
-    ASSERT(string_buffer->len + len <= string_buffer->cap, "String Buffer Overflow");
+    assert(string_buffer->len + len <= string_buffer->cap && "String Buffer Overflow");
 #endif
 
     memcpy(string_buffer->data + string_buffer->len, data, len);

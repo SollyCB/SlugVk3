@@ -1,8 +1,8 @@
 #ifndef SOL_TYPEDEF_H_INCLUDE_GUARD_
 #define SOL_TYPEDEF_H_INCLUDE_GUARD_
 
-#include <cstring>
-#include <cstdint>
+#include <string.h>
+#include <stdint.h>
 
 typedef unsigned int uint;
 

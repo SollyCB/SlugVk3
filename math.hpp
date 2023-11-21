@@ -1,8 +1,10 @@
 #ifndef SOL_MATH_HPP_INCLUDE_GUARD_
 #define SOL_MATH_HPP_INCLUDE_GUARD_
 
-#include "builtin_wrappers.h"
+#include <math.h>
 #include <xmmintrin.h>
+
+#include "builtin_wrappers.h"
 
 static inline u32 max_clamp32(u32 max, u32 actual) {
     if (actual > max)

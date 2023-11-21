@@ -9,8 +9,9 @@
 #include "image.hpp"
 #include "simd.hpp"
 #include "shader.hpp"
+#include "assert.h"
 
-#define ALLOCATOR_MEMORY_FOOTPRINT false
+#define ALLOCATOR_MEMORY_FOOTPRINT 0
 
 namespace gpu {
 
@@ -258,9 +259,10 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
     }
 
     if (physical_device_index == -1) {
+        assert(backup_physical_device_index != -1 && "Failed to choose suitable device\n");
         if (backup_physical_device_index == -1) {
-            std::cerr << "Failed to choose suitable device, aborting...\n";
-            HALT_EXECUTION();
+            println("Failed to choose suitable device\n");
+            return NULL;
         }
         physical_device_index = backup_physical_device_index;
         graphics_queue_index = backup_graphics_queue_index;
@@ -289,13 +291,13 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
 
     if (transfer_queue_index != graphics_queue_index) {
         gpu->memory.flags |= GPU_MEMORY_DISCRETE_TRANSFER_BIT;
-        println("Selected Device (Primary Choice) %c", props.deviceName);
+        println("Selected Device (Primary Choice) %s", props.deviceName);
 
         queue_info_count++;
         transfer_queue_create_info = graphics_queue_create_info;
         transfer_queue_create_info.queueFamilyIndex = transfer_queue_index;
     } else {
-        println("Selected Device (Backup) %c", props.deviceName);
+        println("Selected Device (Backup) %s", props.deviceName);
     }
 
     VkDeviceQueueCreateInfo queue_infos[] = { graphics_queue_create_info, transfer_queue_create_info };
@@ -485,7 +487,7 @@ VkSwapchainKHR create_swapchain(Gpu *gpu, VkSurfaceKHR surface) {
 
     u32 image_count_check;
     vkGetSwapchainImagesKHR(gpu->device, window->swapchain, &image_count_check, NULL);
-    ASSERT(image_count_check == image_count, "Incorrect return value from GetSwapchainImages");
+    assert(image_count_check == image_count && "Incorrect return value from GetSwapchainImages");
 
     auto check_swapchain_img_count =
         vkGetSwapchainImagesKHR(gpu->device, window->swapchain, &image_count, window->images);
@@ -1797,8 +1799,8 @@ static void recreate_images(Tex_Allocator *alloc, u32 count, u32 *indices) {
     /* Model Texture and Vertex/Index Attribute Allocators */
 
 Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator) {
-    ASSERT(config->stage_bit_granularity  % 2 == 0, "Bit granularity must be a power of 2");
-    ASSERT(config->upload_bit_granularity % 2 == 0, "Bit granularity must be a power of 2");
+    assert(config->stage_bit_granularity  % 2 == 0 && "Bit granularity must be a power of 2");
+    assert(config->upload_bit_granularity % 2 == 0 && "Bit granularity must be a power of 2");
 
     if (config->stage_bit_granularity  % 2 != 0 ||
         config->upload_bit_granularity % 2 != 0)
@@ -1806,10 +1808,10 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
         return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
-    ASSERT(config->stage_cap  % config->stage_bit_granularity  == 0,
+    assert(config->stage_cap  % config->stage_bit_granularity  == 0 &&
           "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
-    ASSERT(config->upload_cap % config->upload_bit_granularity == 0,
-          "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
+    assert(config->upload_cap % config->upload_bit_granularity == 0 &&
+          "Bit granularity must be aligned to capacity && see implementation details for info (grep '~MAID')");
 
     if (config->stage_cap   % config->stage_bit_granularity  != 0 ||
         config->upload_cap  % config->upload_bit_granularity != 0)
@@ -1818,9 +1820,9 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
     }
 
     Gpu *gpu = get_gpu_instance();
-    ASSERT(config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0,
+    assert(config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 &&
           "Bit granularity must be aligned to the optimal buffer copy offset alignment");
-    ASSERT(config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0,
+    assert(config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 &&
           "Bit granularity must be aligned to the optimal buffer copy offset alignment");
 
     if (config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0 ||
@@ -1896,7 +1898,7 @@ Allocator_Result create_allocator(Allocator_Config *config, Allocator *allocator
     total_memory_footprint += align(sizeof(u32)                    * ret.allocation_cap,    16);
     total_memory_footprint += align(sizeof(u32)                    * ret.allocation_cap,    16);
 
-    println("Allocator Memory Footprint (file name: %c):", ret.disk_storage.str);
+    println("Allocator Memory Footprint (file name: %s):", ret.disk_storage.str);
     println("        %u stage_masks: %u",ret.stage_mask_count , align(sizeof(u64)                    * ret.stage_mask_count,  16));
     println("       %u upload_masks: %u",ret.upload_mask_count, align(sizeof(u64)                    * ret.upload_mask_count, 16));
     println("        %u allocations: %u",ret.allocation_cap   , align(sizeof(Allocation)             * ret.allocation_cap,    16));
@@ -1927,8 +1929,8 @@ void destroy_allocator(Allocator *alloc) {
     *alloc = {};
 }
 Allocator_Result create_tex_allocator(Tex_Allocator_Config *config, Tex_Allocator *allocator) {
-    ASSERT(config->stage_bit_granularity  % 2 == 0, "Bit granularity must be a power of 2");
-    ASSERT(config->upload_bit_granularity % 2 == 0, "Bit granularity must be a power of 2");
+    assert(config->stage_bit_granularity  % 2 == 0 && "Bit granularity must be a power of 2");
+    assert(config->upload_bit_granularity % 2 == 0 && "Bit granularity must be a power of 2");
 
     if (config->stage_bit_granularity  % 2 != 0 ||
         config->upload_bit_granularity % 2 != 0)
@@ -1936,9 +1938,9 @@ Allocator_Result create_tex_allocator(Tex_Allocator_Config *config, Tex_Allocato
         return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
-    ASSERT(config->stage_cap  % config->stage_bit_granularity  == 0,
+    assert(config->stage_cap  % config->stage_bit_granularity  == 0 &&
           "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
-    ASSERT(config->upload_cap % config->upload_bit_granularity == 0,
+    assert(config->upload_cap % config->upload_bit_granularity == 0 &&
           "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
 
     if (config->stage_cap   % config->stage_bit_granularity  != 0 ||
@@ -1948,9 +1950,9 @@ Allocator_Result create_tex_allocator(Tex_Allocator_Config *config, Tex_Allocato
     }
 
     Gpu *gpu = get_gpu_instance();
-    ASSERT(config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0,
+    assert(config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 &&
           "Bit granularity must be aligned to the optimal buffer copy offset alignment");
-    ASSERT(config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0,
+    assert(config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 &&
           "Bit granularity must be aligned to the optimal buffer copy offset alignment");
 
     if (config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0 ||
@@ -2075,7 +2077,7 @@ void destroy_tex_allocator(Tex_Allocator *alloc) {
 // add an allocation to an allocator, as then an allocation can easily be built
 // up from the numerous accessors and buffer views described in the gltf buffer.
 Allocator_Result begin_allocation(Allocator *alloc) {
-    ASSERT(alloc->staging_queue_byte_count == Max_u64, "");
+    assert(alloc->staging_queue_byte_count == Max_u64);
     // Upon completing an allocation, '.to_stage_count' is set to Max_u32.
     if (alloc->staging_queue_byte_count != Max_u64)
         return ALLOCATOR_RESULT_QUEUE_IN_USE;
@@ -2356,7 +2358,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
         allocations[idx].stage_offset = stage_offset;
         stage_offset += align(allocations[idx].size, g);
 
-        ASSERT(stage_offset + allocations[idx].size <= alloc->stage_cap, "Allocator Stage Overflow");
+        assert(stage_offset + allocations[idx].size <= alloc->stage_cap && "Allocator Stage Overflow");
     }
     fclose(disk);
 
@@ -2369,7 +2371,7 @@ Allocator_Result staging_queue_submit(Allocator *alloc) {
     alloc->to_stage_count = Max_u32; // Indicate that it is safe to begin a new queue.
     return ALLOCATOR_RESULT_SUCCESS;
 }
-Allocator_Result upload_queue_begin(Allocator *alloc) { // @TODO CURRENT TASK!! Now read it all again, idiot.
+Allocator_Result upload_queue_begin(Allocator *alloc) {
     // .to_upload_count is set to max upon successful queue submission,
     // indicating that the queue is safe to use again.
     if (alloc->to_upload_count != Max_u32)
@@ -2689,7 +2691,7 @@ Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *k
         }
 
     // .allocations is not a dynamic array, so check capacity if this is a new allocation.
-    ASSERT(alloc->allocation_count < alloc->allocation_cap, "");
+    assert(alloc->allocation_count < alloc->allocation_cap);
     if (alloc->allocation_count >= alloc->allocation_cap)
         return ALLOCATOR_RESULT_ALLOCATOR_FULL;
 
@@ -2705,7 +2707,7 @@ Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *k
     u64 image_size = image.width * image.height * 4;
 
     // Ensure that the image can actually be staged.
-    ASSERT(image_size <= alloc->staging_queue_byte_cap, "Image too large for staging queue");
+    assert(image_size <= alloc->staging_queue_byte_cap && "Image too large for staging queue");
     if (image_size > alloc->stage_cap) {
         free_image(&image);
         return ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
@@ -2732,8 +2734,8 @@ Allocator_Result tex_add_texture(Tex_Allocator *alloc, String *file_name, u32 *k
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(device, vk_image, &req);
 
-    ASSERT((req.alignment & (alloc->upload_bit_granularity - 1)) == 0, "Bit Granularity must have sufficient alignment for any image");
-    ASSERT(req.size <= alloc->upload_queue_byte_cap, "Image too large for upload queue");
+    assert((req.alignment & (alloc->upload_bit_granularity - 1)) == 0 && "Bit Granularity must have sufficient alignment for any image");
+    assert(req.size <= alloc->upload_queue_byte_cap && "Image too large for upload queue");
 
     // Check that alignment requirements are satisfied. Allocations' offsets must be
     // aligned to their bit representation (see implementation details - grep '~MAID').
@@ -2951,7 +2953,7 @@ Allocator_Result tex_staging_queue_submit(Tex_Allocator *alloc) {
         image      = load_image(&allocations[idx].file_name);
         image_size = image.width * image.height * 4;
 
-        ASSERT(stage_offset + align(image_size, g) <= alloc->stage_cap, "Allocator Stage Overflow");
+        assert(stage_offset + align(image_size, g) <= alloc->stage_cap && "Allocator Stage Overflow");
         memcpy(stage_ptr + stage_offset, image.data, image_size);
 
         allocations[idx].stage_offset = stage_offset;
@@ -3425,7 +3427,7 @@ u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
         return hash;
     }
 
-    ASSERT(alloc->count <= alloc->cap, "");
+    assert(alloc->count <= alloc->cap);
     if (alloc->count >= alloc->cap)
         return Max_u64;
 
@@ -3439,7 +3441,7 @@ VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
     // This is a little lame as a list traversal, but it should be pretty quick in reality.
     u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
 
-    ASSERT(h_idx != Max_u32, "Invalid Sampler Hash");
+    assert(h_idx != Max_u32 && "Invalid Sampler Hash");
     if (h_idx == Max_u32)
         return NULL;
 
@@ -3501,7 +3503,7 @@ Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
 
     Allocator vertex_allocator;
     Allocator_Result creation_result = create_allocator(&vertex_allocator_config, &vertex_allocator);
-    ASSERT(creation_result == ALLOCATOR_RESULT_SUCCESS, "");
+    assert(creation_result == ALLOCATOR_RESULT_SUCCESS);
 
     // Index allocator
     Allocator_Config index_allocator_config = {};
@@ -3524,7 +3526,7 @@ Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
 
     Allocator index_allocator;
     creation_result = create_allocator(&index_allocator_config, &index_allocator);
-    ASSERT(creation_result == ALLOCATOR_RESULT_SUCCESS, "");
+    assert(creation_result == ALLOCATOR_RESULT_SUCCESS);
 
     // Tex allocator
     Tex_Allocator_Config tex_allocator_config = {};
@@ -3547,7 +3549,7 @@ Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
 
     Tex_Allocator tex_allocator;
     creation_result = create_tex_allocator(&tex_allocator_config, &tex_allocator);
-    ASSERT(creation_result == ALLOCATOR_RESULT_SUCCESS, "");
+    assert(creation_result == ALLOCATOR_RESULT_SUCCESS);
     if (creation_result != ALLOCATOR_RESULT_SUCCESS) {
         println("Tex_Allocator creation result: %u", creation_result);
         return {};
@@ -3687,7 +3689,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
                 break;
             }
             default:
-                ASSERT(false, "Invalid Index Type");
+                assert(false && "Invalid Index Type");
             }
 
             if (gltf_prim->position != -1) {
@@ -3741,7 +3743,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     }
 
     // 2. Loop buffer views - load data
-    ASSERT(gltf_buffer_get_count(&gltf) == 1, "Too Many Buffers");
+    assert(gltf_buffer_get_count(&gltf) == 1 && "Too Many Buffers");
     Gltf_Buffer *gltf_buf = gltf.buffers;
 
     memcpy(uri_buffer, dir->str, dir->len);
@@ -3755,12 +3757,12 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
     // These should never fail. If they do, adjust memory layout.
     allocation_result = begin_allocation(&allocs->vertex);
-    ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
     if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
         return {};
 
     allocation_result = begin_allocation(&allocs->index);
-    ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
     if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
         return {};
 
@@ -3775,7 +3777,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             allocation_result = continue_allocation(&allocs->vertex, gltf_view->byte_length,
                                                     buf + gltf_view->byte_offset);
 
-            ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
             if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
                 return {};
 
@@ -3789,7 +3791,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             allocation_result = continue_allocation(&allocs->index, gltf_view->byte_length,
                                                     buf + gltf_view->byte_offset);
 
-            ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
             if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
                 return {};
 
@@ -3803,10 +3805,10 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             break;
         }
         case Data_Type::UNIFORM:
-            ASSERT(false, "No Uniform Data Allowed In Static Model");
+            assert(false && "No Uniform Data Allowed In Static Model");
             break;
         default:
-            ASSERT(false, "Invalid Buffer View Type");
+            assert(false && "Invalid Buffer View Type");
         }
 
         gltf_view = (Gltf_Buffer_View*)((u8*)gltf_view + gltf_view->stride);
@@ -3814,13 +3816,13 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
     // Submit index allocation
     allocation_result = submit_allocation(&allocs->index, &ret.index_allocation_key);
-    ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
     if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
         return {};
 
     // Submit vertex allocation
     allocation_result = submit_allocation(&allocs->vertex, &ret.vertex_allocation_key);
-    ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
     if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
         return {};
 
@@ -3920,7 +3922,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_base.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_base.allocation_key);
 
-            ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
             if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
@@ -3943,7 +3945,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_pbr.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_pbr.allocation_key);
 
-            ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
             if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
@@ -3966,7 +3968,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_norm.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_norm.allocation_key);
 
-            ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
             if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
@@ -3989,7 +3991,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_occlusion.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_occlusion.allocation_key);
 
-            ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
             if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
@@ -4012,7 +4014,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_emissive.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_emissive.allocation_key);
 
-            ASSERT(allocation_result == ALLOCATOR_RESULT_SUCCESS, "");
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
             if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
@@ -4139,7 +4141,7 @@ u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
                 return 64;
 
             default:
-                ASSERT(false, "Invalid Accessor Format");
+                assert(false && "Invalid Accessor Format");
                 return Max_u32;
         }
 }

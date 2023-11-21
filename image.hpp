@@ -4,7 +4,7 @@
 #include "typedef.h"
 #include "string.hpp"
 #include "stb_image.h"
-#include "print.hpp"
+#include "print.h"
 
 struct Image {
     u32 width;
