@@ -1,8 +1,6 @@
 #include "glfw.hpp"
 #include "camera.hpp"
 
-namespace glfw {
-
 static Glfw *s_Glfw;
 Glfw* get_glfw_instance() {
     return s_Glfw;
@@ -78,4 +76,3 @@ void poll_and_get_input(Glfw *glfw) {
     camera_move(get_camera_instance(), forward, right);
 }
 
-} // namespace Glfw

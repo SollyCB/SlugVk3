@@ -13,6 +13,9 @@
 
 #define ALLOCATOR_MEMORY_FOOTPRINT 0
 
+// Some arbitrarily large number for allocating temp storage for descriptor sets.
+static const u32 DESCRIPTOR_SET_COUNT = 128;
+
 #if DEBUG
 static VkDebugUtilsMessengerEXT s_debug_messenger;
 VkDebugUtilsMessengerEXT* get_debug_messenger_instance() { return &s_debug_messenger; }
@@ -986,8 +989,6 @@ Shader_Memory init_shaders() {
     ret.descriptor_sets        =       (VkDescriptorSet*) malloc_h(sizeof(VkDescriptorSet)       * ret.descriptor_set_cap,        8);
     ret.descriptor_set_layouts = (VkDescriptorSetLayout*) malloc_h(sizeof(VkDescriptorSetLayout) * ret.descriptor_set_cap, 8);
 
-    ret.shader_set_info_memory_block = (Shader_Set_Info*)malloc_h(sizeof(Shader_Set_Info) * ret.shader_set_info_memory_block_size, 8);
-
     u32 shader_count = g_shader_file_count; // global shader count
     const u32 *pcode;
     u64 size;
@@ -996,18 +997,27 @@ Shader_Memory init_shaders() {
     VkDevice device = gpu->device;
 
     u64 max_sets = gpu->info.props.limits.maxBoundDescriptorSets;
-    max_sets = max_sets > 128 ? 128 : max_sets; // Assume that if max sets is greater, so many would never be used in one shader.
+    max_sets = max_sets > DESCRIPTOR_SET_COUNT ? DESCRIPTOR_SET_COUNT : max_sets; // Assume that if max sets is greater, so many would never be used in one shader.
 
     Parsed_Spirv spirv;
     u32 j;
     u32 layout_set;
     u32 binding_count;
-    u32 set_infos_block_offset;
+    u32 set_array_index = 0;
     u32 descriptor_counts[11];
     memset(descriptor_counts, 0, sizeof(u32) * 11);
 
-    VkDescriptorSetLayoutBinding *bindings = (VkDescriptorSetLayoutBinding*)malloc_t(sizeof(VkDescriptorSetLayoutBinding) * 128, 8);
+    VkDescriptorSetLayoutBinding *bindings = (VkDescriptorSetLayoutBinding*)malloc_t(sizeof(VkDescriptorSetLayoutBinding) * DESCRIPTOR_SET_COUNT, 8);
     VkDescriptorSetLayoutCreateInfo descriptor_set_layout_create_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+
+    //
+    // @Todo @Test Check the values for the set indices into the descriptor set array in the shaders.
+    // Just have to make sure that they are always being set properly (I made an update while tired)
+    //
+
+    #if DEBUG
+    u32 *tmp_set_indices = (u32*)malloc_t(sizeof(u32) * max_sets, 8);
+    #endif
 
     VkResult check;
     bool allocate_set = false;
@@ -1021,7 +1031,6 @@ Shader_Memory init_shaders() {
        *pshader            = {};
         pshader->id        = (Shader_Id)i;
         pshader->stage     = spirv.stage;
-        pshader->set_infos = ret.shader_set_info_memory_block + set_infos_block_offset;
 
         layout_set    = spirv.bindings[0].set;
         binding_count = 0;
@@ -1030,7 +1039,8 @@ Shader_Memory init_shaders() {
         for(j = 0; j < spirv.binding_count; ++j) {
             allocate_set = true; // Indicate that when the loop exits, there was an active set being parsed.
 
-            assert(spirv.bindings[j].set >= layout_set && "sets should be in increasing order (sorted at the end of parse_spirv(..))");
+            assert(spirv.bindings[j].set == layout_set || spirv.bindings[j].set == layout_set + 1 &&
+                  "Sets must be in increasing sequential order (sorted at the end of parse_spirv(..))");
 
             // If the  set index changes, the parse of the old set is complete and the layout can be created.
             // @Note This works because sets are in order, see above assert.
@@ -1046,7 +1056,11 @@ Shader_Memory init_shaders() {
                            &ret.descriptor_set_layouts[ret.descriptor_set_count]);
                 DEBUG_OBJ_CREATION(vkCreateDescriptorSetLayout, check);
 
-                pshader->set_infos[pshader->set_count] = {ret.descriptor_set_count, layout_set};
+                #if DEBUG
+                tmp_set_indices[pshader->set_count] = layout_set;
+                #endif
+
+                pshader->set_index = set_array_index;
                 pshader->set_count++;
                 ret.descriptor_set_count++;
 
@@ -1079,7 +1093,12 @@ Shader_Memory init_shaders() {
                        &ret.descriptor_set_layouts[ret.descriptor_set_count]);
 
             DEBUG_OBJ_CREATION(vkCreateDescriptorSetLayout, check);
-            pshader->set_infos[pshader->set_count] = {ret.descriptor_set_count, layout_set};
+
+            #if DEBUG
+            tmp_set_indices[pshader->set_count] = layout_set;
+            #endif
+
+            pshader->set_index = set_array_index;
             pshader->set_count++;
             ret.descriptor_set_count++;
 
@@ -1088,7 +1107,12 @@ Shader_Memory init_shaders() {
                 return {};
         }
 
-        set_infos_block_offset += pshader->set_count;
+        #if DEBUG
+        pshader->layout_set_indices = (u32*)malloc_h(sizeof(u32) * pshader->set_count, 8);
+        memcpy(pshader->layout_set_indices, tmp_set_indices, sizeof(u32) * pshader->set_count);
+        #endif
+
+        set_array_index += pshader->set_count;
         ret.shader_count++;
 
         assert(ret.shader_count <= ret.shader_cap);
@@ -1143,11 +1167,15 @@ void shutdown_shaders(Shader_Memory *mem) {
     for(u32 i = 0; i < mem->descriptor_set_count; ++i)
         vkDestroyDescriptorSetLayout(device, mem->descriptor_set_layouts[i], ALLOCATION_CALLBACKS);
 
+    #if DEBUG
+    for(u32 i = 0; i < mem->shader_count; ++i)
+        free_h(mem->shaders[i].layout_set_indices);
+    #endif
+
     free_h(mem->shaders);
     free_h(mem->descriptor_pools);
     free_h(mem->descriptor_sets);
     free_h(mem->descriptor_set_layouts);
-    free_h(mem->shader_set_info_memory_block);
     *mem = {};
 }
 
@@ -4172,5 +4200,86 @@ void DestroyDebugUtilsMessengerEXT(
     auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
     if (func != nullptr)
         return func(instance, messenger, pAllocator);
+}
+#endif
+
+    /* Renderpass Framebuffer Pipeline */
+// Plan:
+//     Create multiple pipelines.
+//     Parse the info for all the pipelines to understand each subpass.
+//     Create the final renderpass and framebuffer according to the pipelines.
+//
+#if 1
+void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout) {
+    Gpu *gpu                   =  get_gpu_instance();
+    VkDevice device            =  gpu->device;
+    Shader_Memory *shader_info = &gpu->shader_memory;
+
+    // @Note Assumes that the number of descriptor sets that will be bound is less than DESCRIPTOR_SET_COUNT.
+    VkDescriptorSetLayout *set_layouts = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * DESCRIPTOR_SET_COUNT, 8);
+
+    layout->stages = (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * layout->stage_count, 8);
+    layout->sets   = (VkDescriptorSet*)malloc_t(sizeof(VkDescriptorSet) * DESCRIPTOR_SET_COUNT, 8);
+
+    layout->set_count   = 0;
+    layout->stage_count = 0;
+
+    //
+    // @Note I am pretty sure that the order of the set layouts in the pipeline layout does not need to be the
+    // same as their set numbers, that is only for bind order.
+    //
+
+    #if DEBUG
+    bool zero_index = false;
+    u32 last_set_index = 0;
+    #endif
+
+    Shader shader;
+    for(u32 i = 0; i < count; ++i) {
+        shader = shader_info->shaders[shader_indices[i]];
+
+        //
+        // @Note Shaders must be submitted to this function with increasing seqeuential set order. This means
+        // that they do not need to be sorted in order to be bound, but instead can just be memcpyd into the
+        // 'to bind' descriptor set array. This is perfectly reasonable: it would be very error prone to allow
+        // programming shaders without strict rules on set sequencing.
+        //
+        #if DEBUG
+        for(u32 j = 0; j < shader.set_count; ++j) {
+            if (zero_index == false) {
+                assert(shader.layout_set_indices[j] == 0);
+                zero_index = true;
+            }
+
+            assert(shader.layout_set_indices[j] == last_set_index     ||
+                   shader.layout_set_indices[j] == last_set_index + 1 &&
+                  "Shaders MUST appear with sequential set layout indices starting from 0");
+
+            last_set_index = shader.layout_set_indices[j];
+        }
+        #endif
+
+        layout->stages[i]        = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        layout->stages[i].stage  = shader.stage;
+        layout->stages[i].module = shader.module;
+        layout->stages[i].pName  = "main";
+
+        memcpy(layout->sets + layout->set_count, shader_info->descriptor_sets + shader.set_index, sizeof(VkDescriptorSet) * shader.set_count);
+        memcpy(set_layouts  + layout->set_count, shader_info->descriptor_set_layouts + shader.set_index, sizeof(VkDescriptorSetLayout) * shader.set_count);
+        layout->set_count   += shader.set_count;
+    }
+    
+    // @Todo Push Constants
+    VkPipelineLayoutCreateInfo layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_info.setLayoutCount = layout->set_count;
+    layout_info.pSetLayouts    = set_layouts;
+
+    auto check = vkCreatePipelineLayout(device, &layout_info, ALLOCATION_CALLBACKS, &layout->pl_layout);
+    DEBUG_OBJ_CREATION(vkCreatePipelineLayout, check);
+
+    if (check != VK_SUCCESS) {
+        *layout = {};
+        return;
+    }
 }
 #endif

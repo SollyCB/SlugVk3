@@ -79,21 +79,23 @@ struct Gpu_Memory {
 
     Memory_Flags flags;
 };
+//
 // @Todo Move descriptor pool memory to be managed like model allocators. Right now every shader just
 // has all its descriptors allocated individually, when really probably many can be reused. But this
 // really wont be a problem for a looong time, if ever (idk how much memory descriptor sets use, but
 // I really cant imagine it is much compared to textures or vertex data).
-struct Shader_Set_Info {
-    u32 array_index; // index into the Shader_Memory descriptor set array
-    u32 layout_set; // set index inside glsl
-};
+//
 struct Shader {
     Shader_Id id;
+    u32 set_index;
     u32 set_count;
 
-    Shader_Set_Info      *set_infos;
     VkShaderModule        module;
     VkShaderStageFlagBits stage;
+
+    #if DEBUG
+    u32 *layout_set_indices;
+    #endif
 };
 struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with something better.
     u32 shader_cap            = 128;
@@ -108,10 +110,6 @@ struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with some
     VkDescriptorPool      *descriptor_pools;
     VkDescriptorSet       *descriptor_sets;
     VkDescriptorSetLayout *descriptor_set_layouts;
-
-    // Each shader can reference max 8 descriptor sets (8 bind_indices, 8 set indices)
-    u32  shader_set_info_memory_block_size = 128 * 16;
-    Shader_Set_Info *shader_set_info_memory_block;
 };
 struct Gpu_Info {
     VkPhysicalDeviceProperties props;
@@ -595,6 +593,17 @@ void shutdown_allocators(Model_Allocators *allocs);
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
 void free_static_model(Static_Model *model);
 
+
+    /* Renderpass Framebuffer Pipeline */
+
+struct Pl_Layout {
+    u32 stage_count;
+    u32 set_count;
+    VkDescriptorSet *sets; // These are in bind order
+    VkPipelineShaderStageCreateInfo *stages;
+    VkPipelineLayout pl_layout;
+};
+void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout);
 
 #if DEBUG
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
