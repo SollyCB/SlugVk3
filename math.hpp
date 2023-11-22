@@ -174,7 +174,7 @@ inline static Mat4 mul_mat4(Mat4 a, Mat4 b)
     f = _mm_load_ps(d);
     e = _mm_mul_ps(e, f);
     tmp = (float*)&e;
-    ret.row0.z = tmp[0] + tmp[1] + tmp[2], tmp[3];
+    ret.row0.z = tmp[0] + tmp[1] + tmp[2] + tmp[3];
 
     c[0] = a.row0.x;
     c[1] = a.row0.y;
@@ -391,16 +391,16 @@ inline static Mat4 mul_mat4(Mat4 a, Mat4 b)
 }
 inline static Mat4 look_at(Vec3 *right, Vec3 *up, Vec3 *dir, Vec3 *pos) {
     Mat4 mat = {
-        right->x, right->y, right->z, 0,
-        up->x   , up->y   , up->z   , 0,
-        dir->x  , dir->y  , dir->z  , 0,
-        0       , 0       , 0       , 1,
+        {right->x, right->y, right->z, 0,},
+        {up->x   , up->y   , up->z   , 0,},
+        {dir->x  , dir->y  , dir->z  , 0,},
+        {0       , 0       , 0       , 1,},
     };
     Mat4 trans = {
-        0, 0, 0, -pos->x,
-        0, 0, 0, -pos->y,
-        0, 0, 0, -pos->z,
-        0, 0, 0, 1,
+        {0, 0, 0, -pos->x,},
+        {0, 0, 0, -pos->y,},
+        {0, 0, 0, -pos->z,},
+        {0, 0, 0, 1,},
     };
 
     return mul_mat4(mat, trans);

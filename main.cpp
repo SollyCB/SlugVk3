@@ -19,67 +19,69 @@ int main() {
     run_tests();
 #endif
 
-    glfw::init_glfw();
-    glfw::Glfw *glfw = glfw::get_glfw_instance();
+    init_glfw();
+    Glfw *glfw = get_glfw_instance();
 
-    gpu::init_gpu();
-    gpu::Gpu *gpu = gpu::get_gpu_instance();
+    init_gpu();
+    Gpu *gpu = get_gpu_instance();
 
-    gpu::init_window(gpu, glfw);
-    gpu::Window *window = gpu::get_window_instance();
+    init_window(gpu, glfw);
+    Window *window = get_window_instance();
 
     zero_temp();
 
-    gpu->shader_memory = gpu::init_shaders();
+    gpu->shader_memory = init_shaders();
 
     // Load Models
     u32 model_count = 2;
-    String model_dirs[model_count] = {
+    String model_dirs[] = {
         cstr_to_string("models/cube-static/"),
         cstr_to_string("models/cesium-man/"),
     };
-    String model_files[model_count] = {
+    String model_files[] = {
         cstr_to_string("Cube.gltf"),
         cstr_to_string("CesiumMan.gltf"),
     };
-    String model_names[model_count] = {
+    String model_names[] = {
         cstr_to_string("static_cube"), // These should be turned into enum values.
         cstr_to_string("cesium_man"),
     };
 
-    gpu::Model_Allocators_Config model_allocators_config = {}; // @Unused
-    gpu::Model_Allocators model_allocators = gpu::init_model_allocators(&model_allocators_config);
-    gpu::Static_Model models[model_count];
+    Model_Allocators_Config model_allocators_config = {}; // @Unused
+    Model_Allocators model_allocators = init_model_allocators(&model_allocators_config);
+
+    Static_Model *models = (Static_Model*)malloc_h(sizeof(Static_Model) * model_count, 8);
     for(u32 i = 0; i < model_count; ++i) {
-        models[i] = gpu::load_static_model(&model_allocators, &model_files[i], &model_dirs[i]);
+        models[i] = load_static_model(&model_allocators, &model_files[i], &model_dirs[i]);
     }
 
-    gpu::Allocator_Result res;
-    res = gpu::staging_queue_begin(&model_allocators.vertex);
-    assert(res == gpu::ALLOCATOR_RESULT_SUCCESS);
+    Gpu_Allocator_Result res;
+    res = staging_queue_begin(&model_allocators.vertex);
+    assert(res == ALLOCATOR_RESULT_SUCCESS);
 
     u32 vertex_key = model_allocators.vertex.allocation_indices[models[1].vertex_allocation_key];
-    gpu::Allocator *alloc = &model_allocators.vertex;
+    Gpu_Allocator *alloc = &model_allocators.vertex;
 
-    res = gpu::staging_queue_add(&model_allocators.vertex, vertex_key);
-    assert(res == gpu::ALLOCATOR_RESULT_SUCCESS);
+    res = staging_queue_add(&model_allocators.vertex, vertex_key);
+    assert(res == ALLOCATOR_RESULT_SUCCESS);
 
-    res = gpu::staging_queue_submit(&model_allocators.vertex);
-    assert(res == gpu::ALLOCATOR_RESULT_SUCCESS);
+    res = staging_queue_submit(&model_allocators.vertex);
+    assert(res == ALLOCATOR_RESULT_SUCCESS);
 
     while(!glfwWindowShouldClose(glfw->window)) {
-        glfw::poll_and_get_input(glfw);
+        poll_and_get_input(glfw);
     }
 
     for(u32 i = 0; i < model_count; ++i) {
         free_static_model(&models[i]);
     }
+    free_h(models);
 
-    gpu::shutdown_allocators(&model_allocators);
-    gpu::shutdown_shaders(&gpu->shader_memory);
-    gpu::kill_window(gpu, window);
-    gpu::kill_gpu(gpu);
-    glfw::kill_glfw(glfw);
+    shutdown_allocators(&model_allocators);
+    shutdown_shaders(&gpu->shader_memory);
+    kill_window(gpu, window);
+    kill_gpu(gpu);
+    kill_glfw(glfw);
 
     kill_allocators();
     return 0;

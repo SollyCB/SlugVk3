@@ -6,8 +6,6 @@
 
 #include "basic.h"
 
-namespace glfw {
-
 struct Glfw {
     GLFWwindow *window;
     u32 width;
@@ -30,5 +28,4 @@ inline void poll_glfw() {
     glfwPollEvents();
 }
 
-} // namespace Glfw
 #endif // include guard

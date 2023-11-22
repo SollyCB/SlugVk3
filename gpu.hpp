@@ -19,8 +19,6 @@
 #include "string.hpp"
 #include "shader.hpp" // include g_shader_file_names global array
 
-namespace gpu {
-
 struct Settings {
     VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
     u32 mip_levels                     = 1;
@@ -173,10 +171,10 @@ struct Window {
 };
 Window* get_window_instance();
 
-void init_window(Gpu *gpu, glfw::Glfw *glfw);
+void init_window(Gpu *gpu, Glfw *glfw);
 void kill_window(Gpu *gpu, Window *window);
 
-VkSurfaceKHR create_surface(VkInstance vk_instance, glfw::Glfw *glfw);
+VkSurfaceKHR create_surface(VkInstance vk_instance, Glfw *glfw);
 void destroy_surface(VkInstance vk_instance, VkSurfaceKHR vk_surface);
 
 // @Note this function does a lot to initialize window members, because I consider
@@ -253,7 +251,7 @@ void shutdown_shaders(Shader_Memory *mem);
           this is a device upload. Binds images to memory if this is a tex queue submission.
 */
 
-enum Allocator_Result {
+enum Gpu_Allocator_Result {
     ALLOCATOR_RESULT_SUCCESS                    = 0,
     ALLOCATOR_RESULT_QUEUE_IN_USE               = 1,
     ALLOCATOR_RESULT_QUEUE_FULL                 = 2,
@@ -264,29 +262,29 @@ enum Allocator_Result {
     ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY = 7,
     ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE       = 8,
 };
-enum Allocation_State_Flag_Bits {
+enum Gpu_Allocation_State_Flag_Bits {
     ALLOCATION_STATE_TO_DRAW_BIT   = 0x01,
     ALLOCATION_STATE_STAGED_BIT    = 0x02,
     ALLOCATION_STATE_UPLOADED_BIT  = 0x04,
     ALLOCATION_STATE_TO_STAGE_BIT  = 0x08,
     ALLOCATION_STATE_TO_UPLOAD_BIT = 0x10,
 };
-typedef u8 Allocation_State_Flags;
+typedef u8 Gpu_Allocation_State_Flags;
 
-struct Allocation {
+struct Gpu_Allocation {
     u64 size;
     u64 upload_offset;
     u64 stage_offset;
     u64 disk_offset;
 };
-struct Allocator {
+struct Gpu_Allocator {
     u32  allocation_cap;
     u32  allocation_count;
     u32 *allocation_indices; // @Note These can probably be u16, allowing for faster simd.
     u8  *allocation_weights;
 
-    Allocation             *allocations;
-    Allocation_State_Flags *allocation_states;
+    Gpu_Allocation             *allocations;
+    Gpu_Allocation_State_Flags *allocation_states;
 
     u32  stage_bit_granularity;
     u32  upload_bit_granularity;
@@ -323,7 +321,7 @@ struct Allocator {
     VkCommandBuffer graphics_cmd;
     VkCommandBuffer transfer_cmd;
 };
-struct Allocator_Config {
+struct Gpu_Allocator_Config {
     u32 allocation_cap;
     u32 to_stage_cap;
     u32 to_upload_cap;
@@ -339,22 +337,22 @@ struct Allocator_Config {
     VkBuffer upload;
     String   disk_storage;
 };
-Allocator create_allocator (Allocator_Config *info);
-void      destroy_allocator(Allocator *alloc);
+Gpu_Allocator create_allocator (Gpu_Allocator_Config *info);
+void      destroy_allocator(Gpu_Allocator *alloc);
 
-Allocator_Result begin_allocation    (Allocator *alloc);
-Allocator_Result continue_allocation (Allocator *alloc,  u64 size, void *ptr, u64 *ret_offset);
-Allocator_Result submit_allocation   (Allocator *alloc,  u32 *key);
+Gpu_Allocator_Result begin_allocation    (Gpu_Allocator *alloc);
+Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc,  u64 size, void *ptr, u64 *ret_offset);
+Gpu_Allocator_Result submit_allocation   (Gpu_Allocator *alloc,  u32 *key);
 
-Allocator_Result staging_queue_begin (Allocator *alloc);
-Allocator_Result staging_queue_add   (Allocator *alloc, u32 key);
-Allocator_Result staging_queue_submit(Allocator *alloc);
+Gpu_Allocator_Result staging_queue_begin (Gpu_Allocator *alloc);
+Gpu_Allocator_Result staging_queue_add   (Gpu_Allocator *alloc, u32 key);
+Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc);
 
-Allocator_Result upload_queue_begin  (Allocator *alloc);
-Allocator_Result upload_queue_add    (Allocator *alloc,  u32 key);
-Allocator_Result upload_queue_submit (Allocator *alloc);
+Gpu_Allocator_Result upload_queue_begin  (Gpu_Allocator *alloc);
+Gpu_Allocator_Result upload_queue_add    (Gpu_Allocator *alloc,  u32 key);
+Gpu_Allocator_Result upload_queue_submit (Gpu_Allocator *alloc);
 
-struct Tex_Allocation { // @Note I would like struct to be smaller. Cannot see a good shrink rn...
+struct Gpu_Tex_Allocation { // @Note I would like struct to be smaller. Cannot see a good shrink rn...
     u64 stage_offset;
     u64 upload_offset;
     u64 size; // aligned to bit granularity (no reason to keep it as it is)
@@ -363,14 +361,14 @@ struct Tex_Allocation { // @Note I would like struct to be smaller. Cannot see a
     VkImage image;
     String file_name;
 };
-struct Tex_Allocator {
+struct Gpu_Tex_Allocator {
     u32  allocation_cap;
     u32  allocation_count;
     u32 *allocation_indices;
     u8  *allocation_weights;
 
-    Tex_Allocation         *allocations;
-    Allocation_State_Flags *allocation_states;
+    Gpu_Tex_Allocation         *allocations;
+    Gpu_Allocation_State_Flags *allocation_states;
 
     u32  stage_bit_granularity;
     u32  upload_bit_granularity;
@@ -406,7 +404,7 @@ struct Tex_Allocator {
     VkCommandBuffer graphics_cmd;
     VkCommandBuffer transfer_cmd;
 };
-struct Tex_Allocator_Config {
+struct Gpu_Tex_Allocator_Config {
     u32 allocation_cap;
     u32 to_stage_cap;
     u32 to_upload_cap;
@@ -423,18 +421,18 @@ struct Tex_Allocator_Config {
     VkBuffer       stage;
     VkDeviceMemory upload;
 };
-Tex_Allocator create_tex_allocator (Tex_Allocator_Config *config);
-void          destroy_tex_allocator(Tex_Allocator *alloc);
+Gpu_Tex_Allocator create_tex_allocator (Gpu_Tex_Allocator_Config *config);
+void          destroy_tex_allocator(Gpu_Tex_Allocator *alloc);
 
-Allocator_Result tex_add_texture         (Allocator *alloc, String *file_name);
+Gpu_Allocator_Result tex_add_texture         (Gpu_Allocator *alloc, String *file_name);
 
-Allocator_Result tex_staging_queue_begin (Allocator *alloc);
-Allocator_Result tex_staging_queue_add   (Allocator *alloc, u32 key);
-Allocator_Result tex_staging_queue_submit(Allocator *alloc);
+Gpu_Allocator_Result tex_staging_queue_begin (Gpu_Allocator *alloc);
+Gpu_Allocator_Result tex_staging_queue_add   (Gpu_Allocator *alloc, u32 key);
+Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Allocator *alloc);
 
-Allocator_Result tex_upload_queue_begin  (Allocator *alloc);
-Allocator_Result tex_upload_queue_add    (Allocator *alloc, u32 key);
-Allocator_Result tex_upload_queue_submit (Allocator *alloc);
+Gpu_Allocator_Result tex_upload_queue_begin  (Gpu_Allocator *alloc);
+Gpu_Allocator_Result tex_upload_queue_add    (Gpu_Allocator *alloc, u32 key);
+Gpu_Allocator_Result tex_upload_queue_submit (Gpu_Allocator *alloc);
 
 struct Sampler { // This is potentially a bad name
     VkSamplerAddressMode wrap_s;
@@ -585,9 +583,9 @@ struct Static_Model {
     Texture *textures;
 };
 struct Model_Allocators {
-    Allocator index;
-    Allocator vertex;
-    Tex_Allocator tex;
+    Gpu_Allocator index;
+    Gpu_Allocator vertex;
+    Gpu_Tex_Allocator tex;
     Sampler_Allocator sampler;
 };
 struct Model_Allocators_Config {}; // @Unused
@@ -597,8 +595,6 @@ void shutdown_allocators(Model_Allocators *allocs);
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
 void free_static_model(Static_Model *model);
 
-// Pipeline
-VkPipelineShaderStageCreateInfo* create_pl_shaders(u32 count, Shader *shaders);
 
 #if DEBUG
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
@@ -656,5 +652,4 @@ inline VkDebugUtilsMessengerCreateInfoEXT fill_vk_debug_messenger_info(Create_De
 
 #endif // DEBUG (debug messenger setup)
 
-} // namespace gpu
 #endif // include guard

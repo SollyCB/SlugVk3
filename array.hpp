@@ -88,7 +88,7 @@ inline T* append_to_dyn_array(Dyn_Array<T> *array) {
 template<typename T>
 inline T* pop_last_dyn_array(Dyn_Array<T> *array) {
     array->len--;
-    return &array.data[array->len];
+    return &array->data[array->len];
 }
 
 template<typename T>
