@@ -3659,11 +3659,11 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     ret.mats   = (Material*)malloc_h(sizeof(Material) * mat_count, 8);
 
     ret.meshes[0].primitives = (Primitive*)malloc_h(sizeof(Primitive) * prim_count, 8);
-    ret.meshes[0].pl_infos   = (Pl_Prim_Info*)malloc_h(sizeof(Pl_Prim_Info) * prim_count, 8);
+    ret.meshes[0].pl_infos   = (Pl_Primitive_Info*)malloc_h(sizeof(Pl_Primitive_Info) * prim_count, 8);
 
     // Allow summing offset
     memset(ret.meshes[0].primitives, 0, sizeof(Primitive) * prim_count);
-    memset(ret.meshes[0].pl_infos, 0, sizeof(Pl_Prim_Info) * prim_count);
+    memset(ret.meshes[0].pl_infos, 0, sizeof(Pl_Primitive_Info) * prim_count);
 
     /*
         // @Todo properly document this function...
@@ -3678,7 +3678,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     u32 *view_indices = (u32*)malloc_t(sizeof(u32) * accessor_count, 8); // no more deref accessors
 
     Primitive *prim;
-    Pl_Prim_Info *pl_info;
+    Pl_Primitive_Info *pl_info;
 
     // 1. Loop primitives - mark data
     gltf_mesh = gltf.meshes;
@@ -3694,6 +3694,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
             prim    = &ret.meshes[i].primitives[j];
             pl_info = &ret.meshes[i].pl_infos[j];
+
+            pl_info->topology = (VkPrimitiveTopology)gltf_prim->topology;
 
             // Set Index
             accessor = gltf_accessor_by_index(&gltf, gltf_prim->indices);
@@ -3723,10 +3725,10 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             if (gltf_prim->position != -1) {
                 accessor = gltf_accessor_by_index(&gltf, gltf_prim->position);
 
-                prim->offset_pos = accessor->byte_offset;
+                prim->offset_position = accessor->byte_offset;
 
-                pl_info->strides[0] = get_accessor_byte_stride(accessor->format);
-                pl_info->formats[0] = (VkFormat)accessor->format;
+                pl_info->stride_position = get_accessor_byte_stride(accessor->format);
+                pl_info->fmt_position    = (VkFormat)accessor->format;
 
                 view_indices[gltf_prim->position] = accessor->buffer_view;
                 views[accessor->buffer_view].type = Data_Type::VERTEX;
@@ -3734,10 +3736,10 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             if (gltf_prim->normal != -1) {
                 accessor = gltf_accessor_by_index(&gltf, gltf_prim->normal);
 
-                prim->offset_norm = accessor->byte_offset;
+                prim->offset_normal = accessor->byte_offset;
 
-                pl_info->strides[1] = get_accessor_byte_stride(accessor->format);
-                pl_info->formats[1] = (VkFormat)accessor->format;
+                pl_info->stride_normal = get_accessor_byte_stride(accessor->format);
+                pl_info->fmt_normal    = (VkFormat)accessor->format;
 
                 view_indices[gltf_prim->normal]   = accessor->buffer_view;
                 views[accessor->buffer_view].type = Data_Type::VERTEX;
@@ -3745,10 +3747,10 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             if (gltf_prim->tangent != -1) {
                 accessor = gltf_accessor_by_index(&gltf, gltf_prim->tangent);
 
-                prim->offset_tang = accessor->byte_offset;
+                prim->offset_tangent = accessor->byte_offset;
 
-                pl_info->strides[2] = get_accessor_byte_stride(accessor->format);
-                pl_info->formats[2] = (VkFormat)accessor->format;
+                pl_info->stride_tangent = get_accessor_byte_stride(accessor->format);
+                pl_info->fmt_tangent    = (VkFormat)accessor->format;
 
                 view_indices[gltf_prim->tangent]  = accessor->buffer_view;
                 views[accessor->buffer_view].type = Data_Type::VERTEX;
@@ -3756,10 +3758,10 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             if (gltf_prim->tex_coord_0 != -1) {
                 accessor = gltf_accessor_by_index(&gltf, gltf_prim->tex_coord_0);
 
-                prim->offset_tex = accessor->byte_offset;
+                prim->offset_tex_coords = accessor->byte_offset;
 
-                pl_info->strides[3] = get_accessor_byte_stride(accessor->format);
-                pl_info->formats[3] = (VkFormat)accessor->format;
+                pl_info->stride_tex_coords = get_accessor_byte_stride(accessor->format);
+                pl_info->fmt_tex_coords    = (VkFormat)accessor->format;
 
                 view_indices[gltf_prim->tex_coord_0] = accessor->buffer_view;
                 views[accessor->buffer_view].type    = Data_Type::VERTEX;
@@ -3871,19 +3873,19 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
                 views[view_indices[gltf_prim->indices]].offset;
 
             if (gltf_prim->position != -1)
-                ret.meshes[i].primitives[j].offset_pos +=
+                ret.meshes[i].primitives[j].offset_position +=
                     views[view_indices[gltf_prim->position]].offset;
 
             if (gltf_prim->normal != -1)
-                ret.meshes[i].primitives[j].offset_norm +=
+                ret.meshes[i].primitives[j].offset_normal +=
                     views[view_indices[gltf_prim->normal]].offset;
 
             if (gltf_prim->tangent != -1)
-                ret.meshes[i].primitives[j].offset_tang +=
+                ret.meshes[i].primitives[j].offset_tangent +=
                     views[view_indices[gltf_prim->tangent]].offset;
 
             if (gltf_prim->tex_coord_0 != -1)
-                ret.meshes[i].primitives[j].offset_tex +=
+                ret.meshes[i].primitives[j].offset_tex_coords +=
                     views[view_indices[gltf_prim->tex_coord_0]].offset;
 
             gltf_prim = (Gltf_Mesh_Primitive*)((u8*)gltf_prim + gltf_prim->stride);

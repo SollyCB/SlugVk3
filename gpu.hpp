@@ -506,40 +506,45 @@ struct Primitive {
     VkIndexType index_type;
 
     u64 offset_index;
-    u64 offset_pos;
-    u64 offset_norm;
-    u64 offset_tang;
-    u64 offset_tex;
+    u64 offset_position;
+    u64 offset_normal;
+    u64 offset_tangent;
+    u64 offset_tex_coords;
 
     Material *material;
 };
 struct Skinned_Primitive {
-    Primitive prim;
+    Primitive primitive;
     u64 offset_joints;
     u64 offset_weights;
 };
-struct Pl_Prim_Info {
-// Not sure how important these things are: I am already assuming bindings and location etc,
-// so also assuming the format and the stride of the data is not a stretch...
-    u32 strides[4];
-    VkFormat formats[4];
+struct Pl_Primitive_Info {
+    VkPrimitiveTopology topology;
+    u32 stride_position;
+    u32 stride_normal;
+    u32 stride_tangent;
+    u32 stride_tex_coords;
+    VkFormat fmt_position;
+    VkFormat fmt_normal;
+    VkFormat fmt_tangent;
+    VkFormat fmt_tex_coords;
 };
 struct Pl_Prim_Info_Skinned {
-// Not sure how important these things are: I am already assuming bindings and location etc,
-// so also assuming the format and the stride of the data is not a stretch...
-    Pl_Prim_Info prim;
-    u32 strides[2];
-    VkFormat formats[2];
+    Pl_Primitive_Info prim;
+    u32 stride_joints;
+    u32 stride_weights;
+    VkFormat fmt_joints;
+    VkFormat fmt_weights;
 };
 struct Mesh {
     u32 count;
     Primitive *primitives;
-    Pl_Prim_Info *pl_infos;
+    Pl_Primitive_Info *pl_infos;
 };
 struct Skinned_Mesh {
     u32 count;
     Skinned_Primitive *primitives;
-    Pl_Prim_Info *pl_infos;
+    Pl_Primitive_Info *pl_infos;
 };
 struct Node {
 union {
@@ -589,12 +594,13 @@ struct Model_Allocators {
     Gpu_Tex_Allocator tex;
     Sampler_Allocator sampler;
 };
-struct Model_Allocators_Config {}; // @Unused
+struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary defaults atm.
+
 Model_Allocators init_model_allocators(Model_Allocators_Config *config);
-void shutdown_allocators(Model_Allocators *allocs);
+void             shutdown_allocators  (Model_Allocators *allocs);
 
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
-void free_static_model(Static_Model *model);
+void         free_static_model(Static_Model *model);
 
 
     /* Renderpass Framebuffer Pipeline */
