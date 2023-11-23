@@ -4272,7 +4272,7 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout)
         memcpy(set_layouts  + layout->set_count, shader_info->descriptor_set_layouts + shader.set_index, sizeof(VkDescriptorSetLayout) * shader.set_count);
         layout->set_count   += shader.set_count;
     }
-    
+
     // @Todo Push Constants
     VkPipelineLayoutCreateInfo layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout_info.setLayoutCount = layout->set_count;
@@ -4285,5 +4285,121 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout)
         *layout = {};
         return;
     }
+}
+void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info) {
+    // @Todo Properly handle if a static model does not have one of these fields. Really in a production app where
+    // you can manage how the models are created, this would not need to be a worry.
+    assert(primitive->fmt_position && primitive->fmt_normal && primitive->fmt_tangent && primitive->fmt_tex_coords);
+
+    //
+    // @Note Binding is always zero. I use one large vertex buffer managed by an allocator.
+    //
+
+    VkVertexInputBindingDescription *bindings = (VkVertexInputBindingDescription*)malloc_t(sizeof(VkVertexInputBindingDescription) * 4, 8);
+    bindings[0].stride = primitive->stride_position;
+    bindings[1].stride = primitive->stride_normal;
+    bindings[2].stride = primitive->stride_tangent;
+    bindings[3].stride = primitive->stride_tex_coords;
+
+    VkVertexInputAttributeDescription *attrs = (VkVertexInputAttributeDescription*)malloc_t(sizeof(VkVertexInputAttributeDescription) * 4, 8);
+    attrs[0].location = 0;
+    attrs[1].location = 1;
+    attrs[2].location = 2;
+    attrs[3].location = 3;
+    attrs[0].format   = primitive->fmt_position;
+    attrs[1].format   = primitive->fmt_normal;
+    attrs[2].format   = primitive->fmt_tangent;
+    attrs[3].format   = primitive->fmt_tex_coords;
+
+    //
+    // C++ is so fucking lame... I can reassign the pointer, but cannot edit what is underneath. And cannot easily
+    // change the permissions in order to edit in place what is underneath! I have to create new variables, edit
+    // those, and then stick those in. If I can freely reassign the pointer, how tf is not being able to edit under
+    // the pointer adding safety. If anything is does the opposite, as it makes it seem like I can trust the data
+    // under the pointer when I cannot, because the pointer can point to anything. Marking stuff as read only is
+    // useful (obviously) but only when it does not get in the way by encouraging more complicated and error prone
+    // behaviour in order to get around it when you need to...
+    //
+   *ret_input_info = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    ret_input_info->vertexBindingDescriptionCount   = 4;
+    ret_input_info->pVertexBindingDescriptions      = bindings;
+    ret_input_info->vertexAttributeDescriptionCount = 4;
+    ret_input_info->pVertexAttributeDescriptions    = attrs;
+
+   *ret_assembly_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ret_assembly_info->topology = primitive->topology;
+}
+void pl_get_viewport_and_scissor(VkPipelineViewportStateCreateInfo *ret_info) {
+    Settings *settings = get_global_settings();
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    ret_info->viewportCount = 1;
+    ret_info->pViewports    = &settings->viewport;
+    ret_info->scissorCount  = 1;
+    ret_info->pScissors     = &settings->scissor;
+}
+void pl_get_rasterization(Pl_Rasterization_Args args, VkPipelineRasterizationStateCreateInfo *ret_info) {
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    ret_info->lineWidth = 1.0f;
+
+    //
+    // I very much dislike branching: it, memory access, and parallelism are by far the primary things mentioned
+    // in the intel optimisation manual. Sure this section is not super performance critical, but you will be
+    // compiling pipelines a lot, and it is lame to not take this basic, simple step.
+    // Plus this really is not anymore difficult to read than a ternary if a competent programmer (it is clear
+    // the right side of the '&' evaluates to zero or 0xff...), and trivial to test if you are worried about
+    // a mistake. Plus with the comments it is impossible to misunderstand (again if you are competent).
+    //
+
+    // If wire frame true: 1 &= 0b1111...; else 1 &= 0b0000...;
+    ret_info->polygonMode = (VkPolygonMode)((int)VK_POLYGON_MODE_LINE   & ~(Max_u32 + (int)args.wire_frame));
+
+    // If cull_mode true: 1 &= 0b1111...; else 1 &= 0b0000...;
+    ret_info->cullMode |= (VkCullModeFlags)((int)VK_CULL_MODE_FRONT_BIT & ~(Max_u32 + (int)args.cull_front));
+    ret_info->cullMode |= (VkCullModeFlags)((int)VK_CULL_MODE_BACK_BIT  & ~(Max_u32 + (int)args.cull_back ));
+}
+void pl_get_multisample(VkPipelineMultisampleStateCreateInfo *ret_info) {
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ret_info->rasterizationSamples = get_global_settings()->sample_count;
+}
+void pl_get_depth_stencil(Pl_Depth_Stencil_Args args, VkPipelineDepthStencilStateCreateInfo *ret_info) {
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+
+    ret_info->depthTestEnable   = args.depth_test_enable;
+    ret_info->depthWriteEnable  = args.depth_write_enable;
+    ret_info->depthCompareOp    = args.depth_compare_op;
+    ret_info->stencilTestEnable = args.stencil_test_enable;
+    ret_info->front             = args.stencil_op_front;
+    ret_info->back              = args.stencil_op_back;
+}
+void pl_attachment_get_no_blend(VkPipelineColorBlendAttachmentState *ret_blend_function) {
+    *ret_blend_function = {};
+
+    ret_blend_function->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+}
+void pl_attachment_get_alpha_blend(VkPipelineColorBlendAttachmentState *ret_blend_function) {
+    *ret_blend_function = {};
+
+    ret_blend_function->colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    ret_blend_function->blendEnable         = VK_TRUE;
+    ret_blend_function->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    ret_blend_function->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    ret_blend_function->colorBlendOp        = VK_BLEND_OP_ADD;
+    ret_blend_function->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    ret_blend_function->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    ret_blend_function->alphaBlendOp        = VK_BLEND_OP_ADD;
+}
+void pl_get_color_blend(u32 attachment_count, VkPipelineColorBlendAttachmentState *attachment_blend_states, VkPipelineColorBlendStateCreateInfo *ret_info) {
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    ret_info->attachmentCount = attachment_count;
+    ret_info->pAttachments    = attachment_blend_states;
+}
+void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info) {
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+
+    Settings *settings = get_global_settings();
+    ret_info->dynamicStateCount = settings->pl_dynamic_state_count;
+    ret_info->pDynamicStates    = settings->pl_dynamic_states;
 }
 #endif

@@ -21,10 +21,12 @@
 
 struct Settings {
     VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
-    u32 mip_levels                     = 1;
-    float anisotropy                   = 0;
-    VkViewport viewport                = {};
-    VkRect2D   scissor                 = {};
+    u32            mip_levels             = 1;
+    float          anisotropy             = 0;
+    VkViewport     viewport               = {};
+    VkRect2D       scissor                = {};
+    u32            pl_dynamic_state_count = 2;
+    VkDynamicState pl_dynamic_states[2]   = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
 };
 static Settings global_settings = {};
 inline static Settings* get_global_settings() { return &global_settings; }
@@ -613,6 +615,39 @@ struct Pl_Layout {
     VkPipelineLayout pl_layout;
 };
 void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout);
+void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info);
+void pl_get_viewport_and_scissor(VkPipelineViewportStateCreateInfo *ret_info);
+
+//
+// Ik the below two are not in keeping with every where else in passing func args, but create graphics pipelines
+// is a pretty unique setup so I am ok with it being different. This allows easily zeroing stuff, not creating
+// new local vars etc...
+//
+struct Pl_Rasterization_Args {
+    bool wire_frame;
+    bool cull_front;
+    bool cull_back;
+    bool clockwise_front_face;
+};
+void pl_get_rasterization(Pl_Rasterization_Args args, VkPipelineRasterizationStateCreateInfo *ret_info);
+void pl_get_multisample(VkPipelineMultisampleStateCreateInfo *ret_info);
+
+struct Pl_Depth_Stencil_Args {
+    bool depth_test_enable;
+    bool depth_write_enable;
+    bool stencil_test_enable;
+    VkCompareOp depth_compare_op;
+    VkStencilOpState stencil_op_front;
+    VkStencilOpState stencil_op_back;
+};
+void pl_get_depth_stencil(Pl_Depth_Stencil_Args args, VkPipelineDepthStencilStateCreateInfo *ret_info);
+
+// Blend functions -- I plan to add more for quickly filling out common blend options
+void pl_attachment_get_no_blend(VkPipelineColorBlendAttachmentState *ret_blend_function);
+void pl_attachment_get_alpha_blend(VkPipelineColorBlendAttachmentState *ret_blend_function);
+void pl_get_color_blend(u32 attachment_count, VkPipelineColorBlendAttachmentState *attachment_blend_states, VkPipelineColorBlendStateCreateInfo *ret_info);
+
+void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info);
 
 #if DEBUG
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
