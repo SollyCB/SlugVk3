@@ -418,6 +418,8 @@ VkSwapchainKHR recreate_swapchain(Gpu *gpu, Window *window) {
         DEBUG_OBJ_CREATION(vkCreateImageView, check);
     }
 
+    reset_viewport_and_scissor_to_window_extent();
+
     return window->swapchain;
 }
 

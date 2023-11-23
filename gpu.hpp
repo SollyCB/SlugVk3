@@ -23,6 +23,8 @@ struct Settings {
     VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
     u32 mip_levels                     = 1;
     float anisotropy                   = 0;
+    VkViewport viewport                = {};
+    VkRect2D   scissor                 = {};
 };
 static Settings global_settings = {};
 inline static Settings* get_global_settings() { return &global_settings; }
@@ -181,7 +183,7 @@ VkSwapchainKHR create_swapchain(Gpu *gpu, VkSurfaceKHR vk_surface);
 void destroy_swapchain(VkDevice vk_device, Window *window);
 VkSwapchainKHR recreate_swapchain(Gpu *gpu, Window *window);
 
-inline static VkViewport gpu_get_complete_screen_viewport() {
+inline static void reset_viewport_and_scissor_to_window_extent() {
     VkViewport viewport = {};
     viewport.x          = 0;
     viewport.y          = 0;
@@ -190,14 +192,15 @@ inline static VkViewport gpu_get_complete_screen_viewport() {
     viewport.height     = extent->height;
     viewport.minDepth   = 0.0;
     viewport.maxDepth   = 1.0;
-    return viewport;
-}
-inline static VkRect2D gpu_get_complete_screen_area() {
+
     VkRect2D rect = {
         .offset = {0, 0},
         .extent = get_window_instance()->info.imageExtent,
     };
-    return rect;
+
+    Settings *settings = get_global_settings();
+    settings->viewport = viewport;
+    settings->scissor  = rect;
 }
 
 // Memory -- struct declarations above gpu
