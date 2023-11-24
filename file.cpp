@@ -184,3 +184,20 @@ const u8* file_read_char_temp_padded(const char *file_name, u64 *size, int pad_s
 
     return (u8*)contents;
 }
+void file_write_bin(const char *file_name, u64 size, void *data) {
+    FILE *f = fopen(file_name, "wb");
+
+    if (!f) {
+        println("Failed to open file %s", file_name);
+        assert(false);
+        return;
+    }
+
+    u64 check = fwrite(data, 1, size, f);
+
+    if (check != size)
+        println("Failed to write entire file %s, wrote %u out of %u bytes", file_name, check, size);
+    
+    fclose(f);
+}
+
