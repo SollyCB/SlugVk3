@@ -26,6 +26,10 @@ Gpu* get_gpu_instance() { return &s_Gpu; }
 
 static VkFormat COLOR_ATTACHMENT_FORMAT;
 
+// @Todo Move the other gpu initialization functions out of the header and into static functions.
+static void gpu_create_image_views();
+static void gpu_destroy_image_views();
+
 void init_gpu() {
     // keep struct data together (not pointing to random heap addresses)
 
@@ -44,11 +48,14 @@ void init_gpu() {
     gpu->device = create_device(gpu);
 
     allocate_memory();
+    gpu_create_image_views();
 
     pl_load_cache();
 }
 void kill_gpu(Gpu *gpu) {
     pl_store_cache();
+
+    gpu_destroy_image_views();
 
     free_memory();
 
@@ -346,6 +353,29 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
     return device;
 } // func create_device()
 
+static void gpu_create_image_views() {
+    Gpu *gpu = get_gpu_instance();
+
+    VkImageViewCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    info.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+    info.format           = VK_FORMAT_D16_UNORM;
+    info.components       = {}; // zero == component identity swizzle
+    info.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT, .baseMipLevel = 0, .levelCount = 1, .baseArrayLayer = 0, .layerCount = 1};
+
+    VkResult check;
+    for(u32 i = 0; i < DEPTH_ATTACHMENT_COUNT; ++i) {
+        info.image = gpu->memory.depth_attachments[i];
+
+        check = vkCreateImageView(gpu->device, &info, ALLOCATION_CALLBACKS, &gpu->memory.depth_views[i]);
+        DEBUG_OBJ_CREATION(vkCreateImageView, check);
+    }
+}
+static void gpu_destroy_image_views() {
+    Gpu *gpu = get_gpu_instance();
+    for(u32 i = 0; i < DEPTH_ATTACHMENT_COUNT; ++i)
+        vkDestroyImageView(gpu->device, gpu->memory.depth_views[i], ALLOCATION_CALLBACKS);
+}
+
 // `Surface and `Swapchain
 static Window s_Window;
 Window* get_window_instance() { return &s_Window; }
@@ -382,7 +412,7 @@ VkSwapchainKHR recreate_swapchain(Gpu *gpu, Window *window) {
     VkSurfaceCapabilitiesKHR surface_capabilities;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu->phys_device, window->info.surface, &surface_capabilities);
 
-    window->info.imageExtent = surface_capabilities.currentExtent;
+    window->info.imageExtent  = surface_capabilities.currentExtent;
     window->info.preTransform = surface_capabilities.currentTransform;
 
     //
@@ -433,8 +463,8 @@ VkSwapchainKHR create_swapchain(Gpu *gpu, VkSurfaceKHR surface) {
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu->phys_device, surface, &surface_capabilities);
 
     VkSwapchainCreateInfoKHR swapchain_info = {};
-    swapchain_info.surface = surface;
-    swapchain_info.imageExtent = surface_capabilities.currentExtent;
+    swapchain_info.surface      = surface;
+    swapchain_info.imageExtent  = surface_capabilities.currentExtent;
     swapchain_info.preTransform = surface_capabilities.currentTransform;
 
     u32 format_count;
@@ -443,14 +473,16 @@ VkSwapchainKHR create_swapchain(Gpu *gpu, VkSurfaceKHR surface) {
     VkPresentModeKHR *present_modes;
 
     vkGetPhysicalDeviceSurfaceFormatsKHR(gpu->phys_device, swapchain_info.surface, &format_count, NULL);
+
     formats = (VkSurfaceFormatKHR*)malloc_t(sizeof(VkSurfaceFormatKHR) * format_count, 8);
     vkGetPhysicalDeviceSurfaceFormatsKHR(gpu->phys_device, swapchain_info.surface, &format_count, formats);
 
-    swapchain_info.imageFormat = formats[0].format;
-    COLOR_ATTACHMENT_FORMAT = swapchain_info.imageFormat;
+    swapchain_info.imageFormat     = formats[0].format;
+    COLOR_ATTACHMENT_FORMAT        = swapchain_info.imageFormat;
     swapchain_info.imageColorSpace = formats[0].colorSpace;
 
     vkGetPhysicalDeviceSurfacePresentModesKHR(gpu->phys_device, swapchain_info.surface, &present_mode_count, NULL);
+
     present_modes = (VkPresentModeKHR*)malloc_t(sizeof(VkPresentModeKHR) * present_mode_count, 8);
     vkGetPhysicalDeviceSurfacePresentModesKHR(gpu->phys_device, swapchain_info.surface, &present_mode_count, present_modes);
 
@@ -465,16 +497,16 @@ VkSwapchainKHR create_swapchain(Gpu *gpu, VkSurfaceKHR surface) {
 
     window->image_count = surface_capabilities.minImageCount < 2 ? 2 : surface_capabilities.minImageCount;
 
-    swapchain_info.minImageCount = window->image_count;
+    swapchain_info.minImageCount    = window->image_count;
     swapchain_info.imageArrayLayers = 1;
-    swapchain_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    swapchain_info.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     swapchain_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     swapchain_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    swapchain_info.clipped = VK_TRUE;
+    swapchain_info.clipped        = VK_TRUE;
 
     swapchain_info.queueFamilyIndexCount = 1;
-    swapchain_info.pQueueFamilyIndices = &gpu->present_queue_index;
+    swapchain_info.pQueueFamilyIndices   = &gpu->present_queue_index;
 
     VkSwapchainKHR swapchain;
     auto check = vkCreateSwapchainKHR(gpu->device, &swapchain_info, ALLOCATION_CALLBACKS, &swapchain);
@@ -484,12 +516,12 @@ VkSwapchainKHR create_swapchain(Gpu *gpu, VkSurfaceKHR surface) {
     u32 image_count = surface_capabilities.minImageCount < 2 ? 2 : surface_capabilities.minImageCount;
 
     // Is this better than just continuing to use s_Window? who cares...
-    window->swapchain = swapchain;
-    window->info = swapchain_info;
+    window->swapchain         = swapchain;
+    window->info              = swapchain_info;
     window->info.oldSwapchain = swapchain;
 
     window->images = (VkImage*)malloc_h(sizeof(VkImage) * window->image_count * 2, 8);
-    window->views = (VkImageView*)(window->images + window->image_count);
+    window->views  = (VkImageView*)(window->images + window->image_count);
 
     u32 image_count_check;
     vkGetSwapchainImagesKHR(gpu->device, window->swapchain, &image_count_check, NULL);
@@ -631,23 +663,25 @@ static void discrete_gpu_get_memory_type(
 void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
     VkResult check;
     VkMemoryRequirements mem_req;
-    VkMemoryDedicatedAllocateInfo dedicate_info = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+    VkMemoryDedicatedAllocateInfo dedicate_info   = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
     VkMemoryPriorityAllocateInfoEXT priority_info = {VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT};
 
     VkMemoryAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     allocate_info.pNext = &priority_info;
 
     VkImageCreateInfo attachment_info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    attachment_info.imageType = VK_IMAGE_TYPE_2D;
-    attachment_info.extent = {.width = 1920, .height = 1080, .depth = 1};
-    attachment_info.mipLevels = 1;
-    attachment_info.arrayLayers = 1;
-    attachment_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    attachment_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    attachment_info.imageType     = VK_IMAGE_TYPE_2D;
+    attachment_info.extent        = {.width = 1920, .height = 1080, .depth = 1};
+    attachment_info.mipLevels     = 1;
+    attachment_info.arrayLayers   = 1;
+    attachment_info.samples       = VK_SAMPLE_COUNT_1_BIT;
+    attachment_info.tiling        = VK_IMAGE_TILING_OPTIMAL;
     attachment_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
     for(u32 i = 0; i < COLOR_ATTACHMENT_COUNT; ++i) {
         attachment_info.format = VK_FORMAT_R8G8B8A8_SRGB;
-        attachment_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        attachment_info.usage  = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
         check = vkCreateImage(device, &attachment_info, ALLOCATION_CALLBACKS, &gpu->memory.color_attachments[i]);
         DEBUG_OBJ_CREATION(vkCreateImage, check);
 
@@ -656,9 +690,9 @@ void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
         dedicate_info.image = gpu->memory.color_attachments[i];
 
         priority_info.priority = 1.0;
-        priority_info.pNext = &dedicate_info;
+        priority_info.pNext    = &dedicate_info;
 
-        allocate_info.allocationSize = mem_req.size;
+        allocate_info.allocationSize  = mem_req.size;
         allocate_info.memoryTypeIndex = device_mem_type;
 
         check = vkAllocateMemory(device, &allocate_info, ALLOCATION_CALLBACKS, &gpu->memory.color_mem[i]);
@@ -668,7 +702,8 @@ void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
     }
     for(u32 i = 0; i < DEPTH_ATTACHMENT_COUNT; ++i) {
         attachment_info.format = VK_FORMAT_D16_UNORM;
-        attachment_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        attachment_info.usage  = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
         check = vkCreateImage(device, &attachment_info, ALLOCATION_CALLBACKS, &gpu->memory.depth_attachments[i]);
         DEBUG_OBJ_CREATION(vkCreateImage, check);
 
@@ -677,9 +712,9 @@ void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
         dedicate_info.image = gpu->memory.depth_attachments[i];
 
         priority_info.priority = 1.0;
-        priority_info.pNext = &dedicate_info;
+        priority_info.pNext    = &dedicate_info;
 
-        allocate_info.allocationSize = mem_req.size;
+        allocate_info.allocationSize  = mem_req.size;
         allocate_info.memoryTypeIndex = device_mem_type;
 
         check = vkAllocateMemory(device, &allocate_info, ALLOCATION_CALLBACKS, &gpu->memory.depth_mem[i]);
@@ -4368,12 +4403,16 @@ void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive, VkPip
     //
 
     VkVertexInputBindingDescription *bindings = (VkVertexInputBindingDescription*)malloc_t(sizeof(VkVertexInputBindingDescription) * 4, 8);
+    memset(bindings, 0, sizeof(VkVertexInputBindingDescription) * 4);
+
     bindings[0].stride = primitive->stride_position;
     bindings[1].stride = primitive->stride_normal;
     bindings[2].stride = primitive->stride_tangent;
     bindings[3].stride = primitive->stride_tex_coords;
 
     VkVertexInputAttributeDescription *attrs = (VkVertexInputAttributeDescription*)malloc_t(sizeof(VkVertexInputAttributeDescription) * 4, 8);
+    memset(attrs, 0, sizeof(VkVertexInputAttributeDescription) * 4);
+
     attrs[0].location = 0;
     attrs[1].location = 1;
     attrs[2].location = 2;
@@ -4397,6 +4436,29 @@ void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive, VkPip
     ret_input_info->pVertexBindingDescriptions      = bindings;
     ret_input_info->vertexAttributeDescriptionCount = 4;
     ret_input_info->pVertexAttributeDescriptions    = attrs;
+
+   *ret_assembly_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ret_assembly_info->topology = primitive->topology;
+}
+void pl_get_vertex_input_and_assembly_static_shadow(Pl_Primitive_Info *primitive, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info) {
+    assert(primitive->fmt_position);
+
+    //
+    // @Note Binding is always zero. I use one large vertex buffer managed by an allocator.
+    //
+
+    VkVertexInputBindingDescription binding = {};
+    binding.stride = primitive->stride_position;
+
+    VkVertexInputAttributeDescription attr = {};
+    attr.location = 0;
+    attr.format   = primitive->fmt_position;
+
+   *ret_input_info = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    ret_input_info->vertexBindingDescriptionCount   = 1;
+    ret_input_info->pVertexBindingDescriptions      = &binding;
+    ret_input_info->vertexAttributeDescriptionCount = 1;
+    ret_input_info->pVertexAttributeDescriptions    = &attr;
 
    *ret_assembly_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ret_assembly_info->topology = primitive->topology;
@@ -4477,7 +4539,7 @@ void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info) {
 
 // Begin Renderpass
 // Includes a shadow subpass
-void rp_forward_single_sample(Rp_Config *config, VkRenderPass *renderpass, VkFramebuffer *framebuffer) {
+void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFramebuffer *framebuffer) {
     VkAttachmentDescription depth_description = {};
     depth_description.format         = VK_FORMAT_D16_UNORM;
     depth_description.samples        = VK_SAMPLE_COUNT_1_BIT;
@@ -4598,7 +4660,104 @@ inline static void pl_loop_model_primitives(Static_Model *model, VkPipelineVerte
         }
     *count += idx;
 }
+inline static void pl_loop_model_primitives_shadow(Static_Model *model, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info, u32 *count) {
+    u32 idx = *count;
+    for(u32 i = 0; i < model->mesh_count; ++i)
+        for(u32 j = 0; j < model->meshes[i].count; ++j) {
+            pl_get_vertex_input_and_assembly_static_shadow(&model->meshes[i].pl_infos[j], &ret_input_info[idx], &ret_assembly_info[idx]);
+            idx++;
+        }
+    *count += idx;
+}
 
+//
+// @Todo @Note I should a 'pl_set_default()' or something like that to set all the things I will basically ever
+// want, and that can return a create info. And then I can call functions to just update the little things I want.
+// although to be fair that is basically what the below 'create_basic()' is doing...
+//
+
+// Alpha blend, single sample, basic shaders
+Pl_Final pl_create_basic(VkRenderPass renderpass, u32 count, Static_Model *models) {
+    u32 primitive_count = 0;
+    for(u32 i = 0; i < count; ++i)
+        primitive_count += pl_count_primitives(&models[i]);
+
+    //
+    // @Note I can now see the usefulness of a cache and pipeline libraries. A LOT of these pipelines are almost
+    // identical...
+    //
+
+    Pl_Final ret = {};
+    ret.count     = primitive_count;
+    ret.pipelines = (VkPipeline*)malloc_t(sizeof(VkPipeline) * primitive_count, 8);
+
+    u32 shaders[2] = {(u32)SHADER_ID_BASIC_VERT, (u32)SHADER_ID_BASIC_FRAG};
+    pl_get_stages_and_layout(2, shaders, &ret.layout);
+
+    VkPipelineVertexInputStateCreateInfo   *input_states    =   (VkPipelineVertexInputStateCreateInfo*)malloc_t(sizeof(VkPipelineVertexInputStateCreateInfo) * primitive_count, 8);
+    VkPipelineInputAssemblyStateCreateInfo *assembly_states = (VkPipelineInputAssemblyStateCreateInfo*)malloc_t(sizeof(VkPipelineInputAssemblyStateCreateInfo) * primitive_count, 8);
+
+    // Loop models, loop meshes, loop primitives.
+    u32 tmp = 0;
+    for(u32 i = 0; i < count; ++i)
+        pl_loop_model_primitives(&models[i], input_states + tmp, assembly_states + tmp, &tmp);
+
+    VkPipelineViewportStateCreateInfo viewport_state;
+    pl_get_viewport_and_scissor(&viewport_state);
+
+    VkPipelineRasterizationStateCreateInfo rasterization_state;
+    pl_get_rasterization({false, false, true, false}, &rasterization_state);
+
+    VkPipelineMultisampleStateCreateInfo multisample_state;
+    pl_get_multisample(&multisample_state);
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_state;
+    pl_get_depth_stencil({true, true, false, VK_COMPARE_OP_LESS}, &depth_stencil_state);
+
+    VkPipelineColorBlendAttachmentState blend_attachment;
+    pl_attachment_get_alpha_blend(&blend_attachment);
+    VkPipelineColorBlendStateCreateInfo blend_state;
+    pl_get_color_blend(1, &blend_attachment, &blend_state);
+
+    VkPipelineDynamicStateCreateInfo dyn_state;
+    pl_get_dynamic(&dyn_state);
+
+    //
+    // @Note I feel like here I can enable rasterizer discard?
+    //
+
+    VkGraphicsPipelineCreateInfo *pl_infos = (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * primitive_count, 8);
+       
+    for(u32 i = 0; i < primitive_count; ++i) {
+        pl_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pl_infos[i].stageCount          = 2;
+        pl_infos[i].pStages             = ret.layout.stages;
+        pl_infos[i].pViewportState      = &viewport_state;
+        pl_infos[i].pRasterizationState = &rasterization_state;
+        pl_infos[i].pMultisampleState   = &multisample_state;
+        pl_infos[i].pDepthStencilState  = &depth_stencil_state;
+        pl_infos[i].pColorBlendState    = &blend_state;
+        pl_infos[i].pDynamicState       = &dyn_state;
+        pl_infos[i].layout              = ret.layout.pl_layout;
+        pl_infos[i].renderPass          = renderpass;
+        pl_infos[i].subpass             = 0; // @Note Shadow pass must come first
+    }
+
+    Gpu *gpu                 = get_gpu_instance();
+    VkDevice device          = gpu->device;
+    VkPipelineCache pl_cache = gpu->pl_cache;
+
+    auto check = vkCreateGraphicsPipelines(
+                    device,
+                    pl_cache,
+                    primitive_count,
+                    pl_infos,
+                    ALLOCATION_CALLBACKS,
+                    ret.pipelines);
+    DEBUG_OBJ_CREATION(vkCreateGraphicsPipelines, check);
+
+    return ret;
+}
 Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *models) {
     u32 primitive_count = 0;
     for(u32 i = 0; i < count; ++i)
@@ -4622,13 +4781,13 @@ Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *mode
     // Loop models, loop meshes, loop primitives.
     u32 tmp = 0;
     for(u32 i = 0; i < count; ++i)
-        pl_loop_model_primitives(&models[i], input_states + tmp, assembly_states + tmp, &tmp);
+        pl_loop_model_primitives_shadow(&models[i], input_states + tmp, assembly_states + tmp, &tmp);
 
     VkPipelineViewportStateCreateInfo viewport_state;
     pl_get_viewport_and_scissor(&viewport_state);
 
     VkPipelineRasterizationStateCreateInfo rasterization_state;
-    pl_get_rasterization({false, false, true, false}, &rasterization_state);
+    pl_get_rasterization({false, true, false, false}, &rasterization_state);
 
     VkPipelineMultisampleStateCreateInfo multisample_state;
     pl_get_multisample(&multisample_state);
@@ -4675,6 +4834,23 @@ Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *mode
                     ALLOCATION_CALLBACKS,
                     ret.pipelines);
     DEBUG_OBJ_CREATION(vkCreateGraphicsPipelines, check);
+
+    return ret;
+}
+
+Draw_Final_Basic draw_create_basic(Draw_Final_Basic_Config *config) {
+    VkRenderPass renderpass;
+    VkFramebuffer framebuffer;
+    rp_forward_shadow_basic(&config->rp_config, &renderpass, &framebuffer);
+
+    Pl_Final pl_shadow = pl_create_shadow(renderpass, config->count, config->models);
+    Pl_Final pl_basic  = pl_create_basic(renderpass, config->count, config->models);
+
+    Draw_Final_Basic ret;
+    ret.pl_basic = pl_basic;
+    ret.pl_shadow = pl_shadow;
+    ret.renderpass = renderpass;
+    ret.framebuffer = framebuffer;
 
     return ret;
 }

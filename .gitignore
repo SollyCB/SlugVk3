@@ -4,6 +4,7 @@
 .cache/
 build/
 allocator-files/*
+pl-caches/*
 
 external/glfw-shared-linux/docs/
 external/glfw-shared-linux/examples/

@@ -68,14 +68,34 @@ int main() {
     res = staging_queue_submit(&model_allocators.vertex);
     assert(res == ALLOCATOR_RESULT_SUCCESS);
 
+    VkFence acquire_image_fence = create_fence(false);
+    u32 present_image_index;
+
     while(!glfwWindowShouldClose(glfw->window)) {
+        vkAcquireNextImageKHR(gpu->device, window->swapchain, 10e9, NULL, acquire_image_fence, &present_image_index); 
+
         poll_and_get_input(glfw);
+
+        wait_and_reset_fence(acquire_image_fence);
+
+        Draw_Final_Basic_Config draw_config;
+        draw_config.count  = 1;
+        draw_config.models = &models[0];
+
+        draw_config.rp_config.present = window->views[present_image_index];
+        draw_config.rp_config.depth   = gpu->memory.depth_views[0];
+        draw_config.rp_config.shadow  = gpu->memory.depth_views[1];
+
+        Draw_Final_Basic draw_basic = draw_create_basic(&draw_config);
+        draw_destroy_basic(&draw_basic);
     }
 
     for(u32 i = 0; i < model_count; ++i) {
         free_static_model(&models[i]);
     }
     free_h(models);
+
+    destroy_fence(acquire_image_fence);
 
     shutdown_allocators(&model_allocators);
     shutdown_shaders(&gpu->shader_memory);

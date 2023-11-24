@@ -31,7 +31,7 @@ struct Settings {
 static Settings global_settings = {};
 inline static Settings* get_global_settings() { return &global_settings; }
 
-static constexpr u32 DEPTH_ATTACHMENT_COUNT = 1;
+static constexpr u32 DEPTH_ATTACHMENT_COUNT = 2; // One true depth attachment, one shadow attachment
 static constexpr u32 COLOR_ATTACHMENT_COUNT = 1;
 static constexpr u32 VERTEX_STAGE_COUNT     = 1;
 static constexpr u32 INDEX_STAGE_COUNT      = 1;
@@ -58,6 +58,8 @@ struct Gpu_Memory {
     VkDeviceMemory color_mem            [COLOR_ATTACHMENT_COUNT];
     VkImage        depth_attachments    [DEPTH_ATTACHMENT_COUNT];
     VkImage        color_attachments    [COLOR_ATTACHMENT_COUNT];
+
+    VkImageView    depth_views          [DEPTH_ATTACHMENT_COUNT];
 
     VkDeviceMemory vertex_mem_stage     [VERTEX_STAGE_COUNT];
     VkDeviceMemory index_mem_stage      [INDEX_STAGE_COUNT];
@@ -666,15 +668,67 @@ struct Rp_Config { // Bad name, should be something like "_Attachments"
     VkImageView depth;
     VkImageView shadow;
 };
-void rp_forward_single_sample(Rp_Config *config, VkRenderPass *renderpass, VkFramebuffer *framebuffer);
+void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFramebuffer *framebuffer);
 
 // Final pipeline creation
 struct Pl_Final {
-    Pl_Layout layout;
     u32 count;
     VkPipeline *pipelines;
+    Pl_Layout layout;
 };
+Pl_Final pl_create_basic(VkRenderPass renderpass, u32 count, Static_Model *models);
 Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *models);
+
+inline static void pl_destroy_final(Pl_Final *pl) {
+    VkDevice device = get_gpu_instance()->device;
+    for(u32 i = 0; i < pl->count; ++i)
+        vkDestroyPipeline(device, pl->pipelines[i], ALLOCATION_CALLBACKS);
+}
+
+struct Draw_Final_Basic {
+    Pl_Final pl_basic;
+    Pl_Final pl_shadow;
+    VkRenderPass renderpass;
+    VkFramebuffer framebuffer;
+};
+struct Draw_Final_Basic_Config {
+    u32 count;
+    Static_Model *models;
+    Rp_Config rp_config;
+};
+Draw_Final_Basic draw_create_basic(Draw_Final_Basic_Config *config);
+
+inline static void draw_destroy_basic(Draw_Final_Basic *draw) {
+    pl_destroy_final(&draw->pl_basic);
+    pl_destroy_final(&draw->pl_shadow);
+
+    VkDevice device = get_gpu_instance()->device;
+    vkDestroyRenderPass(device, draw->renderpass, ALLOCATION_CALLBACKS);
+    vkDestroyFramebuffer(device, draw->framebuffer, ALLOCATION_CALLBACKS);
+}
+
+// Sync
+inline static VkFence create_fence(bool signalled) {
+    VkFenceCreateInfo info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    info.flags = (VkFenceCreateFlags)signalled;
+
+    VkFence fence;
+    auto check = vkCreateFence(get_gpu_instance()->device, &info, ALLOCATION_CALLBACKS, &fence);
+    return fence;
+}
+inline static void destroy_fence(VkFence fence) {
+    vkDestroyFence(get_gpu_instance()->device, fence, ALLOCATION_CALLBACKS);
+}
+inline static void reset_fence(VkFence fence) {
+    vkResetFences(get_gpu_instance()->device, 1, &fence);
+}
+inline static void wait_fence(VkFence fence) {
+    vkWaitForFences(get_gpu_instance()->device, 1, &fence, 1, 10e9);
+}
+inline static void wait_and_reset_fence(VkFence fence) {
+    wait_fence(fence);
+    reset_fence(fence);
+}
 
 #if DEBUG
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
