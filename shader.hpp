@@ -12,6 +12,8 @@ static const u32 g_shader_file_count = sizeof(g_shader_file_names) / sizeof(g_sh
 enum Shader_Id {
     SHADER_ID_BASIC_VERT,
     SHADER_ID_BASIC_FRAG,
+    SHADER_ID_SHADOW_VERT,
+    SHADER_ID_SHADOW_FRAG,
 };
 
 #endif

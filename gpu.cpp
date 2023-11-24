@@ -4401,13 +4401,8 @@ void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info) {
 }
 
 // Begin Renderpass
-struct Rp_Config { // Bad name, should be something like "_Attachments"
-    VkImageView present;
-    VkImageView depth;
-    VkImageView shadow;
-};
 // Includes a shadow subpass
-void rp_forward_single_sample(Rp_Config *config, VkRenderpass *renderpass, VkFramebuffer *framebuffer) {
+void rp_forward_single_sample(Rp_Config *config, VkRenderPass *renderpass, VkFramebuffer *framebuffer) {
     VkAttachmentDescription depth_description = {};
     depth_description.format         = VK_FORMAT_D16_UNORM;
     depth_description.samples        = VK_SAMPLE_COUNT_1_BIT;
@@ -4427,10 +4422,10 @@ void rp_forward_single_sample(Rp_Config *config, VkRenderpass *renderpass, VkFra
     depth_description.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     u32 attachment_count = 3;
-    VkAttachmentDescription &attachment_descriptions[3] = {};
-    attachment_descriptions[0] = &present_description;
-    attachment_descriptions[1] = &depth_description;
-    attachment_descriptions[2] = &depth_description;
+    VkAttachmentDescription attachment_descriptions[3] = {};
+    attachment_descriptions[0] = present_description;
+    attachment_descriptions[1] = depth_description;
+    attachment_descriptions[2] = depth_description;
 
     VkAttachmentReference present_reference = {.attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth_reference   = {.attachment = 1, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -4443,11 +4438,11 @@ void rp_forward_single_sample(Rp_Config *config, VkRenderpass *renderpass, VkFra
     subpass_descriptions[0].pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass_descriptions[0].pDepthStencilAttachment = &shadow_reference_0;
 
-    subpass_descriptions[1].inputAttachmentCount = 1;
-    subpass_descriptions[1].colorAttachmentCount = 1;
-    subpass_descriptions[1].pInputAttachments    = &shadow_reference_1;
-    subpass_descriptions[1].pColorAttachments    = &present_reference;
-    subpass_descriptions[1].pDepthAttachment     = &depth_reference;
+    subpass_descriptions[1].inputAttachmentCount    = 1;
+    subpass_descriptions[1].colorAttachmentCount    = 1;
+    subpass_descriptions[1].pInputAttachments       = &shadow_reference_1;
+    subpass_descriptions[1].pColorAttachments       = &present_reference;
+    subpass_descriptions[1].pDepthStencilAttachment = &depth_reference;
 
     u32 dependency_count = 3;
     VkSubpassDependency dependencies[3] = {};
@@ -4493,8 +4488,117 @@ void rp_forward_single_sample(Rp_Config *config, VkRenderpass *renderpass, VkFra
     rp_info.pDependencies   = dependencies;
 
     VkDevice device = get_gpu_instance()->device;
-    auto check = vkCreateRenderPass(device, &rp_info, allocation_callbacks, renderpass);
-    debug_ob
+    auto check = vkCreateRenderPass(device, &rp_info, ALLOCATION_CALLBACKS, renderpass);
+    DEBUG_OBJ_CREATION(vkCreateRenderPass, check);
+
+    VkImageView attachments[3] = {config->present, config->depth, config->shadow};
+
+    VkViewport viewport = get_global_settings()->viewport;
+
+    VkFramebufferCreateInfo fb_info = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fb_info.renderPass = *renderpass;
+    fb_info.attachmentCount = 3;
+    fb_info.pAttachments = attachments;
+    fb_info.width = viewport.width;
+    fb_info.height = viewport.height;
+    fb_info.layers = 1;
+
+    check = vkCreateFramebuffer(device, &fb_info, ALLOCATION_CALLBACKS, framebuffer);
+    DEBUG_OBJ_CREATION(vkCreateFramebuffer, check);
+}
+
+// Pipeline creation minor helpers
+inline static u32 pl_count_primitives(Static_Model *model) {
+    u32 primitive_count = 0;
+    for(u32 i = 0; i < model->mesh_count; ++i)
+        primitive_count += model->meshes[i].count;
+    return primitive_count;
+}
+inline static void pl_loop_model_primitives(Static_Model *model, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info, u32 *count) {
+    u32 idx = *count;
+    for(u32 i = 0; i < model->mesh_count; ++i)
+        for(u32 j = 0; j < model->meshes[i].count; ++j) {
+            pl_get_vertex_input_and_assembly_static(&model->meshes[i].pl_infos[j], &ret_input_info[idx], &ret_assembly_info[idx]);
+            idx++;
+        }
+    *count += idx;
+}
+
+Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *models) {
+    u32 primitive_count = 0;
+    for(u32 i = 0; i < count; ++i)
+        primitive_count += pl_count_primitives(&models[i]);
+
+    //
+    // @Note I can now see the usefulness of a cache and pipeline libraries. A LOT of these pipelines are almost
+    // identical...
+    //
+
+    Pl_Final ret = {};
+    ret.count     = primitive_count;
+    ret.pipelines = (VkPipeline*)malloc_t(sizeof(VkPipeline) * primitive_count, 8);
+
+    u32 shaders[2] = {(u32)SHADER_ID_SHADOW_VERT, (u32)SHADER_ID_SHADOW_FRAG};
+    pl_get_stages_and_layout(2, shaders, &ret.layout);
+
+    VkPipelineVertexInputStateCreateInfo   *input_states    =   (VkPipelineVertexInputStateCreateInfo*)malloc_t(sizeof(VkPipelineVertexInputStateCreateInfo) * primitive_count, 8);
+    VkPipelineInputAssemblyStateCreateInfo *assembly_states = (VkPipelineInputAssemblyStateCreateInfo*)malloc_t(sizeof(VkPipelineInputAssemblyStateCreateInfo) * primitive_count, 8);
+
+    // Loop models, loop meshes, loop primitives.
+    u32 tmp = 0;
+    for(u32 i = 0; i < count; ++i)
+        pl_loop_model_primitives(&models[i], input_states + tmp, assembly_states + tmp, &tmp);
+
+    VkPipelineViewportStateCreateInfo viewport_state;
+    pl_get_viewport_and_scissor(&viewport_state);
+
+    VkPipelineRasterizationStateCreateInfo rasterization_state;
+    pl_get_rasterization({false, false, true, false}, &rasterization_state);
+
+    VkPipelineMultisampleStateCreateInfo multisample_state;
+    pl_get_multisample(&multisample_state);
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_state;
+    pl_get_depth_stencil({true, true, false, VK_COMPARE_OP_LESS}, &depth_stencil_state);
+
+    VkPipelineColorBlendStateCreateInfo blend_state;
+    pl_get_color_blend(0, NULL, &blend_state);
+
+    VkPipelineDynamicStateCreateInfo dyn_state;
+    pl_get_dynamic(&dyn_state);
+
+    //
+    // @Note I feel like here I can enable rasterizer discard?
+    //
+
+    VkGraphicsPipelineCreateInfo *pl_infos = (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * primitive_count, 8);
+       
+    for(u32 i = 0; i < primitive_count; ++i) {
+        pl_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pl_infos[i].stageCount          = 2;
+        pl_infos[i].pStages             = ret.layout.stages;
+        pl_infos[i].pViewportState      = &viewport_state;
+        pl_infos[i].pRasterizationState = &rasterization_state;
+        pl_infos[i].pMultisampleState   = &multisample_state;
+        pl_infos[i].pDepthStencilState  = &depth_stencil_state;
+        pl_infos[i].pColorBlendState    = &blend_state;
+        pl_infos[i].pDynamicState       = &dyn_state;
+        pl_infos[i].layout              = ret.layout.pl_layout;
+        pl_infos[i].renderPass          = renderpass;
+        pl_infos[i].subpass             = 0; // Shadow pass comes first
+    }
+
+    VkDevice device = get_gpu_instance()->device;
+    auto check = vkCreateGraphicsPipelines(
+                    device,
+                    NULL, /* @Todo Get the cache going brooooo! */
+                    primitive_count,
+                    pl_infos,
+                    ALLOCATION_CALLBACKS,
+                    ret.pipelines);
+    DEBUG_OBJ_CREATION(vkCreateGraphicsPipelines, check);
+
+    return ret;
 }
 
 #if 0 // I will leave this unimplemented for now. I am not so interested in deferred rendering for the minute.

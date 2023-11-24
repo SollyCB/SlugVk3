@@ -638,7 +638,7 @@ struct Pl_Rasterization_Args {
 void pl_get_rasterization(Pl_Rasterization_Args args, VkPipelineRasterizationStateCreateInfo *ret_info);
 void pl_get_multisample(VkPipelineMultisampleStateCreateInfo *ret_info);
 
-struct Pl_Depth_Stencil_Args {
+struct Pl_Depth_Stencil_Args { // @Todo @BoolsInStructs These should be done as flags
     bool depth_test_enable;
     bool depth_write_enable;
     bool stencil_test_enable;
@@ -654,6 +654,22 @@ void pl_attachment_get_alpha_blend(VkPipelineColorBlendAttachmentState *ret_blen
 void pl_get_color_blend(u32 attachment_count, VkPipelineColorBlendAttachmentState *attachment_blend_states, VkPipelineColorBlendStateCreateInfo *ret_info);
 
 void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info);
+
+// Begin renderpass
+struct Rp_Config { // Bad name, should be something like "_Attachments"
+    VkImageView present;
+    VkImageView depth;
+    VkImageView shadow;
+};
+void rp_forward_single_sample(Rp_Config *config, VkRenderPass *renderpass, VkFramebuffer *framebuffer);
+
+// Final pipeline creation
+struct Pl_Final {
+    Pl_Layout layout;
+    u32 count;
+    VkPipeline *pipelines;
+};
+Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *models);
 
 #if DEBUG
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
