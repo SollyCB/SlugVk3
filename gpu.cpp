@@ -44,8 +44,12 @@ void init_gpu() {
     gpu->device = create_device(gpu);
 
     allocate_memory();
+
+    pl_load_cache();
 }
 void kill_gpu(Gpu *gpu) {
+    pl_store_cache();
+
     free_memory();
 
     vkDestroyDevice(gpu->device, ALLOCATION_CALLBACKS);
@@ -4210,6 +4214,77 @@ void DestroyDebugUtilsMessengerEXT(
 
     /* Renderpass Framebuffer Pipeline */
 
+#ifdef _WIN32
+#define PL_CACHE_FILE_NAME "pl-caches/window.bin"
+#else
+#define PL_CACHE_FILE_NAME "pl-caches/ubuntu.bin"
+#endif
+
+// Pipeline Cache
+VkPipelineCache pl_load_cache() {
+    u64 size;
+    const u8 *cache_data = file_read_bin_temp(PL_CACHE_FILE_NAME, &size);
+
+    if (size) {
+        VkPipelineCacheHeaderVersionOne *header = (VkPipelineCacheHeaderVersionOne*)cache_data;
+
+        assert(header->headerVersion == 1 && "Failed to read pipeline cache header file");
+        if (header->headerVersion != 1)
+            return NULL;
+
+        VkPhysicalDeviceProperties props = get_gpu_instance()->info.props;
+
+        if (header->vendorID != props.vendorID) {
+            println("Pipeline Cache vendor id does not match");
+            return NULL;
+        }
+
+        if (header->deviceID != props.deviceID) {
+            println("Pipeline Cache device id does not match");
+            return NULL;
+        }
+
+        int result = memcmp(header->pipelineCacheUUID, props.pipelineCacheUUID, VK_UUID_SIZE);
+        if (result != 0) {
+            println("Pipeline Cache UUID does not match");
+            return NULL;
+        }
+    }
+
+    //
+    // @Todo Consider setting externally syncd flag.
+    //
+    VkPipelineCacheCreateInfo create_info = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    create_info.initialDataSize = size;
+    create_info.pInitialData = cache_data;
+
+    VkDevice device = get_gpu_instance()->device;
+
+    VkPipelineCache pl_cache;
+    auto check = vkCreatePipelineCache(device, &create_info, ALLOCATION_CALLBACKS, &pl_cache);
+    DEBUG_OBJ_CREATION(vkCreatePipelineCache, check);
+
+    // Store pipeline cache in global gpu
+    get_gpu_instance()->pl_cache = pl_cache;
+
+    return pl_cache; // return it cos why not (because it is confusing cos its unused, but here is a comment telling you so, so dont fret)
+}
+void pl_store_cache() {
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+    VkPipelineCache pl_cache = gpu->pl_cache;
+
+    u64 size;
+    auto check = vkGetPipelineCacheData(device, pl_cache, &size, NULL);
+
+    void *cache_data = (void*)malloc_t(size, 8);
+    vkGetPipelineCacheData(device, pl_cache, &size, cache_data);
+
+    file_write_bin(PL_CACHE_FILE_NAME, size, cache_data);
+
+    vkDestroyPipelineCache(device, pl_cache, ALLOCATION_CALLBACKS);
+}
+
 // Begin pipeline
 void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout) {
     Gpu *gpu                   =  get_gpu_instance();
@@ -4496,12 +4571,12 @@ void rp_forward_single_sample(Rp_Config *config, VkRenderPass *renderpass, VkFra
     VkViewport viewport = get_global_settings()->viewport;
 
     VkFramebufferCreateInfo fb_info = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-    fb_info.renderPass = *renderpass;
+    fb_info.renderPass      = *renderpass;
     fb_info.attachmentCount = 3;
-    fb_info.pAttachments = attachments;
-    fb_info.width = viewport.width;
-    fb_info.height = viewport.height;
-    fb_info.layers = 1;
+    fb_info.pAttachments    = attachments;
+    fb_info.width           = viewport.width;
+    fb_info.height          = viewport.height;
+    fb_info.layers          = 1;
 
     check = vkCreateFramebuffer(device, &fb_info, ALLOCATION_CALLBACKS, framebuffer);
     DEBUG_OBJ_CREATION(vkCreateFramebuffer, check);
@@ -4585,13 +4660,16 @@ Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *mode
         pl_infos[i].pDynamicState       = &dyn_state;
         pl_infos[i].layout              = ret.layout.pl_layout;
         pl_infos[i].renderPass          = renderpass;
-        pl_infos[i].subpass             = 0; // Shadow pass comes first
+        pl_infos[i].subpass             = 0; // @Note Shadow pass must come first
     }
 
-    VkDevice device = get_gpu_instance()->device;
+    Gpu *gpu                 = get_gpu_instance();
+    VkDevice device          = gpu->device;
+    VkPipelineCache pl_cache = gpu->pl_cache;
+
     auto check = vkCreateGraphicsPipelines(
                     device,
-                    NULL, /* @Todo Get the cache going brooooo! */
+                    pl_cache,
                     primitive_count,
                     pl_infos,
                     ALLOCATION_CALLBACKS,

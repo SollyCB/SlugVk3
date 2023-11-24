@@ -129,6 +129,8 @@ struct Gpu {
     VkQueue present_queue;
     VkQueue transfer_queue;
 
+    VkPipelineCache pl_cache;
+
     u32 graphics_queue_index;
     u32 present_queue_index;
     u32 transfer_queue_index;
@@ -206,12 +208,15 @@ inline static void reset_viewport_and_scissor_to_window_extent() {
 }
 
 // Memory -- struct declarations above gpu
-void allocate_memory();
+void allocate_memory(); // @Note I could remove these functions and structs from the header file. Probably should.
 void free_memory();
 
 // Shaders -- struct declarations above gpu
 Shader_Memory init_shaders();
 void shutdown_shaders(Shader_Memory *mem);
+
+VkPipelineCache pl_load_cache();
+void pl_store_cache();
 
                                     /* Model Memory Management Begin */
 
