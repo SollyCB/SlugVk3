@@ -3626,6 +3626,7 @@ struct Buffer_View {
 // @Note I also need to go through and revert the gltf parser to using counts instead of the one
 // contiguous block method. It was good in principle, and has benefits in places, but I think it
 // does more harm than good. - See equivalent note in gltf header.
+//
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir) {
     u64 mark = get_mark_temp();
 
@@ -4208,12 +4209,8 @@ void DestroyDebugUtilsMessengerEXT(
 #endif
 
     /* Renderpass Framebuffer Pipeline */
-// Plan:
-//     Create multiple pipelines.
-//     Parse the info for all the pipelines to understand each subpass.
-//     Create the final renderpass and framebuffer according to the pipelines.
-//
-#if 1
+
+// Begin pipeline
 void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout) {
     Gpu *gpu                   =  get_gpu_instance();
     VkDevice device            =  gpu->device;
@@ -4401,5 +4398,255 @@ void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info) {
     Settings *settings = get_global_settings();
     ret_info->dynamicStateCount = settings->pl_dynamic_state_count;
     ret_info->pDynamicStates    = settings->pl_dynamic_states;
+}
+
+// Begin Renderpass
+struct Rp_Config { // Bad name, should be something like "_Attachments"
+    VkImageView present;
+    VkImageView depth;
+    VkImageView shadow;
+};
+// Includes a shadow subpass
+void rp_forward_single_sample(Rp_Config *config, VkRenderpass *renderpass, VkFramebuffer *framebuffer) {
+    VkAttachmentDescription depth_description = {};
+    depth_description.format         = VK_FORMAT_D16_UNORM;
+    depth_description.samples        = VK_SAMPLE_COUNT_1_BIT;
+    depth_description.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_description.storeOp        = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth_description.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth_description.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth_description.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth_description.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentDescription present_description = {};
+    depth_description.format         = VK_FORMAT_D16_UNORM;
+    depth_description.samples        = VK_SAMPLE_COUNT_1_BIT;
+    depth_description.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_description.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+    depth_description.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth_description.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    u32 attachment_count = 3;
+    VkAttachmentDescription &attachment_descriptions[3] = {};
+    attachment_descriptions[0] = &present_description;
+    attachment_descriptions[1] = &depth_description;
+    attachment_descriptions[2] = &depth_description;
+
+    VkAttachmentReference present_reference = {.attachment = 0, .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depth_reference   = {.attachment = 1, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkAttachmentReference shadow_reference_0 = {.attachment = 2, .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference shadow_reference_1 = {.attachment = 2, .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+
+    u32 subpass_count = 2;
+    VkSubpassDescription subpass_descriptions[2] = {};
+    subpass_descriptions[0].pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass_descriptions[0].pDepthStencilAttachment = &shadow_reference_0;
+
+    subpass_descriptions[1].inputAttachmentCount = 1;
+    subpass_descriptions[1].colorAttachmentCount = 1;
+    subpass_descriptions[1].pInputAttachments    = &shadow_reference_1;
+    subpass_descriptions[1].pColorAttachments    = &present_reference;
+    subpass_descriptions[1].pDepthAttachment     = &depth_reference;
+
+    u32 dependency_count = 3;
+    VkSubpassDependency dependencies[3] = {};
+
+    //
+    // @Note I am not sure if these dependencies are correct. I used Willems deferred render as an example,
+    // but his setup is for something a bit different. I will see what the validation layers say...
+    //
+
+    // Ensure the shadow depth attachment is available
+	dependencies[0].srcSubpass      = VK_SUBPASS_EXTERNAL;
+	dependencies[0].dstSubpass      = 0;
+	dependencies[0].srcStageMask    = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	dependencies[0].dstStageMask    = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	dependencies[0].srcAccessMask   = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+	dependencies[0].dstAccessMask   = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+	dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    // Ensure the previous subpass has finished with the depth
+	dependencies[1].srcSubpass      = 0;
+	dependencies[1].dstSubpass      = 1;
+	dependencies[1].srcStageMask    = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	dependencies[1].dstStageMask    = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+	dependencies[1].srcAccessMask   = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	dependencies[1].dstAccessMask   = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
+	dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    // Ensure we are ready to present
+	dependencies[2].srcSubpass      = 1;
+	dependencies[2].dstSubpass      = VK_SUBPASS_EXTERNAL;
+	dependencies[2].srcStageMask    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependencies[2].dstStageMask    = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+	dependencies[2].srcAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+	dependencies[2].dstAccessMask   = VK_ACCESS_MEMORY_READ_BIT;
+	dependencies[2].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    VkRenderPassCreateInfo rp_info = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+    rp_info.attachmentCount = attachment_count;
+    rp_info.pAttachments    = attachment_descriptions;
+    rp_info.subpassCount    = subpass_count;
+    rp_info.pSubpasses      = subpass_descriptions;
+    rp_info.dependencyCount = dependency_count;
+    rp_info.pDependencies   = dependencies;
+
+    VkDevice device = get_gpu_instance()->device;
+    auto check = vkCreateRenderPass(device, &rp_info, allocation_callbacks, renderpass);
+    debug_ob
+}
+
+#if 0 // I will leave this unimplemented for now. I am not so interested in deferred rendering for the minute.
+//
+// Deferred renderer with forward transparency
+//
+// @Note Gltf pbr metallic roughness textures only use two channels, while the occlusion textures only use one.
+// So in future I should pack these together. Also, emissive only uses three, so occlusion could also go in there.
+//     
+//
+// Includes forward rendering subpasses for translucency and @Unimplemented shadow mapping
+//
+// @Note This implementation a little crazy, as I do not want lots of long name functions, but I also want
+// branchless...
+//
+struct Rp_Config {
+    VkImageView present;
+    VkImageView color;
+    VkImageView depth;
+    VkImageView position;
+    VkImageView normal;
+    VKImageView pbr; // metallic roughness
+    VkImageView occlusion;
+    VkImageView emissive;
+};
+void rp_deferred(Rp_Config *config, VkRenderpass *renderpass, VkFramebuffer *framebuffer) {
+    VkSampleCount sample_count = get_global_settings()->sample_count;
+
+    VkAttachmentDescription description_gbuffer = {};
+    description_gbuffer.format        = VK_FORMAT_R8G8B8A8_SRGB;
+    description_gbuffer.samples       = sample_count;
+    description_gbuffer.loadOp        = VK_LOAD_OP_CLEAR;
+    description_gbuffer.storeOp       = VK_STORE_OP_DONT_CARE; // I think this is right, as I will not need it after the final subpass
+    description_gbuffer.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    description_gbuffer.finalLayout   = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    
+    VkAttachmentDescription description_depth = {};
+    description_depth.format         = VK_FORMAT_R8G8B8A8_SRGB;
+    description_depth.samples        = sample_count;
+    description_depth.loadOp         = VK_LOAD_OP_CLEAR;
+    description_depth.storeOp        = VK_STORE_OP_DONT_CARE;
+    description_depth.stencilLoadOp  = VK_LOAD_OP_DONT_CARE;
+    description_depth.stencilStoreOp = VK_STORE_OP_DONT_CARE;
+    description_depth.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    description_depth.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkAttachmentDescription description_present = {};
+    description_present.format        = VK_FORMAT_R8G8B8A8_SRGB;
+    description_present.samples       = sample_count;
+    description_present.loadOp        = VK_LOAD_OP_CLEAR;
+    description_present.storeOp       = VK_STORE_OP_STORE;
+    description_present.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    description_present.finalLayout   = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    VkAttachmentDescription *descriptions[8] = {};
+    u32 description_count = 0;
+
+    VkAttachmentReference *references_subpass_0[8] = {};
+    VkAttachmentReference *references_subpass_1[8] = {};
+    VkAttachmentReference *references_subpass_2[8] = {};
+    u32 reference_count_subpass_0 = 0;
+    u32 reference_count_subpass_1 = 0;
+    u32 reference_count_subpass_2 = 0;
+
+    u32 present_index;
+    u32 color_index;
+    u32 depth_index;
+    u32 position_index;
+    u32 normal_index;
+    u32 pbr_index;
+    u32 occlusion_index;
+    u32 emissive_index;
+
+    u32 tmp;
+    u32 subpass_color_attachment_counts[3] = {};
+    u32 subpass_input_attachment_counts[3] = {};
+    u32 subpass_depth_attachment_counts[3] = {};
+
+    present_index = description_count;
+    descriptions[description_count] = &description_present;
+    tmp = (int)(config->present != NULL);
+
+    description_count += tmp;
+    subpass_color_attachment_counts[1] += tmp;
+    subpass_color_attachment_counts[2] += tmp;
+
+    color_index = description_count;
+    descriptions[description_count] = &description_gbuffer;
+    tmp = (int)(config->color != NULL);
+
+    description_count += tmp;
+    subpass_color_attachment_counts[0] += tmp;
+    subpass_input_attachment_counts[1] += tmp;
+
+    depth_index = description_count;
+    descriptions[description_count] = &description_depth;
+    tmp = (int)(config->depth != NULL);
+
+    description_count += tmp;
+    subpass_depth_attachment_counts[0] += tmp;
+    subpass_depth_attachment_counts[2] += tmp;
+
+    position_index = description_count;
+    descriptions[description_count] = &description_gbuffer;
+    tmp = (int)(config->position != NULL);
+
+    description_count += tmp;
+    subpass_color_attachment_counts[0] += tmp;
+    subpass_input_attachment_counts[1] += tmp;
+
+    normal_index = description_count;
+    descriptions[description_count] = &description_gbuffer;
+    tmp = (int)(config->normal != NULL);
+
+    description_count += tmp;
+    subpass_color_attachment_counts[0] += tmp;
+    subpass_input_attachment_counts[1] += tmp;
+
+    pbr_index = description_count;
+    descriptions[description_count] = &description_gbuffer;
+    tmp = (int)(config->pbr != NULL);
+
+    description_count += tmp;
+    subpass_color_attachment_counts[0] += tmp;
+    subpass_input_attachment_counts[1] += tmp;
+
+    occlusion_index = description_count;
+    descriptions[description_count] = &description_gbuffer;
+    tmp = (int)(config->occlusion != NULL);
+
+    description_count += tmp;
+    subpass_color_attachment_counts[0] += tmp;
+    subpass_input_attachment_counts[1] += tmp;
+
+    emissive_index = description_count;
+    descriptions[description_count] = &description_gbuffer;
+    tmp = (int)(config->emissive != NULL);
+
+    description_count += tmp;
+    subpass_color_attachment_counts[0] += tmp;
+    subpass_input_attachment_counts[1] += tmp;
+
+    VkSubpassDescription subpass_descriptions[3];
+    u32 subpass_count = 3;
+
+    subpass_descriptions[0] = {};
+    subpass_descriptions[0].pipelineBindPoint = VK_PIPELINE_BINDPOINT_GRAPHICS;
+    subpass_descriptions[0].inputAttachmentCount = VK_PIPELINE_BINDPOINT_GRAPHICS;
+    subpass_descriptions[0].pipelineBindPoint = VK_PIPELINE_BINDPOINT_GRAPHICS;
+    subpass_descriptions[0].pipelineBindPoint = VK_PIPELINE_BINDPOINT_GRAPHICS;
+
+    VkRenderPassCreateInfo rp_info = {VK_STRUCTURE_TYPE_RENDERPASS_CREATE_INFO};
+    rp_info.attachmentCount += ;
 }
 #endif

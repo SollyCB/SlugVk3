@@ -252,6 +252,12 @@ void shutdown_shaders(Shader_Memory *mem);
         - Returns QUEUE_FULL if there are too many allocations waiting to draw.
         - Writes the internal secondary command buffers with the appropriate transfer commands if
           this is a device upload. Binds images to memory if this is a tex queue submission.
+
+    @Todo @Note The way I load the model data into allocators should be thought about: Currently I just
+    load all the model data at once and stick them in an allocator. Really I could separate these meshes
+    out, as they do not HAVE to be in memory at the same time as other opaque stuff: I can upload these
+    meshes after the deferred renderer has run. This way I can stuff more models into video memory at once.
+    (Mike Acton homogeneous data type shit.)
 */
 
 enum Gpu_Allocator_Result {
@@ -341,7 +347,7 @@ struct Gpu_Allocator_Config {
     String   disk_storage;
 };
 Gpu_Allocator create_allocator (Gpu_Allocator_Config *info);
-void      destroy_allocator(Gpu_Allocator *alloc);
+void          destroy_allocator(Gpu_Allocator *alloc);
 
 Gpu_Allocator_Result begin_allocation    (Gpu_Allocator *alloc);
 Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc,  u64 size, void *ptr, u64 *ret_offset);
