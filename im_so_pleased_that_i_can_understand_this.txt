@@ -1,0 +1,6 @@
+
+The Trowbridge-Reitz / GGX microfacet distribution describes the microsurface as being 
+composed of perfectly specular, infinitesimal oblate ellipsoids, whose half-height in the 
+normal direction is α times the radius in the tangent plane. α = 1 gives spheres, which 
+results in uniform reflection in all directions. This reflection behavior corresponds to a 
+rough surface. α = 0 gives a perfectly specular surface.
