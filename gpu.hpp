@@ -106,6 +106,13 @@ struct Shader {
     u32 *layout_indices;
     #endif
 };
+struct Descriptor_Allocator {
+    u64 cap;
+    u64 used;
+    u64 buffer_address;
+    u8 *mem;
+    VkBuffer buf;
+};
 struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with something better.
     u32 shader_cap            = 128;
     u32 descriptor_set_cap    = 128; // @Note Idk how low this is.
@@ -115,12 +122,16 @@ struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with some
 
     Shader                *shaders;
     VkDescriptorSetLayout *layouts;
+    u64                   *layout_sizes;
 
     u64            descriptor_buffer_size = 1048576;
     VkBuffer       sampler_descriptor_buffer;
     VkBuffer       resource_descriptor_buffer;
     VkDeviceMemory descriptor_buffer_memory;
-    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer_info;
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_buffer_info;
+
+    Descriptor_Allocator sampler_descriptor_allocator;
+    Descriptor_Allocator resource_descriptor_allocator;
 
     const char *entry_point = "main";
 
