@@ -112,6 +112,8 @@ struct Descriptor_Allocator {
     u64 buffer_address;
     u8 *mem;
     VkBuffer buf;
+
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT info;
 };
 struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with something better.
     u32 shader_cap            = 128;
@@ -128,7 +130,6 @@ struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with some
     VkBuffer       sampler_descriptor_buffer;
     VkBuffer       resource_descriptor_buffer;
     VkDeviceMemory descriptor_buffer_memory;
-    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_buffer_info;
 
     Descriptor_Allocator sampler_descriptor_allocator;
     Descriptor_Allocator resource_descriptor_allocator;

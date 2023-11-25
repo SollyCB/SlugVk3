@@ -1094,26 +1094,97 @@ inline static Descriptor_Allocator create_descriptor_allocator(u64 size, u64 add
 
     return ret;
 }
-inline static u8* descriptor_malloc(Descriptor_Allocator *allocator, u64 size) {
-
-    //
-    // @TODO CURRENT TASK!!
-    // descriptor_allocate_combined_image_sampler()
-    // descriptor_allocate_uniform_buffer()
-    //
-    
-    // pad to alignment
-    allocator->used = align(allocator->used, 256);
-
-    u8 *ret = allocator->mem + allocator->used;
-
-    allocator->used += size;
-
-    assert(allocator->used <= allocator->cap && "Descriptor Allocator Overflow");
-    return ret;
-}
 inline static void descriptor_allocator_reset(Descriptor_Allocator *allocator) {
     allocator->used = 0;
+}
+inline static void* descriptor_allocate(Descriptor_Allocator *alloc, VkDescriptorSetLayout layout, u64 *offset) {
+    u64 size;
+    vkGetDescriptorSetLayoutSizeEXT(get_gpu_instance()->device, layout, &size);
+
+    u8 *ret      = (u8*)alloc->mem + alloc->used;
+    *offset      = alloc->used;
+    size         = align(size, alloc->info.descriptorBufferOffsetAlignment);
+    alloc->used += size;
+
+    assert(alloc->used <= alloc->cap && "Descriptor Allocator Overflow");
+    return (void*)ret;
+}
+inline static u64 descriptor_get_binding_offset(VkDescriptorSetLayout layout, u32 binding) {
+    u64 ret;
+    vkGetDescriptorSetLayoutBindingOffsetEXT(get_gpu_instance()->device, layout, binding, &ret);
+    return ret;
+}
+inline static void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
+    /* From the Vulkan Spec for vkGetDescriptorEXT:
+
+            "If the VkPhysicalDeviceDescriptorBufferPropertiesEXT::combinedImageSamplerDescriptorSingleArray
+            property is VK_FALSE the implementation requires an array of
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER descriptors to be written into a descriptor buffer as an
+            array of image descriptors, immediately followed by an array of sampler descriptors. Applications
+            must write the first VkPhysicalDeviceDescriptorBufferPropertiesEXT::sampledImageDescriptorSize
+            bytes of the data returned through pDescriptor to the first array, and the remaining
+            VkPhysicalDeviceDescriptorBufferPropertiesEXT::samplerDescriptorSize bytes of the data to the
+            second array."
+
+        @Note It is unclear what exactly you do if it is not an array...
+    */
+
+    VkDescriptorGetInfoEXT get_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+    get_info.type                   =  VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+
+    u64 combined_size = alloc->info.combinedImageSamplerDescriptorSize;
+    u64 image_size;
+    u64 sampler_size;
+
+    u8 *tmp;
+    u64 sampler_offset;
+    if (alloc->info.combinedImageSamplerDescriptorSingleArray) {
+        tmp            = malloc_t(combined_size, alloc->info.descriptorBufferOffsetAlignment);
+        sampler_offset = image_size * count;
+        image_size     = alloc->info.sampledImageDescriptorSize;
+        sampler_size   = alloc->info.samplerDescriptorSize;
+    }
+
+    VkDevice device = get_gpu_instance()->device;
+    for(u32 i = 0; i < count; ++i) {
+        get_info.data = datas[i];
+
+        // These branches will always be predicted.
+        if (alloc->info.combinedImageSamplerDescriptorSingleArray) {
+            vkGetDescriptorEXT(device, &get_info, combined_size, mem + (i * combined_size));
+        } else {
+            //
+            // This is awkward, but I guess it is the only way...
+            //
+            vkGetDescriptorEXT(device, &get_info, combined_size, tmp);
+            memcpy(mem + (i * image_size), tmp, image_size);
+            memcpy(mem + sampler_offset + (i * sampler_size), tmp + image_size, sampler_size);
+        }
+    }
+}
+inline static void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
+    VkDevice device = get_gpu_instance()->device;
+
+    VkDescriptorGetInfoEXT get_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+    get_info.type                   =  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+
+    u64 ubo_size = alloc->info.uniformBufferDescriptorSize;
+    for(u32 i = 0; i < count; ++i) {
+        get_info.data = datas[i];
+        vkGetDescriptorEXT(device, &get_info, ubo_size, mem + (i * ubo_size));
+    }
+}
+inline static void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
+    VkDevice device = get_gpu_instance()->device;
+
+    VkDescriptorGetInfoEXT get_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+    get_info.type                   =  VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT;
+
+    u64 ia_size = alloc->info.inputAttachmentDescriptorSize;
+    for(u32 i = 0; i < count; ++i) {
+        get_info.data = datas[i];
+        vkGetDescriptorEXT(device, &get_info, ia_size, mem + (i * ia_size));
+    }
 }
 
 struct Set_Layout_Info {
@@ -1123,7 +1194,7 @@ struct Set_Layout_Info {
 Shader_Memory init_shaders() {
     Shader_Memory ret = {};
 
-    ret.shaders                =                (Shader*) malloc_h(sizeof(Shader)                * ret.shader_cap,                8);
+    ret.shaders =                (Shader*) malloc_h(sizeof(Shader)                * ret.shader_cap,         8);
     ret.layouts = (VkDescriptorSetLayout*) malloc_h(sizeof(VkDescriptorSetLayout) * ret.descriptor_set_cap, 8);
 
     u32 shader_count = g_shader_file_count; // global shader count
@@ -1276,12 +1347,17 @@ Shader_Memory init_shaders() {
     check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.resource_descriptor_buffer);
     DEBUG_OBJ_CREATION(vkCreateBuffer, check);
 
-    ret.descriptor_buffer_info = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT buf_props;
+    buf_props = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
 
     VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    props2.pNext = &ret.descriptor_buffer_info;
+    props2.pNext = &buf_props;
 
     vkGetPhysicalDeviceProperties2(gpu->phys_device, &props2);
+
+    ret.sampler_descriptor_allocator.info = buf_props;
+    ret.resource_descriptor_allocator.info = buf_props;
 
     VkBufferDeviceAddressInfo address_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     address_info.buffer = ret.sampler_descriptor_buffer;
@@ -1291,11 +1367,11 @@ Shader_Memory init_shaders() {
     address_info.buffer = ret.resource_descriptor_buffer;
     VkDeviceAddress resource_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
-    assert(sampler_buffer_address  + ret.descriptor_buffer_size < ret.descriptor_buffer_info.maxSamplerDescriptorBufferRange);
-    assert(resource_buffer_address + ret.descriptor_buffer_size < ret.descriptor_buffer_info.maxResourceDescriptorBufferRange);
+    assert(sampler_buffer_address  + ret.descriptor_buffer_size < buf_props.maxSamplerDescriptorBufferRange);
+    assert(resource_buffer_address + ret.descriptor_buffer_size < buf_props.maxResourceDescriptorBufferRange);
 
-    if (sampler_buffer_address  + ret.descriptor_buffer_size > ret.descriptor_buffer_info.maxSamplerDescriptorBufferRange ||
-        resource_buffer_address + ret.descriptor_buffer_size > ret.descriptor_buffer_info.maxResourceDescriptorBufferRange)
+    if (sampler_buffer_address  + ret.descriptor_buffer_size > buf_props.maxSamplerDescriptorBufferRange ||
+        resource_buffer_address + ret.descriptor_buffer_size > buf_props.maxResourceDescriptorBufferRange)
     {
         println("Requested descriptor buffer size + buffer device address would overflow max buffer range");
         ret = {};
