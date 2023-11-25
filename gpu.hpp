@@ -31,22 +31,23 @@ struct Settings {
 static Settings global_settings = {};
 inline static Settings* get_global_settings() { return &global_settings; }
 
-static constexpr u32 DEPTH_ATTACHMENT_COUNT = 2; // One true depth attachment, one shadow attachment
-static constexpr u32 COLOR_ATTACHMENT_COUNT = 1;
-static constexpr u32 VERTEX_STAGE_COUNT     = 1;
-static constexpr u32 INDEX_STAGE_COUNT      = 1;
-static constexpr u32 TEXTURE_STAGE_COUNT    = 1;
-static constexpr u32 UNIFORM_BUFFER_COUNT   = 1;
+static constexpr u32 DEPTH_ATTACHMENT_COUNT  = 2;
+static constexpr u32 SHADOW_ATTACHMENT_COUNT = 2;
+static constexpr u32 COLOR_ATTACHMENT_COUNT  = 1; // @Unused Idk when I will do deferred stuff
+static constexpr u32 VERTEX_STAGE_COUNT      = 1;
+static constexpr u32 INDEX_STAGE_COUNT       = 1;
+static constexpr u32 TEXTURE_STAGE_COUNT     = 1;
+static constexpr u32 UNIFORM_BUFFER_COUNT    = 1;
 
 // Host memory sizes - large enough to not get a warning about allocation size being too small
-static constexpr u64 VERTEX_STAGE_SIZE      = 1048576;
-static constexpr u64 INDEX_STAGE_SIZE       = 1048576;
-static constexpr u64 TEXTURE_STAGE_SIZE     = 1048576 * 8;
-static constexpr u64 UNIFORM_BUFFER_SIZE    = 1048576;
+static constexpr u64 VERTEX_STAGE_SIZE       = 1048576;
+static constexpr u64 INDEX_STAGE_SIZE        = 1048576;
+static constexpr u64 TEXTURE_STAGE_SIZE      = 1048576 * 8;
+static constexpr u64 UNIFORM_BUFFER_SIZE     = 1048576;
 
-static constexpr float VERTEX_DEVICE_SIZE   = 1048576;
-static constexpr float INDEX_DEVICE_SIZE    = 1048576;
-static constexpr float TEXTURE_DEVICE_SIZE  = 1048576 * 8;
+static constexpr float VERTEX_DEVICE_SIZE    = 1048576;
+static constexpr float INDEX_DEVICE_SIZE     = 1048576;
+static constexpr float TEXTURE_DEVICE_SIZE   = 1048576 * 8;
 
 enum Memory_Flag_Bits {
     GPU_MEMORY_UMA_BIT = 0x01,
@@ -55,11 +56,14 @@ enum Memory_Flag_Bits {
 typedef u8 Memory_Flags;
 struct Gpu_Memory {
     VkDeviceMemory depth_mem            [DEPTH_ATTACHMENT_COUNT];
+    VkDeviceMemory shadow_mem           [SHADOW_ATTACHMENT_COUNT];
     VkDeviceMemory color_mem            [COLOR_ATTACHMENT_COUNT];
     VkImage        depth_attachments    [DEPTH_ATTACHMENT_COUNT];
+    VkImage        shadow_attachments   [SHADOW_ATTACHMENT_COUNT];
     VkImage        color_attachments    [COLOR_ATTACHMENT_COUNT];
 
     VkImageView    depth_views          [DEPTH_ATTACHMENT_COUNT];
+    VkImageView    shadow_views         [SHADOW_ATTACHMENT_COUNT];
 
     VkDeviceMemory vertex_mem_stage     [VERTEX_STAGE_COUNT];
     VkDeviceMemory index_mem_stage      [INDEX_STAGE_COUNT];
@@ -116,6 +120,8 @@ struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with some
     VkDescriptorPool      *descriptor_pools;
     VkDescriptorSet       *descriptor_sets;
     VkDescriptorSetLayout *descriptor_set_layouts;
+
+    const char *entry_point = "main";
 };
 struct Gpu_Info {
     VkPhysicalDeviceProperties props;
@@ -627,7 +633,7 @@ struct Pl_Layout {
     VkPipelineShaderStageCreateInfo *stages;
     VkPipelineLayout pl_layout;
 };
-void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout);
+void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count, VkPushConstantRange *push_constants, Pl_Layout *layout);
 void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info);
 void pl_get_viewport_and_scissor(VkPipelineViewportStateCreateInfo *ret_info);
 
@@ -683,6 +689,8 @@ inline static void pl_destroy_final(Pl_Final *pl) {
     VkDevice device = get_gpu_instance()->device;
     for(u32 i = 0; i < pl->count; ++i)
         vkDestroyPipeline(device, pl->pipelines[i], ALLOCATION_CALLBACKS);
+
+    vkDestroyPipelineLayout(device, pl->layout.pl_layout, ALLOCATION_CALLBACKS);
 }
 
 struct Draw_Final_Basic {
@@ -728,6 +736,15 @@ inline static void wait_fence(VkFence fence) {
 inline static void wait_and_reset_fence(VkFence fence) {
     wait_fence(fence);
     reset_fence(fence);
+}
+inline static VkSemaphore create_semaphore() {
+    VkSemaphoreCreateInfo info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkSemaphore ret;
+    auto check = vkCreateSemaphore(get_gpu_instance()->device, &info, ALLOCATION_CALLBACKS, &ret); 
+    return ret;
+}
+inline static void destroy_semaphore(VkSemaphore semaphore) {
+    vkDestroySemaphore(get_gpu_instance()->device, semaphore, ALLOCATION_CALLBACKS); 
 }
 
 #if DEBUG

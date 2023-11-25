@@ -68,9 +68,18 @@ int main() {
     res = staging_queue_submit(&model_allocators.vertex);
     assert(res == ALLOCATOR_RESULT_SUCCESS);
 
-    VkFence acquire_image_fence = create_fence(false);
-    u32 present_image_index;
+    VkFence     acquire_image_fence     = create_fence(false);
+    VkSemaphore acquire_image_semaphore = create_semaphore();
 
+    u32 present_image_index;
+    VkResult present_result;
+    VkPresentInfoKHR present_info = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+    present_info.swapchainCount   = 1;
+    present_info.pSwapchains      = &window->swapchain;
+    present_info.pImageIndices    = &present_image_index;
+    present_info.pResults         = &present_result;
+
+    u32 frame_index = 0;
     while(!glfwWindowShouldClose(glfw->window)) {
         vkAcquireNextImageKHR(gpu->device, window->swapchain, 10e9, NULL, acquire_image_fence, &present_image_index); 
 
@@ -83,11 +92,16 @@ int main() {
         draw_config.models = &models[0];
 
         draw_config.rp_config.present = window->views[present_image_index];
-        draw_config.rp_config.depth   = gpu->memory.depth_views[0];
-        draw_config.rp_config.shadow  = gpu->memory.depth_views[1];
+        draw_config.rp_config.depth   = gpu->memory.depth_views[frame_index];
+        draw_config.rp_config.shadow  = gpu->memory.shadow_views[frame_index];
 
         Draw_Final_Basic draw_basic = draw_create_basic(&draw_config);
+
+        vkQueuePresentKHR(gpu->graphics_queue, &present_info);
+        
         draw_destroy_basic(&draw_basic);
+
+        frame_index = (frame_index + 1) & 1;
     }
 
     for(u32 i = 0; i < model_count; ++i) {
@@ -96,6 +110,7 @@ int main() {
     free_h(models);
 
     destroy_fence(acquire_image_fence);
+    destroy_semaphore(acquire_image_semaphore);
 
     shutdown_allocators(&model_allocators);
     shutdown_shaders(&gpu->shader_memory);

@@ -369,11 +369,19 @@ static void gpu_create_image_views() {
         check = vkCreateImageView(gpu->device, &info, ALLOCATION_CALLBACKS, &gpu->memory.depth_views[i]);
         DEBUG_OBJ_CREATION(vkCreateImageView, check);
     }
+    for(u32 i = 0; i < SHADOW_ATTACHMENT_COUNT; ++i) {
+        info.image = gpu->memory.shadow_attachments[i];
+
+        check = vkCreateImageView(gpu->device, &info, ALLOCATION_CALLBACKS, &gpu->memory.shadow_views[i]);
+        DEBUG_OBJ_CREATION(vkCreateImageView, check);
+    }
 }
 static void gpu_destroy_image_views() {
     Gpu *gpu = get_gpu_instance();
     for(u32 i = 0; i < DEPTH_ATTACHMENT_COUNT; ++i)
         vkDestroyImageView(gpu->device, gpu->memory.depth_views[i], ALLOCATION_CALLBACKS);
+    for(u32 i = 0; i < SHADOW_ATTACHMENT_COUNT; ++i)
+        vkDestroyImageView(gpu->device, gpu->memory.shadow_views[i], ALLOCATION_CALLBACKS);
 }
 
 // `Surface and `Swapchain
@@ -387,6 +395,8 @@ void init_window(Gpu *gpu, Glfw *glfw) {
     VkSurfaceKHR surface = create_surface(gpu->instance, glfw);
     VkSwapchainKHR swapchain = create_swapchain(gpu, surface);
     window->swapchain = swapchain;
+
+    reset_viewport_and_scissor_to_window_extent();
 }
 void kill_window(Gpu *gpu, Window *window) {
     destroy_swapchain(gpu->device, window);
@@ -700,6 +710,7 @@ void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
 
         vkBindImageMemory(device, gpu->memory.color_attachments[i], gpu->memory.color_mem[i], 0);
     }
+
     for(u32 i = 0; i < DEPTH_ATTACHMENT_COUNT; ++i) {
         attachment_info.format = VK_FORMAT_D16_UNORM;
         attachment_info.usage  = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -721,6 +732,29 @@ void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
         DEBUG_OBJ_CREATION(vkAllocateMemory, check);
 
         vkBindImageMemory(device, gpu->memory.depth_attachments[i], gpu->memory.depth_mem[i], 0);
+    }
+
+    for(u32 i = 0; i < SHADOW_ATTACHMENT_COUNT; ++i) {
+        attachment_info.format = VK_FORMAT_D16_UNORM;
+        attachment_info.usage  = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+
+        check = vkCreateImage(device, &attachment_info, ALLOCATION_CALLBACKS, &gpu->memory.shadow_attachments[i]);
+        DEBUG_OBJ_CREATION(vkCreateImage, check);
+
+        vkGetImageMemoryRequirements(device, gpu->memory.shadow_attachments[i], &mem_req);
+
+        dedicate_info.image = gpu->memory.shadow_attachments[i];
+
+        priority_info.priority = 1.0;
+        priority_info.pNext    = &dedicate_info;
+
+        allocate_info.allocationSize  = mem_req.size;
+        allocate_info.memoryTypeIndex = device_mem_type;
+
+        check = vkAllocateMemory(device, &allocate_info, ALLOCATION_CALLBACKS, &gpu->memory.shadow_mem[i]);
+        DEBUG_OBJ_CREATION(vkAllocateMemory, check);
+
+        vkBindImageMemory(device, gpu->memory.shadow_attachments[i], gpu->memory.shadow_mem[i], 0);
     }
 }
 void create_buffers(Gpu *gpu, u32 mem_type, u32 count, VkBuffer *bufs, VkDeviceMemory *mems, void **ptrs, u64 size,
@@ -986,6 +1020,10 @@ void free_memory() {
         vkDestroyImage(device, gpu->memory.depth_attachments[i], ALLOCATION_CALLBACKS);
         vkFreeMemory(device, gpu->memory.depth_mem[i], ALLOCATION_CALLBACKS);
     }
+    for(u32 i = 0; i < SHADOW_ATTACHMENT_COUNT; ++i) {
+        vkDestroyImage(device, gpu->memory.shadow_attachments[i], ALLOCATION_CALLBACKS);
+        vkFreeMemory(device, gpu->memory.shadow_mem[i], ALLOCATION_CALLBACKS);
+    }
 
     // Vertex attribute mem
     if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
@@ -1064,6 +1102,8 @@ Shader_Memory init_shaders() {
     bool allocate_set = false;
 
     Shader *pshader;
+    VkShaderModuleCreateInfo module_info = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+
     for(u32 i = 0; i < shader_count; ++i) {
         pcode = (const u32*)file_read_bin_temp(g_shader_file_names[i], &size);
         spirv = parse_spirv(size, pcode);
@@ -1072,6 +1112,11 @@ Shader_Memory init_shaders() {
        *pshader            = {};
         pshader->id        = (Shader_Id)i;
         pshader->stage     = spirv.stage;
+
+        module_info.codeSize = size;
+        module_info.pCode    = pcode;
+        check = vkCreateShaderModule(device, &module_info, ALLOCATION_CALLBACKS, &pshader->module);
+        DEBUG_OBJ_CREATION(vkCreateShaderModule, check);
 
         layout_set    = spirv.bindings[0].set;
         binding_count = 0;
@@ -4321,7 +4366,7 @@ void pl_store_cache() {
 }
 
 // Begin pipeline
-void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout) {
+void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count, VkPushConstantRange *push_constants, Pl_Layout *layout) {
     Gpu *gpu                   =  get_gpu_instance();
     VkDevice device            =  gpu->device;
     Shader_Memory *shader_info = &gpu->shader_memory;
@@ -4329,7 +4374,7 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout)
     // @Note Assumes that the number of descriptor sets that will be bound is less than DESCRIPTOR_SET_COUNT.
     VkDescriptorSetLayout *set_layouts = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * DESCRIPTOR_SET_COUNT, 8);
 
-    layout->stages = (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * layout->stage_count, 8);
+    layout->stages = (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
     layout->sets   = (VkDescriptorSet*)malloc_t(sizeof(VkDescriptorSet) * DESCRIPTOR_SET_COUNT, 8);
 
     layout->set_count   = 0;
@@ -4373,17 +4418,18 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, Pl_Layout *layout)
         layout->stages[i]        = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         layout->stages[i].stage  = shader.stage;
         layout->stages[i].module = shader.module;
-        layout->stages[i].pName  = "main";
+        layout->stages[i].pName  = shader_info->entry_point;
 
         memcpy(layout->sets + layout->set_count, shader_info->descriptor_sets + shader.set_index, sizeof(VkDescriptorSet) * shader.set_count);
         memcpy(set_layouts  + layout->set_count, shader_info->descriptor_set_layouts + shader.set_index, sizeof(VkDescriptorSetLayout) * shader.set_count);
         layout->set_count   += shader.set_count;
     }
 
-    // @Todo Push Constants
     VkPipelineLayoutCreateInfo layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout_info.setLayoutCount = layout->set_count;
     layout_info.pSetLayouts    = set_layouts;
+    layout_info.pushConstantRangeCount = push_constant_count;
+    layout_info.pPushConstantRanges    = push_constants;
 
     auto check = vkCreatePipelineLayout(device, &layout_info, ALLOCATION_CALLBACKS, &layout->pl_layout);
     DEBUG_OBJ_CREATION(vkCreatePipelineLayout, check);
@@ -4405,14 +4451,23 @@ void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive, VkPip
     VkVertexInputBindingDescription *bindings = (VkVertexInputBindingDescription*)malloc_t(sizeof(VkVertexInputBindingDescription) * 4, 8);
     memset(bindings, 0, sizeof(VkVertexInputBindingDescription) * 4);
 
-    bindings[0].stride = primitive->stride_position;
-    bindings[1].stride = primitive->stride_normal;
-    bindings[2].stride = primitive->stride_tangent;
-    bindings[3].stride = primitive->stride_tex_coords;
+    bindings[0].stride  = primitive->stride_position;
+    bindings[1].stride  = primitive->stride_normal;
+    bindings[2].stride  = primitive->stride_tangent;
+    bindings[3].stride  = primitive->stride_tex_coords;
+    bindings[0].binding = 0;
+    bindings[1].binding = 1;
+    bindings[2].binding = 2;
+    bindings[3].binding = 3;
 
     VkVertexInputAttributeDescription *attrs = (VkVertexInputAttributeDescription*)malloc_t(sizeof(VkVertexInputAttributeDescription) * 4, 8);
     memset(attrs, 0, sizeof(VkVertexInputAttributeDescription) * 4);
 
+    // All have binding 0 (one big vertex buffer)
+    attrs[0].binding  = 0;
+    attrs[1].binding  = 1;
+    attrs[2].binding  = 2;
+    attrs[3].binding  = 3;
     attrs[0].location = 0;
     attrs[1].location = 1;
     attrs[2].location = 2;
@@ -4447,18 +4502,28 @@ void pl_get_vertex_input_and_assembly_static_shadow(Pl_Primitive_Info *primitive
     // @Note Binding is always zero. I use one large vertex buffer managed by an allocator.
     //
 
-    VkVertexInputBindingDescription binding = {};
-    binding.stride = primitive->stride_position;
+    //
+    // @Note Temp allocation to be persistent outside function. Idk if it is cleaner or faster to pass these nested
+    // structures into the function... This does feel a bit lame...
+    //
+    VkVertexInputBindingDescription *binding = (VkVertexInputBindingDescription*)malloc_t(sizeof(VkVertexInputBindingDescription), 8);
+    *binding = {};
 
-    VkVertexInputAttributeDescription attr = {};
-    attr.location = 0;
-    attr.format   = primitive->fmt_position;
+    binding->binding = 0;
+    binding->stride  = primitive->stride_position;
+
+    VkVertexInputAttributeDescription *attr = (VkVertexInputAttributeDescription*)malloc_t(sizeof(VkVertexInputAttributeDescription), 8);
+    *attr = {};
+    
+    attr->location = 0;
+    attr->binding  = 0;
+    attr->format   = primitive->fmt_position;
 
    *ret_input_info = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     ret_input_info->vertexBindingDescriptionCount   = 1;
-    ret_input_info->pVertexBindingDescriptions      = &binding;
+    ret_input_info->pVertexBindingDescriptions      = binding;
     ret_input_info->vertexAttributeDescriptionCount = 1;
-    ret_input_info->pVertexAttributeDescriptions    = &attr;
+    ret_input_info->pVertexAttributeDescriptions    = attr;
 
    *ret_assembly_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ret_assembly_info->topology = primitive->topology;
@@ -4551,12 +4616,12 @@ void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFram
     depth_description.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkAttachmentDescription present_description = {};
-    depth_description.format         = VK_FORMAT_D16_UNORM;
-    depth_description.samples        = VK_SAMPLE_COUNT_1_BIT;
-    depth_description.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    depth_description.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-    depth_description.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
-    depth_description.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    present_description.format         = get_window_instance()->info.imageFormat;
+    present_description.samples        = VK_SAMPLE_COUNT_1_BIT;
+    present_description.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    present_description.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+    present_description.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+    present_description.finalLayout    = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 
     u32 attachment_count = 3;
     VkAttachmentDescription attachment_descriptions[3] = {};
@@ -4601,7 +4666,7 @@ void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFram
     // Ensure the previous subpass has finished with the depth
 	dependencies[1].srcSubpass      = 0;
 	dependencies[1].dstSubpass      = 1;
-	dependencies[1].srcStageMask    = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	dependencies[1].srcStageMask    = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
 	dependencies[1].dstStageMask    = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 	dependencies[1].srcAccessMask   = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 	dependencies[1].dstAccessMask   = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT;
@@ -4658,7 +4723,7 @@ inline static void pl_loop_model_primitives(Static_Model *model, VkPipelineVerte
             pl_get_vertex_input_and_assembly_static(&model->meshes[i].pl_infos[j], &ret_input_info[idx], &ret_assembly_info[idx]);
             idx++;
         }
-    *count += idx;
+    *count = idx;
 }
 inline static void pl_loop_model_primitives_shadow(Static_Model *model, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info, u32 *count) {
     u32 idx = *count;
@@ -4667,7 +4732,7 @@ inline static void pl_loop_model_primitives_shadow(Static_Model *model, VkPipeli
             pl_get_vertex_input_and_assembly_static_shadow(&model->meshes[i].pl_infos[j], &ret_input_info[idx], &ret_assembly_info[idx]);
             idx++;
         }
-    *count += idx;
+    *count = idx;
 }
 
 //
@@ -4692,7 +4757,7 @@ Pl_Final pl_create_basic(VkRenderPass renderpass, u32 count, Static_Model *model
     ret.pipelines = (VkPipeline*)malloc_t(sizeof(VkPipeline) * primitive_count, 8);
 
     u32 shaders[2] = {(u32)SHADER_ID_BASIC_VERT, (u32)SHADER_ID_BASIC_FRAG};
-    pl_get_stages_and_layout(2, shaders, &ret.layout);
+    pl_get_stages_and_layout(2, shaders, 0, NULL, &ret.layout);
 
     VkPipelineVertexInputStateCreateInfo   *input_states    =   (VkPipelineVertexInputStateCreateInfo*)malloc_t(sizeof(VkPipelineVertexInputStateCreateInfo) * primitive_count, 8);
     VkPipelineInputAssemblyStateCreateInfo *assembly_states = (VkPipelineInputAssemblyStateCreateInfo*)malloc_t(sizeof(VkPipelineInputAssemblyStateCreateInfo) * primitive_count, 8);
@@ -4732,6 +4797,8 @@ Pl_Final pl_create_basic(VkRenderPass renderpass, u32 count, Static_Model *model
         pl_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         pl_infos[i].stageCount          = 2;
         pl_infos[i].pStages             = ret.layout.stages;
+        pl_infos[i].pVertexInputState   = &input_states[i];
+        pl_infos[i].pInputAssemblyState = &assembly_states[i];
         pl_infos[i].pViewportState      = &viewport_state;
         pl_infos[i].pRasterizationState = &rasterization_state;
         pl_infos[i].pMultisampleState   = &multisample_state;
@@ -4740,7 +4807,7 @@ Pl_Final pl_create_basic(VkRenderPass renderpass, u32 count, Static_Model *model
         pl_infos[i].pDynamicState       = &dyn_state;
         pl_infos[i].layout              = ret.layout.pl_layout;
         pl_infos[i].renderPass          = renderpass;
-        pl_infos[i].subpass             = 0; // @Note Shadow pass must come first
+        pl_infos[i].subpass             = 1; // @Note After shadow pass
     }
 
     Gpu *gpu                 = get_gpu_instance();
@@ -4773,7 +4840,7 @@ Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *mode
     ret.pipelines = (VkPipeline*)malloc_t(sizeof(VkPipeline) * primitive_count, 8);
 
     u32 shaders[2] = {(u32)SHADER_ID_SHADOW_VERT, (u32)SHADER_ID_SHADOW_FRAG};
-    pl_get_stages_and_layout(2, shaders, &ret.layout);
+    pl_get_stages_and_layout(2, shaders, 0, NULL, &ret.layout);
 
     VkPipelineVertexInputStateCreateInfo   *input_states    =   (VkPipelineVertexInputStateCreateInfo*)malloc_t(sizeof(VkPipelineVertexInputStateCreateInfo) * primitive_count, 8);
     VkPipelineInputAssemblyStateCreateInfo *assembly_states = (VkPipelineInputAssemblyStateCreateInfo*)malloc_t(sizeof(VkPipelineInputAssemblyStateCreateInfo) * primitive_count, 8);
@@ -4811,6 +4878,8 @@ Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *mode
         pl_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         pl_infos[i].stageCount          = 2;
         pl_infos[i].pStages             = ret.layout.stages;
+        pl_infos[i].pVertexInputState   = &input_states[i];
+        pl_infos[i].pInputAssemblyState = &assembly_states[i];
         pl_infos[i].pViewportState      = &viewport_state;
         pl_infos[i].pRasterizationState = &rasterization_state;
         pl_infos[i].pMultisampleState   = &multisample_state;
