@@ -20,13 +20,13 @@
 #include "shader.hpp" // include g_shader_file_names global array
 
 struct Settings {
-    VkSampleCountFlagBits sample_count = VK_SAMPLE_COUNT_1_BIT;
-    u32            mip_levels             = 1;
-    float          anisotropy             = 0;
-    VkViewport     viewport               = {};
-    VkRect2D       scissor                = {};
-    u32            pl_dynamic_state_count = 2;
-    VkDynamicState pl_dynamic_states[2]   = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkSampleCountFlagBits sample_count           = VK_SAMPLE_COUNT_1_BIT;
+    u32                   mip_levels             = 1;
+    float                 anisotropy             = 0;
+    VkViewport            viewport               = {};
+    VkRect2D              scissor                = {};
+    u32                   pl_dynamic_state_count = 2;
+    VkDynamicState        pl_dynamic_states[2]   = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
 };
 static Settings global_settings = {};
 inline static Settings* get_global_settings() { return &global_settings; }
@@ -129,9 +129,9 @@ struct Gpu_Info {
 struct Gpu {
     Gpu_Info info;
 
-    VkInstance instance;
+    VkInstance       instance;
+    VkDevice         device;
     VkPhysicalDevice phys_device;
-    VkDevice device;
 
     VkQueue graphics_queue;
     VkQueue present_queue;
@@ -143,7 +143,7 @@ struct Gpu {
     u32 present_queue_index;
     u32 transfer_queue_index;
 
-    Gpu_Memory memory;
+    Gpu_Memory    memory;
     Shader_Memory shader_memory;
 };
 Gpu* get_gpu_instance();
@@ -168,31 +168,31 @@ struct Create_Instance_Info {
 VkInstance create_instance(Create_Instance_Info *info);
 
 // Device and Queues
-VkDevice create_device(Gpu *gpu);
-VkQueue create_queue(Gpu *gpu);
-void destroy_device(Gpu *gpu);
-void destroy_queue(Gpu *gpu);
+VkDevice create_device (Gpu *gpu);
+VkQueue  create_queue  (Gpu *gpu);
+void     destroy_device(Gpu *gpu);
+void     destroy_queue (Gpu *gpu);
 
 // Surface and Swapchain
 struct Window {
-    VkSwapchainKHR swapchain;
-    VkSwapchainCreateInfoKHR info;
-    u32 image_count = 2;
-    VkImage *images;
-    VkImageView *views;
+    VkSwapchainKHR            swapchain;
+    VkSwapchainCreateInfoKHR  info;
+    u32                       image_count = 2;
+    VkImage                  *images;
+    VkImageView              *views;
 };
 Window* get_window_instance();
 
 void init_window(Gpu *gpu, Glfw *glfw);
 void kill_window(Gpu *gpu, Window *window);
 
-VkSurfaceKHR create_surface(VkInstance vk_instance, Glfw *glfw);
-void destroy_surface(VkInstance vk_instance, VkSurfaceKHR vk_surface);
+VkSurfaceKHR create_surface (VkInstance vk_instance, Glfw *glfw);
+void         destroy_surface(VkInstance vk_instance, VkSurfaceKHR vk_surface);
 
 // @Note this function does a lot to initialize window members, because I consider
 // these elems to be parts of the swapchain, not distinct things.
-VkSwapchainKHR create_swapchain(Gpu *gpu, VkSurfaceKHR vk_surface);
-void destroy_swapchain(VkDevice vk_device, Window *window);
+VkSwapchainKHR create_swapchain  (Gpu *gpu, VkSurfaceKHR vk_surface);
+void           destroy_swapchain (VkDevice vk_device, Window *window);
 VkSwapchainKHR recreate_swapchain(Gpu *gpu, Window *window);
 
 inline static void reset_viewport_and_scissor_to_window_extent() {
@@ -381,7 +381,7 @@ struct Gpu_Tex_Allocation { // @Note I would like struct to be smaller. Cannot s
     u32 width;
     u32 height;
     VkImage image;
-    String file_name;
+    String  file_name;
 };
 struct Gpu_Tex_Allocator {
     u32  allocation_cap;
@@ -444,9 +444,9 @@ struct Gpu_Tex_Allocator_Config {
     VkDeviceMemory upload;
 };
 Gpu_Tex_Allocator create_tex_allocator (Gpu_Tex_Allocator_Config *config);
-void          destroy_tex_allocator(Gpu_Tex_Allocator *alloc);
+void              destroy_tex_allocator(Gpu_Tex_Allocator *alloc);
 
-Gpu_Allocator_Result tex_add_texture         (Gpu_Allocator *alloc, String *file_name);
+Gpu_Allocator_Result tex_add_texture(Gpu_Allocator *alloc, String *file_name);
 
 Gpu_Allocator_Result tex_staging_queue_begin (Gpu_Allocator *alloc);
 Gpu_Allocator_Result tex_staging_queue_add   (Gpu_Allocator *alloc, u32 key);
@@ -489,10 +489,10 @@ VkSampler         get_sampler(Sampler_Allocator *alloc, u64 hash);
     /* Model Data */
 struct Node;
 struct Skin {
-    u32 joint_count;
-    Node *joints;
-    Node *skeleton;
-    VkBuffer matrices;
+    u32       joint_count;
+    Node     *joints;
+    Node     *skeleton;
+    VkBuffer  matrices;
 };
 struct Trs {
     Vec3 trans;
@@ -559,7 +559,7 @@ struct Pl_Prim_Info_Skinned {
 };
 struct Mesh {
     u32 count;
-    Primitive *primitives;
+    Primitive         *primitives;
     Pl_Primitive_Info *pl_infos;
 };
 struct Skinned_Mesh {
@@ -610,8 +610,8 @@ struct Static_Model {
     Texture *textures;
 };
 struct Model_Allocators {
-    Gpu_Allocator index;
-    Gpu_Allocator vertex;
+    Gpu_Allocator     index;
+    Gpu_Allocator     vertex;
     Gpu_Tex_Allocator tex;
     Sampler_Allocator sampler;
 };
@@ -627,14 +627,17 @@ void         free_static_model(Static_Model *model);
     /* Renderpass Framebuffer Pipeline */
 
 struct Pl_Layout {
-    u32 stage_count;
-    u32 set_count;
-    VkDescriptorSet *sets; // These are in bind order
+    u32                              stage_count;
+    u32                              set_count;
+    VkDescriptorSet                 *sets; // These are in bind order
     VkPipelineShaderStageCreateInfo *stages;
-    VkPipelineLayout pl_layout;
+    VkPipelineLayout                 pl_layout;
 };
 void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count, VkPushConstantRange *push_constants, Pl_Layout *layout);
-void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info);
+
+void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive,
+                                             VkPipelineVertexInputStateCreateInfo *ret_input_info,
+                                             VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info);
 void pl_get_viewport_and_scissor(VkPipelineViewportStateCreateInfo *ret_info);
 
 //
@@ -652,19 +655,21 @@ void pl_get_rasterization(Pl_Rasterization_Args args, VkPipelineRasterizationSta
 void pl_get_multisample(VkPipelineMultisampleStateCreateInfo *ret_info);
 
 struct Pl_Depth_Stencil_Args { // @Todo @BoolsInStructs These should be done as flags
-    bool depth_test_enable;
-    bool depth_write_enable;
-    bool stencil_test_enable;
-    VkCompareOp depth_compare_op;
+    bool             depth_test_enable;
+    bool             depth_write_enable;
+    bool             stencil_test_enable;
+    VkCompareOp      depth_compare_op;
     VkStencilOpState stencil_op_front;
     VkStencilOpState stencil_op_back;
 };
 void pl_get_depth_stencil(Pl_Depth_Stencil_Args args, VkPipelineDepthStencilStateCreateInfo *ret_info);
 
 // Blend functions -- I plan to add more for quickly filling out common blend options
-void pl_attachment_get_no_blend(VkPipelineColorBlendAttachmentState *ret_blend_function);
+void pl_attachment_get_no_blend   (VkPipelineColorBlendAttachmentState *ret_blend_function);
 void pl_attachment_get_alpha_blend(VkPipelineColorBlendAttachmentState *ret_blend_function);
-void pl_get_color_blend(u32 attachment_count, VkPipelineColorBlendAttachmentState *attachment_blend_states, VkPipelineColorBlendStateCreateInfo *ret_info);
+void pl_get_color_blend           (u32 attachment_count,
+                                   VkPipelineColorBlendAttachmentState *attachment_blend_states,
+                                   VkPipelineColorBlendStateCreateInfo *ret_info);
 
 void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info);
 
@@ -678,11 +683,11 @@ void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFram
 
 // Final pipeline creation
 struct Pl_Final {
-    u32 count;
+    u32         count;
     VkPipeline *pipelines;
-    Pl_Layout layout;
+    Pl_Layout   layout;
 };
-Pl_Final pl_create_basic(VkRenderPass renderpass, u32 count, Static_Model *models);
+Pl_Final pl_create_basic (VkRenderPass renderpass, u32 count, Static_Model *models);
 Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *models);
 
 inline static void pl_destroy_final(Pl_Final *pl) {
@@ -694,15 +699,15 @@ inline static void pl_destroy_final(Pl_Final *pl) {
 }
 
 struct Draw_Final_Basic {
-    Pl_Final pl_basic;
-    Pl_Final pl_shadow;
-    VkRenderPass renderpass;
+    Pl_Final      pl_basic;
+    Pl_Final      pl_shadow;
+    VkRenderPass  renderpass;
     VkFramebuffer framebuffer;
 };
 struct Draw_Final_Basic_Config {
-    u32 count;
+    u32           count;
     Static_Model *models;
-    Rp_Config rp_config;
+    Rp_Config     rp_config;
 };
 Draw_Final_Basic draw_create_basic(Draw_Final_Basic_Config *config);
 
@@ -740,11 +745,11 @@ inline static void wait_and_reset_fence(VkFence fence) {
 inline static VkSemaphore create_semaphore() {
     VkSemaphoreCreateInfo info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     VkSemaphore ret;
-    auto check = vkCreateSemaphore(get_gpu_instance()->device, &info, ALLOCATION_CALLBACKS, &ret); 
+    auto check = vkCreateSemaphore(get_gpu_instance()->device, &info, ALLOCATION_CALLBACKS, &ret);
     return ret;
 }
 inline static void destroy_semaphore(VkSemaphore semaphore) {
-    vkDestroySemaphore(get_gpu_instance()->device, semaphore, ALLOCATION_CALLBACKS); 
+    vkDestroySemaphore(get_gpu_instance()->device, semaphore, ALLOCATION_CALLBACKS);
 }
 
 #if DEBUG
