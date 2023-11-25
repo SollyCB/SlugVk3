@@ -101,6 +101,7 @@ int main() {
         
         draw_destroy_basic(&draw_basic);
 
+        zero_temp(); // Empty temp allocator at the end of the frame
         frame_index = (frame_index + 1) & 1;
     }
 

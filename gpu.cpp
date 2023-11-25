@@ -145,8 +145,8 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
     uint32_t ext_count = 3;
     const char *ext_names[] = {
         "VK_KHR_swapchain",
-        "VK_EXT_descriptor_buffer",
         "VK_EXT_memory_priority",
+        "VK_EXT_descriptor_buffer",
     };
 
     VkPhysicalDeviceFeatures vk1_features = {
@@ -168,9 +168,14 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
         .pNext = &vk13_features,
         .memoryPriority = VK_TRUE,
     };
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer_features = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
+        .pNext = &mem_priority,
+        .descriptorBuffer = VK_TRUE,
+    };
     VkPhysicalDeviceFeatures2 features_full = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-        .pNext = &mem_priority,
+        .pNext = &descriptor_buffer_features,
         .features = vk1_features,
     };
 
@@ -183,8 +188,11 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
     VkPhysicalDeviceMemoryPriorityFeaturesEXT mem_priority_empty =  mem_priority;
     mem_priority_empty.pNext = &vk13_features_unfilled;
 
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer_empty = descriptor_buffer_features;
+    descriptor_buffer_empty.pNext = &mem_priority_empty;
+
     VkPhysicalDeviceFeatures2 features_full_unfilled = features_full;
-    features_full_unfilled.pNext = &mem_priority_empty;
+    features_full_unfilled.pNext = &descriptor_buffer_empty;
 
     features_full_unfilled.features = vk1_features_unfilled;
 
@@ -212,6 +220,10 @@ VkDevice create_device(Gpu *gpu) { // returns logical device, silently fills in 
         bool incompatible = false;
         if (mem_priority.memoryPriority == VK_FALSE) {
             println("Device Index %u does not support Memory Priority", i);
+            incompatible = true;
+        }
+        if (descriptor_buffer_features.descriptorBuffer == VK_FALSE) {
+            println("Device Index %u does not support Descriptor Buffer", i);
             incompatible = true;
         }
 
@@ -969,11 +981,13 @@ void allocate_memory() {
             }
         }
 
+    //
     // @Unused these final heap indices were intended for allocating proportions of device memory
     // rather than fixed sizes because it is sooo variable and can be adapted to by the allocator
     // implmentations, but I am not going bother with that yet. (The allocators already totally work
     // with this, but I am not implementing actually allocating the proportion way yet. These values
     // are set, but do nothing.)
+    //
     u32 final_heap_device;
     u32 final_heap_host;
     u32 final_heap_both;
@@ -981,8 +995,11 @@ void allocate_memory() {
     u32 host_mem_type;
     u32 device_mem_type;
     u32 both_mem_type;
+
     if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+
         gpu->memory.flags |= GPU_MEMORY_UMA_BIT;
+
         integrated_gpu_get_memory_type(
             &mem_props,
             largest_heap_device,
@@ -991,9 +1008,14 @@ void allocate_memory() {
             &host_mem_type,
             &final_heap_device,
             &final_heap_host);
+
         setup_memory_integrated(device_mem_type, host_mem_type);
-    }
-    else if (gpu->info.props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+
+        gpu->memory.attachment_mem_index = device_mem_type;
+        gpu->memory.vertex_mem_index     = device_mem_type;
+        gpu->memory.uniform_mem_index    = device_mem_type;
+
+    } else if (gpu->info.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
         discrete_gpu_get_memory_type( // @Note Assumes there is some shared heap (for uniform buffers)
             &mem_props,
             largest_heap_device,
@@ -1003,8 +1025,13 @@ void allocate_memory() {
             &both_mem_type,
             &final_heap_device,
             &final_heap_host,
-            &final_heap_both);
+            &final_heap_both); // Both is device local + host visible
+
         setup_memory_discrete(device_mem_type, host_mem_type, both_mem_type);
+
+        gpu->memory.attachment_mem_index = device_mem_type;
+        gpu->memory.vertex_mem_index     = device_mem_type;
+        gpu->memory.uniform_mem_index    = both_mem_type;
     }
 }
 void free_memory() {
@@ -1064,9 +1091,7 @@ Shader_Memory init_shaders() {
     Shader_Memory ret = {};
 
     ret.shaders                =                (Shader*) malloc_h(sizeof(Shader)                * ret.shader_cap,                8);
-    ret.descriptor_pools       =      (VkDescriptorPool*) malloc_h(sizeof(VkDescriptorPool)      * ret.descriptor_pool_cap,       8);
-    ret.descriptor_sets        =       (VkDescriptorSet*) malloc_h(sizeof(VkDescriptorSet)       * ret.descriptor_set_cap,        8);
-    ret.descriptor_set_layouts = (VkDescriptorSetLayout*) malloc_h(sizeof(VkDescriptorSetLayout) * ret.descriptor_set_cap, 8);
+    ret.layouts = (VkDescriptorSetLayout*) malloc_h(sizeof(VkDescriptorSetLayout) * ret.descriptor_set_cap, 8);
 
     u32 shader_count = g_shader_file_count; // global shader count
     const u32 *pcode;
@@ -1075,8 +1100,14 @@ Shader_Memory init_shaders() {
     Gpu *gpu = get_gpu_instance();
     VkDevice device = gpu->device;
 
-    u64 max_sets = gpu->info.props.limits.maxBoundDescriptorSets;
-    max_sets = max_sets > DESCRIPTOR_SET_COUNT ? DESCRIPTOR_SET_COUNT : max_sets; // Assume that if max sets is greater, so many would never be used in one shader.
+    //
+    // The below two lines are not really necessary anymore, since I switched to descriptor buffer. Plus I think
+    // I was completely misguided before about what the number actually meant...
+    //
+    // u64 max_sets = gpu->info.props.limits.maxBoundDescriptorSets;
+    // max_sets = max_sets > DESCRIPTOR_SET_COUNT ? DESCRIPTOR_SET_COUNT : max_sets; // Assume that if max sets is greater, so many would never be used in one shader.
+
+    u32 max_sets = DESCRIPTOR_SET_COUNT;
 
     Parsed_Spirv spirv;
     u32 j;
@@ -1139,19 +1170,19 @@ Shader_Memory init_shaders() {
                             device,
                            &descriptor_set_layout_create_info,
                             ALLOCATION_CALLBACKS,
-                           &ret.descriptor_set_layouts[ret.descriptor_set_count]);
+                           &ret.layouts[ret.layout_count]);
                 DEBUG_OBJ_CREATION(vkCreateDescriptorSetLayout, check);
 
                 #if DEBUG
-                tmp_set_indices[pshader->set_count] = layout_set;
+                tmp_set_indices[pshader->layout_count] = layout_set;
                 #endif
 
-                pshader->set_index = set_array_index;
-                pshader->set_count++;
-                ret.descriptor_set_count++;
+                pshader->layout_index = set_array_index;
+                pshader->layout_count++;
+                ret.layout_count++;
 
-                assert(ret.descriptor_set_count <= ret.descriptor_set_cap);
-                if (ret.descriptor_set_count > ret.descriptor_set_cap)
+                assert(ret.layout_count <= ret.descriptor_set_cap);
+                if (ret.layout_count > ret.descriptor_set_cap)
                     return {};
 
                 layout_set    = spirv.bindings[j].set;
@@ -1176,29 +1207,29 @@ Shader_Memory init_shaders() {
                         device,
                        &descriptor_set_layout_create_info,
                         ALLOCATION_CALLBACKS,
-                       &ret.descriptor_set_layouts[ret.descriptor_set_count]);
+                       &ret.layouts[ret.layout_count]);
 
             DEBUG_OBJ_CREATION(vkCreateDescriptorSetLayout, check);
 
             #if DEBUG
-            tmp_set_indices[pshader->set_count] = layout_set;
+            tmp_set_indices[pshader->layout_count] = layout_set;
             #endif
 
-            pshader->set_index = set_array_index;
-            pshader->set_count++;
-            ret.descriptor_set_count++;
+            pshader->layout_index = set_array_index;
+            pshader->layout_count++;
+            ret.layout_count++;
 
-            assert(ret.descriptor_set_count <= ret.descriptor_set_cap);
-            if (ret.descriptor_set_count > ret.descriptor_set_cap)
+            assert(ret.layout_count <= ret.descriptor_set_cap);
+            if (ret.layout_count > ret.descriptor_set_cap)
                 return {};
         }
 
         #if DEBUG
-        pshader->layout_set_indices = (u32*)malloc_h(sizeof(u32) * pshader->set_count, 8);
-        memcpy(pshader->layout_set_indices, tmp_set_indices, sizeof(u32) * pshader->set_count);
+        pshader->layout_indices = (u32*)malloc_h(sizeof(u32) * pshader->layout_count, 8);
+        memcpy(pshader->layout_indices, tmp_set_indices, sizeof(u32) * pshader->layout_count);
         #endif
 
-        set_array_index += pshader->set_count;
+        set_array_index += pshader->layout_count;
         ret.shader_count++;
 
         assert(ret.shader_count <= ret.shader_cap);
@@ -1206,6 +1237,47 @@ Shader_Memory init_shaders() {
             return {};
     }
 
+    /* Create Descriptor Buffer */
+
+    VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+
+    buffer_info.size = ret.descriptor_buffer_size;
+    buffer_info.usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.sampler_descriptor_buffer);
+    DEBUG_OBJ_CREATION(vkCreateBuffer, check);
+
+    buffer_info.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.resource_descriptor_buffer);
+    DEBUG_OBJ_CREATION(vkCreateBuffer, check);
+
+    VkMemoryRequirements mem_req;
+    vkGetBufferMemoryRequirements(device, ret.sampler_descriptor_buffer, &mem_req);
+
+    u64 req_mem = mem_req.size;
+
+    vkGetBufferMemoryRequirements(device, ret.resource_descriptor_buffer, &mem_req);
+
+    req_mem = align(req_mem, mem_req.alignment);
+
+    //
+    // @Todo Memory Priority necessary here? Idk since descriptor mem is supposed to be its own special thing...
+    //
+    VkMemoryAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc_info.allocationSize = req_mem + mem_req.size;
+    alloc_info.memoryTypeIndex = gpu->memory.uniform_mem_index; // This is device local + host visible memory
+
+    check = vkAllocateMemory(device, &alloc_info, ALLOCATION_CALLBACKS, &ret.descriptor_buffer_memory);
+    DEBUG_OBJ_CREATION(vkAllocateMemory, check);
+
+    check = vkBindBufferMemory(device, ret.sampler_descriptor_buffer, ret.descriptor_buffer_memory, 0);
+    DEBUG_OBJ_CREATION(vkBindBufferMemory, check);
+
+    check = vkBindBufferMemory(device, ret.resource_descriptor_buffer, ret.descriptor_buffer_memory, req_mem);
+    DEBUG_OBJ_CREATION(vkBindBufferMemory, check);
+
+    return ret;
+
+    /*
     VkDescriptorPoolSize *pool_sizes = (VkDescriptorPoolSize*)malloc_t(sizeof(VkDescriptorPoolSize*) * 11, 8);
     u32 pool_size_count = 0;
     for(u32 i = 0; i < 11; ++i) {
@@ -1240,29 +1312,36 @@ Shader_Memory init_shaders() {
 
     if (check != VK_SUCCESS)
         return {};
-
-    return ret;
+    */
 }
 void shutdown_shaders(Shader_Memory *mem) {
     VkDevice device = get_gpu_instance()->device;
 
     for(u32 i = 0; i < mem->shader_count; ++i)
         vkDestroyShaderModule(device, mem->shaders[i].module, ALLOCATION_CALLBACKS);
+
+    vkDestroyBuffer(device, mem->sampler_descriptor_buffer, ALLOCATION_CALLBACKS);
+    vkDestroyBuffer(device, mem->resource_descriptor_buffer, ALLOCATION_CALLBACKS);
+    vkFreeMemory(device, mem->descriptor_buffer_memory, ALLOCATION_CALLBACKS);
+
+    #if DEBUG
+    for(u32 i = 0; i < mem->shader_count; ++i)
+        free_h(mem->shaders[i].layout_indices);
+    #endif
+
+    free_h(mem->shaders);
+    free_h(mem->layouts);
+    *mem = {};
+
+    /*
     for(u32 i = 0; i < mem->descriptor_pool_count; ++i)
         vkDestroyDescriptorPool(device, mem->descriptor_pools[i], ALLOCATION_CALLBACKS);
     for(u32 i = 0; i < mem->descriptor_set_count; ++i)
         vkDestroyDescriptorSetLayout(device, mem->descriptor_set_layouts[i], ALLOCATION_CALLBACKS);
 
-    #if DEBUG
-    for(u32 i = 0; i < mem->shader_count; ++i)
-        free_h(mem->shaders[i].layout_set_indices);
-    #endif
-
-    free_h(mem->shaders);
     free_h(mem->descriptor_pools);
     free_h(mem->descriptor_sets);
-    free_h(mem->descriptor_set_layouts);
-    *mem = {};
+    */
 }
 
 // `Model Loading
@@ -3979,7 +4058,6 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 
-    #if 1
     // Load Material Data
     Sampler        sampler_info;
     Gltf_Material *gltf_mat = gltf.materials;
@@ -4019,6 +4097,10 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
         //     work differently.
         memcpy(uri_buffer, dir->str, dir->len);
 
+        //
+        // @Todo Think about converting some of the below stuff to functions. Maybe this would be easier
+        // to understand, but then again maybe not.
+        //
 
         // base
         if (gltf_mat->base_color_texture_index != -1) {
@@ -4136,7 +4218,6 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
         gltf_mat = (Gltf_Material*)((u8*)gltf_mat + gltf_mat->stride);
     }
-    #endif
 
     reset_to_mark_temp(mark);
     return ret;
@@ -4148,149 +4229,29 @@ void free_static_model(Static_Model *model) {
     free_h(model->mats);
     //free_h(model->nodes);
 }
+struct Model_Draw_Info {
 
-        /*
-           Below are the big lumpy functions that sometimes arise that I never want to
-                       see and hardly have to use
-        */
+};
+void model_prepare_to_draw(Model_Allocators *alloc, u32 count, Static_Model *models) {
+    staging_queue_begin(&alloc->index);
+    staging_queue_begin(&alloc->vertex);
+    tex_staging_queue_begin(&alloc->tex);
 
-// functions like this are such a waste of time to write...
-u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
-        switch(accessor_format) {
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U8:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S8:
-                return 1;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S8:
-                return 2;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S8:
-                return 3;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S8:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S16:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT16:
-                return 2;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT16:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT16:
-                return 6;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT16:
-                 return 8;
-
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S32:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT32:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT32:
-                return 8;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT32:
-                return 12;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT32:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S8:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S8:
-                return 9;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S8:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT16:
-                return 8;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT16:
-                return 18;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT16:
-                return 32;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT32:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT32:
-                return 36;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT32:
-                return 64;
-
-            default:
-                assert(false && "Invalid Accessor Format");
-                return Max_u32;
+    for(u32 i = 0; i < count; ++i) {
+        staging_queue_add(&alloc->index,  models[i].index_allocation_key);
+        staging_queue_add(&alloc->vertex, models[i].vertex_allocation_key);
+        for(u32 j = 0; j < models[i].mat_count; ++j) {
+            if (models[i].mats[j].tex_base.sampler_key) {
+                tex_staging_queue_add(&alloc->tex, models[i].mats[j].tex_base.allocation_key);
+                get_sampler(&alloc->sampler, models[i].mats[j].tex_base.sampler_key);
+            }
         }
-}
-
-#if DEBUG
-VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info) {
-    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info = fill_vk_debug_messenger_info(info);
-
-    VkDebugUtilsMessengerEXT debug_messenger;
-    auto check = CreateDebugUtilsMessengerEXT(info->instance, &debug_messenger_create_info, NULL, &debug_messenger);
-
-    DEBUG_OBJ_CREATION(vkCreateDebugUtilsMessengerEXT, check)
-    return debug_messenger;
-}
-
-VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger)
-{
-    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-    if (func != nullptr) {
-        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-    } else {
-        return VK_ERROR_EXTENSION_NOT_PRESENT;
     }
+
+    staging_queue_submit(&alloc->index);
+    staging_queue_submit(&alloc->vertex);
+    tex_staging_queue_submit(&alloc->tex);
 }
-void DestroyDebugUtilsMessengerEXT(
-        VkInstance instance,
-        VkDebugUtilsMessengerEXT messenger,
-        const VkAllocationCallbacks *pAllocator)
-{
-    auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
-    if (func != nullptr)
-        return func(instance, messenger, pAllocator);
-}
-#endif
 
     /* Renderpass Framebuffer Pipeline */
 
@@ -4365,7 +4326,7 @@ void pl_store_cache() {
     vkDestroyPipelineCache(device, pl_cache, ALLOCATION_CALLBACKS);
 }
 
-// Begin pipeline
+// Begin graphics pipeline
 void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count, VkPushConstantRange *push_constants, Pl_Layout *layout) {
     Gpu *gpu                   =  get_gpu_instance();
     VkDevice device            =  gpu->device;
@@ -4374,9 +4335,7 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_
     // @Note Assumes that the number of descriptor sets that will be bound is less than DESCRIPTOR_SET_COUNT.
     VkDescriptorSetLayout *set_layouts = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * DESCRIPTOR_SET_COUNT, 8);
 
-    layout->stages = (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
-    layout->sets   = (VkDescriptorSet*)malloc_t(sizeof(VkDescriptorSet) * DESCRIPTOR_SET_COUNT, 8);
-
+    layout->stages      = (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
     layout->set_count   = 0;
     layout->stage_count = 0;
 
@@ -4401,17 +4360,17 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_
         // programming shaders without strict rules on set sequencing.
         //
         #if DEBUG
-        for(u32 j = 0; j < shader.set_count; ++j) {
+        for(u32 j = 0; j < shader.layout_count; ++j) {
             if (zero_index == false) {
-                assert(shader.layout_set_indices[j] == 0);
+                assert(shader.layout_indices[j] == 0);
                 zero_index = true;
             }
 
-            assert(shader.layout_set_indices[j] == last_set_index     ||
-                   shader.layout_set_indices[j] == last_set_index + 1 &&
+            assert(shader.layout_indices[j] == last_set_index     ||
+                   shader.layout_indices[j] == last_set_index + 1 &&
                   "Shaders MUST appear with sequential set layout indices starting from 0");
 
-            last_set_index = shader.layout_set_indices[j];
+            last_set_index = shader.layout_indices[j];
         }
         #endif
 
@@ -4420,14 +4379,13 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_
         layout->stages[i].module = shader.module;
         layout->stages[i].pName  = shader_info->entry_point;
 
-        memcpy(layout->sets + layout->set_count, shader_info->descriptor_sets + shader.set_index, sizeof(VkDescriptorSet) * shader.set_count);
-        memcpy(set_layouts  + layout->set_count, shader_info->descriptor_set_layouts + shader.set_index, sizeof(VkDescriptorSetLayout) * shader.set_count);
-        layout->set_count   += shader.set_count;
+        memcpy(set_layouts  + layout->set_count, shader_info->layouts + shader.layout_index, sizeof(VkDescriptorSetLayout) * shader.layout_count);
+        layout->set_count   += shader.layout_count;
     }
 
     VkPipelineLayoutCreateInfo layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount = layout->set_count;
-    layout_info.pSetLayouts    = set_layouts;
+    layout_info.setLayoutCount         = layout->set_count;
+    layout_info.pSetLayouts            = set_layouts;
     layout_info.pushConstantRangeCount = push_constant_count;
     layout_info.pPushConstantRanges    = push_constants;
 
@@ -4514,7 +4472,7 @@ void pl_get_vertex_input_and_assembly_static_shadow(Pl_Primitive_Info *primitive
 
     VkVertexInputAttributeDescription *attr = (VkVertexInputAttributeDescription*)malloc_t(sizeof(VkVertexInputAttributeDescription), 8);
     *attr = {};
-    
+
     attr->location = 0;
     attr->binding  = 0;
     attr->format   = primitive->fmt_position;
@@ -4792,7 +4750,7 @@ Pl_Final pl_create_basic(VkRenderPass renderpass, u32 count, Static_Model *model
     //
 
     VkGraphicsPipelineCreateInfo *pl_infos = (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * primitive_count, 8);
-       
+
     for(u32 i = 0; i < primitive_count; ++i) {
         pl_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         pl_infos[i].stageCount          = 2;
@@ -4873,7 +4831,7 @@ Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *mode
     //
 
     VkGraphicsPipelineCreateInfo *pl_infos = (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * primitive_count, 8);
-       
+
     for(u32 i = 0; i < primitive_count; ++i) {
         pl_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         pl_infos[i].stageCount          = 2;
@@ -4916,13 +4874,156 @@ Draw_Final_Basic draw_create_basic(Draw_Final_Basic_Config *config) {
     Pl_Final pl_basic  = pl_create_basic(renderpass, config->count, config->models);
 
     Draw_Final_Basic ret;
-    ret.pl_basic = pl_basic;
-    ret.pl_shadow = pl_shadow;
-    ret.renderpass = renderpass;
+    ret.pl_basic    = pl_basic;
+    ret.pl_shadow   = pl_shadow;
+    ret.renderpass  = renderpass;
     ret.framebuffer = framebuffer;
 
     return ret;
 }
+
+        /*
+           Below are the big lumpy functions that sometimes arise that I never want to
+                       see and hardly have to use
+        */
+
+// functions like this are such a waste of time to write...
+u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
+        switch(accessor_format) {
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U8:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S8:
+                return 1;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S8:
+                return 2;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S8:
+                return 3;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S8:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S16:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT16:
+                return 2;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT16:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT16:
+                return 6;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT16:
+                 return 8;
+
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S32:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT32:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT32:
+                return 8;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT32:
+                return 12;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT32:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S8:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S8:
+                return 9;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S8:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT16:
+                return 8;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT16:
+                return 18;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT16:
+                return 32;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT32:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT32:
+                return 36;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT32:
+                return 64;
+
+            default:
+                assert(false && "Invalid Accessor Format");
+                return Max_u32;
+        }
+}
+
+#if DEBUG
+VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info) {
+    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info = fill_vk_debug_messenger_info(info);
+
+    VkDebugUtilsMessengerEXT debug_messenger;
+    auto check = CreateDebugUtilsMessengerEXT(info->instance, &debug_messenger_create_info, NULL, &debug_messenger);
+
+    DEBUG_OBJ_CREATION(vkCreateDebugUtilsMessengerEXT, check)
+    return debug_messenger;
+}
+
+VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger)
+{
+    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != nullptr) {
+        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+    } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
+void DestroyDebugUtilsMessengerEXT(
+        VkInstance instance,
+        VkDebugUtilsMessengerEXT messenger,
+        const VkAllocationCallbacks *pAllocator)
+{
+    auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (func != nullptr)
+        return func(instance, messenger, pAllocator);
+}
+#endif
 
 #if 0 // I will leave this unimplemented for now. I am not so interested in deferred rendering for the minute.
 //
@@ -4930,7 +5031,7 @@ Draw_Final_Basic draw_create_basic(Draw_Final_Basic_Config *config) {
 //
 // @Note Gltf pbr metallic roughness textures only use two channels, while the occlusion textures only use one.
 // So in future I should pack these together. Also, emissive only uses three, so occlusion could also go in there.
-//     
+//
 //
 // Includes forward rendering subpasses for translucency and @Unimplemented shadow mapping
 //
@@ -4957,7 +5058,7 @@ void rp_deferred(Rp_Config *config, VkRenderpass *renderpass, VkFramebuffer *fra
     description_gbuffer.storeOp       = VK_STORE_OP_DONT_CARE; // I think this is right, as I will not need it after the final subpass
     description_gbuffer.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     description_gbuffer.finalLayout   = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    
+
     VkAttachmentDescription description_depth = {};
     description_depth.format         = VK_FORMAT_R8G8B8A8_SRGB;
     description_depth.samples        = sample_count;

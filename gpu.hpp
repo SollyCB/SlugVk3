@@ -37,7 +37,7 @@ static constexpr u32 COLOR_ATTACHMENT_COUNT  = 1; // @Unused Idk when I will do 
 static constexpr u32 VERTEX_STAGE_COUNT      = 1;
 static constexpr u32 INDEX_STAGE_COUNT       = 1;
 static constexpr u32 TEXTURE_STAGE_COUNT     = 1;
-static constexpr u32 UNIFORM_BUFFER_COUNT    = 1;
+static constexpr u32 UNIFORM_BUFFER_COUNT    = 2;
 
 // Host memory sizes - large enough to not get a warning about allocation size being too small
 static constexpr u64 VERTEX_STAGE_SIZE       = 1048576;
@@ -50,11 +50,16 @@ static constexpr float INDEX_DEVICE_SIZE     = 1048576;
 static constexpr float TEXTURE_DEVICE_SIZE   = 1048576 * 8;
 
 enum Memory_Flag_Bits {
-    GPU_MEMORY_UMA_BIT = 0x01,
+    GPU_MEMORY_UMA_BIT               = 0x01,
     GPU_MEMORY_DISCRETE_TRANSFER_BIT = 0x02,
 };
 typedef u8 Memory_Flags;
 struct Gpu_Memory {
+
+    u32 attachment_mem_index; 
+    u32 vertex_mem_index;
+    u32 uniform_mem_index;
+
     VkDeviceMemory depth_mem            [DEPTH_ATTACHMENT_COUNT];
     VkDeviceMemory shadow_mem           [SHADOW_ATTACHMENT_COUNT];
     VkDeviceMemory color_mem            [COLOR_ATTACHMENT_COUNT];
@@ -89,39 +94,38 @@ struct Gpu_Memory {
 
     Memory_Flags flags;
 };
-//
-// @Todo Move descriptor pool memory to be managed like model allocators. Right now every shader just
-// has all its descriptors allocated individually, when really probably many can be reused. But this
-// really wont be a problem for a looong time, if ever (idk how much memory descriptor sets use, but
-// I really cant imagine it is much compared to textures or vertex data).
-//
 struct Shader {
     Shader_Id id;
-    u32 set_index;
-    u32 set_count;
+    u32 layout_index;
+    u32 layout_count;
 
     VkShaderModule        module;
     VkShaderStageFlagBits stage;
 
     #if DEBUG
-    u32 *layout_set_indices;
+    u32 *layout_indices;
     #endif
 };
 struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with something better.
     u32 shader_cap            = 128;
-    u32 descriptor_pool_cap   =   1; // The loneliest number :(
     u32 descriptor_set_cap    = 128; // @Note Idk how low this is.
 
     u32 shader_count;
-    u32 descriptor_pool_count;
-    u32 descriptor_set_count;
+    u32 layout_count;
 
     Shader                *shaders;
-    VkDescriptorPool      *descriptor_pools;
-    VkDescriptorSet       *descriptor_sets;
-    VkDescriptorSetLayout *descriptor_set_layouts;
+    VkDescriptorSetLayout *layouts;
+
+    u64            descriptor_buffer_size = 1048576;
+    VkBuffer       sampler_descriptor_buffer;
+    VkBuffer       resource_descriptor_buffer;
+    VkDeviceMemory descriptor_buffer_memory;
+    VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor_buffer_info;
 
     const char *entry_point = "main";
+
+    // VkDescriptorPool      *descriptor_pools;
+    // VkDescriptorSet       *descriptor_sets;
 };
 struct Gpu_Info {
     VkPhysicalDeviceProperties props;
@@ -484,6 +488,49 @@ void              destroy_sampler_allocator(Sampler_Allocator *alloc);
 u64               add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
 VkSampler         get_sampler(Sampler_Allocator *alloc, u64 hash);
 
+struct Uniform_Allocator {
+    u64 cap;
+    u64 used;
+    u8 *mem;
+    VkBuffer buf;
+};
+inline static Uniform_Allocator create_uniform_allocator(u32 gpu_mem_index, u64 offset, u64 size) {
+    assert(size < UNIFORM_BUFFER_SIZE - offset && "Size too big");
+    assert(offset % 256 == 0 && "Offset must have minimum alignment");
+
+    Gpu_Memory *gpu_mem = &get_gpu_instance()->memory;
+
+    Uniform_Allocator ret;
+    ret.cap  = size;
+    ret.used = 0;
+    ret.mem  = (u8*)gpu_mem->uniform_ptrs[gpu_mem_index] + offset;
+    ret.buf  = gpu_mem->uniform_bufs[gpu_mem_index];
+
+    return ret;
+}
+inline static u8* uniform_malloc(Uniform_Allocator *allocator, u64 size) {
+    // pad to alignment
+    allocator->used = align(allocator->used, 256);
+
+    u8 *ret = allocator->mem + allocator->used;
+
+    allocator->used += size;
+
+    //
+    // @Todo Handle failure here better. But tbh, this should not need worrying about for a really long time:
+    // how much data is really going to be required for animation data? I do not think that it is THAT much...
+    // There is really no point thinking about it in the same way as vertex data or texture data I am pretty sure.
+    //
+    assert(allocator->used <= allocator->cap && "Uniform Allocator Overflow");
+    return ret;
+}
+inline static void uniform_allocator_reset(Uniform_Allocator *allocator) {
+    allocator->used = 0;
+}
+inline static void uniform_allocator_reset_and_zero(Uniform_Allocator *allocator) {
+    memset(allocator->mem, 0, allocator->used);
+    allocator->used = 0;
+}
     /* Model Memory Management End */
 
     /* Model Data */
@@ -607,7 +654,7 @@ struct Static_Model {
 
     u32      index_allocation_key;
     u32      vertex_allocation_key;
-    Texture *textures;
+    // Texture *textures;
 };
 struct Model_Allocators {
     Gpu_Allocator     index;
@@ -629,7 +676,6 @@ void         free_static_model(Static_Model *model);
 struct Pl_Layout {
     u32                              stage_count;
     u32                              set_count;
-    VkDescriptorSet                 *sets; // These are in bind order
     VkPipelineShaderStageCreateInfo *stages;
     VkPipelineLayout                 pl_layout;
 };
