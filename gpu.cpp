@@ -1516,8 +1516,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     // Find incremented weight
     u8 w   = args->weights[idx];
     u8 tmp = Max_u8 + (u8)(w + args->inc > w);
-    w = (w + args->inc) | tmp;
-    w &= 0b01111111;
+    w      = (w + args->inc) | tmp;
 
     args->weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
@@ -1593,8 +1592,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     // Find incremented weight
     u8 w   = args->weights[idx];
     u8 tmp = Max_u8 + (u8)(w + args->inc > w);
-    w = (w + args->inc) | tmp;
-    w &= 0b01111111;
+    w      = (w + args->inc) | tmp;
 
     args->weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
@@ -1665,11 +1663,21 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     return pos;
 }
 void adjust_sampler_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
+    u8 w = weights[idx];
+
+    //
+    // Sampler weights: first 6 bits are the weight, top two are flags:
+    // 7 bit = active sampler
+    // 6 bit = in use sampler
+    //
+
+    //
     // Find incremented weight
-    u8 w   = weights[idx];
-    u8 tmp = Max_u8 + (u8)(w + inc > w);
-    w = (w + inc) | tmp;
-    w &= 0b01111111;
+    // If w + inc wraps bottom 6 bits, w = Max, else w = w + inc
+    //
+    u8 tmp = (w + inc) & 0b00111111;
+    tmp    = Max_u8 + (u8)(tmp > w);
+    w      = (w + inc) | tmp;
 
     weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
