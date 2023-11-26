@@ -287,6 +287,28 @@ void pl_store_cache();
     out, as they do not HAVE to be in memory at the same time as other opaque stuff: I can upload these
     meshes after the deferred renderer has run. This way I can stuff more models into video memory at once.
     (Mike Acton homogeneous data type shit.)
+
+-----------------------------------------------------------------------------------------------------------------------
+
+                                ** Notes On Multithreading Allocators ** - Sol 26 Nov 2023
+
+    I have just had a think about multithreading these things, and my thoughts are "do not introduce contention".
+    It is not clear if this makes the programming easier or harder (as wrapping stuff in reference counts and mutexes
+    and writing whereever is also easy) but it does give me a clearer design model.
+
+    My plan is to have one thread controlling the primary sections of the allocator, such as the bit masks for which
+    allocation ranges are made free and whatever (there is no benefit to threading this, I am sure), and then
+    this thread can dispatch jobs to worker threads, such as creating the copy infos and the pipeline barriers:
+    as there will be a known number of these, each thread can be given some section of the array, and then it can
+    fill its section freely. This is at the end of the allocator pipeline.
+
+    For earlier in the pipeline (i.e. adding allocations to queue), this would again be managed by the controlling
+    thread, and work can be submitted to it in batches: for instance, threads can each own an array which they
+    fill with their desired allocations. Then these arrays can each be submitted to the controlling thread. This
+    thread can then chew through the arrays, and add the allocations to queues and stops when the queue is full.
+    Then it can return where in the array it got to, so the threads know how much work was queued. Then the
+    main thread can submit the queues, and return whether the submissions were successful. Then the threads know
+    whether to submit their arrays from the beginning again at a later stage, or if they can begin from an offset.
 */
 
 enum Gpu_Allocator_Result {
