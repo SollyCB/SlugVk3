@@ -1662,9 +1662,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     indices[args->idx] = pos;
     return pos;
 }
-void adjust_sampler_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 inc, u32 dec) {
-    u8 w = weights[idx];
-
+void adjust_sampler_weights(u32 count, u8 *weights, u8 *flags, u64 *hashes, u32 idx, u32 inc, u32 dec) {
     //
     // Sampler weights: first 6 bits are the weight, top two are flags:
     // 7 bit = active sampler
@@ -1675,8 +1673,8 @@ void adjust_sampler_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 in
     // Find incremented weight
     // If w + inc wraps bottom 6 bits, w = Max, else w = w + inc
     //
-    u8 tmp = (w + inc) & 0b00111111;
-    tmp    = Max_u8 + (u8)(tmp > w);
+    u8 w   = weights[idx];
+    u8 tmp = Max_u8 + (u8)(w + inc > w);
     w      = (w + inc) | tmp;
 
     weights[idx] = Max_u8; // prevent matching itself
@@ -1715,14 +1713,17 @@ void adjust_sampler_weights(u32 count, u8 *weights, u64 *hashes, u32 idx, u32 in
     }
 
     u64 hash = hashes[idx];
+    u8  f    = flags [idx];
 
     // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
     // would not need to be memcpyd, just swapped with pos.
-    memmove(weights + pos + 1, weights + pos, idx - pos);
+    memmove(weights + pos + 1, weights + pos,  idx - pos);
+    memmove(flags   + pos + 1, flags   + pos,  idx - pos);
     memmove(hashes  + pos + 1, hashes  + pos, (idx - pos) * 8);
 
     weights[pos] = w;
-    hashes[pos]  = hash;
+    flags  [pos] = f;
+    hashes [pos] = hash;
 
     return;
 }
@@ -2083,12 +2084,21 @@ static u32 find_hash_idx(u32 count, u64 *hashes, u64 hash) {
     }
     return (count_trailing_zeros_u16(mask) >> 3) + (inc - 2);
 }
-static u32 find_lowest_flagged_weight(u32 count, u8 *weights) {
+
+enum Sampler_Allocator_Flag_Bits {
+    SAMPLER_ALLOCATOR_ACTIVE_BIT = 0x01,
+    SAMPLER_ALLOCATOR_IN_USE_BIT = 0x02,
+};
+typedef u8 Sampler_Allocator_Flags;
+
+static u32 sampler_find_lowest_weight_flagged_active_not_in_use(u32 count, u8 *flags) { // 'flags' is in order of weights (high to low)
     u32 offset = count - (count & 15);
 
     offset   -= 16 & (Max_u32 + ((count & 15) > 0));
-    __m128i a = _mm_load_si128((__m128i*)(weights + offset));
-    __m128i b = _mm_set1_epi8(0b1000'0000);
+    __m128i a = _mm_load_si128((__m128i*)(flags + offset));
+
+    __m128i b = _mm_set1_epi8((u8)SAMPLER_ALLOCATOR_ACTIVE_BIT | (u8)SAMPLER_ALLOCATOR_IN_USE_BIT);
+    __m128i c = _mm_set1_epi8((u8)SAMPLER_ALLOCATOR_ACTIVE_BIT);
 
     a = _mm_and_si128(a, b);
     u16 mask = _mm_movemask_epi8(a);
@@ -2097,12 +2107,26 @@ static u32 find_lowest_flagged_weight(u32 count, u8 *weights) {
             return Max_u32;
         offset -= 16;
 
-        a = _mm_load_si128((__m128i*)(weights + offset));
-        a = _mm_and_si128(a, b);
+        a    = _mm_load_si128((__m128i*)(flags + offset));
+        a    = _mm_and_si128(a, b);
+        a    = _mm_cmpeq_epi8(a, c);
         mask = _mm_movemask_epi8(a);
     }
     return offset + (15 - count_leading_zeros_u16(mask));
 }
+inline static void sampler_set_flag_in_use(Sampler_Allocator *alloc, u64 key) {
+    u32 idx = find_hash_idx(alloc->count, alloc->hashes, key);
+    // 0th bit == active flag
+    // 1st bit == in_use flag
+    alloc->flags[idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT;
+}
+inline static void sampler_clear_flag_in_use(Sampler_Allocator *alloc, u64 key) {
+    u32 idx = find_hash_idx(alloc->count, alloc->hashes, key);
+    // 0th bit == active flag
+    // 1st bit == in_use flag
+    alloc->flags[idx] &= ~(u8)SAMPLER_ALLOCATOR_IN_USE_BIT;
+}
+
 static void recreate_images(Gpu_Tex_Allocator *alloc, u32 count, u32 *indices) {
     VkDevice device = get_gpu_instance()->device;
 
@@ -3720,15 +3744,21 @@ Sampler_Allocator create_sampler_allocator(u32 cap) {
     ret.map = HashMap<u64, Sampler>::get(ret.cap);
 
     // Align 16 for SIMD
-    ret.hashes = (u64*)malloc_h(sizeof(u64) * ret.cap, 16);
-    ret.weights = malloc_h(ret.cap, 16);
-    memset(ret.weights, 0, ret.cap);
+    u64 aligned_cap = align(ret.cap, 16);
+    u64 block_size  = align(ret.cap * 8, 16);
+    block_size     += aligned_cap * 2;
+    u64 *block      = (u64*)malloc_h(block_size, 16);
+
+    memset(block, 0, block_size);
+
+    ret.hashes  = block;
+    ret.weights = (u8*)(block + aligned_cap);
+    ret.flags   = ret.weights + aligned_cap;
 
     return ret;
 }
 void destroy_sampler_allocator(Sampler_Allocator *alloc) {
     free_h(alloc->hashes);
-    free_h(alloc->weights);
     alloc->map.kill();
 }
 /*
@@ -3760,7 +3790,7 @@ u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
     u64 hash = hash_bytes(sampler_info, sizeof(Sampler));
     u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
     if (h_idx != Max_u32) {
-        adjust_sampler_weights(alloc->count, alloc->weights, alloc->hashes, h_idx, 1, 0);
+        adjust_sampler_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, 1, 0);
         return hash;
     }
 
@@ -3774,18 +3804,29 @@ u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
 
     return hash;
 }
-VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
+Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler) {
     // This is a little lame as a list traversal, but it should be pretty quick in reality.
     u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
 
     assert(h_idx != Max_u32 && "Invalid Sampler Hash");
     if (h_idx == Max_u32)
-        return NULL;
+        return SAMPLER_ALLOCATOR_RESULT_INVALID_KEY;
 
-    adjust_sampler_weights(alloc->count, alloc->weights, alloc->hashes, h_idx, 5, 1);
-    Sampler *info    = alloc->map.find_hash(hash);
+    adjust_sampler_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, 5, 1);
+    Sampler *info = alloc->map.find_hash(hash);
+
+    Sampler_Allocator_Result ret = SAMPLER_ALLOCATOR_RESULT_CACHED;
 
     if (!info->sampler) {
+
+        ret = SAMPLER_ALLOCATOR_RESULT_NEW;
+
+        if (alloc->in_use == alloc->device_cap) {
+            return SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE;
+        } else {
+            alloc->in_use++;
+        }
+
         float anisotropy = get_global_settings()->anisotropy;
 
         VkSamplerCreateInfo create_info = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -3798,12 +3839,15 @@ VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
 
         VkDevice device = get_gpu_instance()->device;
         if (alloc->active == alloc->device_cap) {
-            u32 evict_idx = find_lowest_flagged_weight(alloc->count, alloc->weights);
-            alloc->weights[evict_idx] &= 0b01111111;
 
-            VkSampler *to_evict = &alloc->map.find_hash(alloc->hashes[evict_idx])->sampler;
-            vkDestroySampler(device, *to_evict, ALLOCATION_CALLBACKS);
-            *to_evict = NULL;
+            u32      evict_idx = sampler_find_lowest_weight_flagged_active_not_in_use(alloc->count, alloc->flags);
+            Sampler *to_evict  = alloc->map.find_hash(alloc->hashes[evict_idx]);
+
+            // Clear 'active' flag
+            alloc->flags[evict_idx] &= ~(u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
+            vkDestroySampler(device, to_evict->sampler, ALLOCATION_CALLBACKS);
+
+            to_evict->sampler = NULL;
             alloc->active--;
         }
         auto check = vkCreateSampler(device, &create_info, ALLOCATION_CALLBACKS, &info->sampler);
@@ -3811,7 +3855,11 @@ VkSampler get_sampler(Sampler_Allocator *alloc, u64 hash) {
         alloc->active++;
     }
 
-    return info->sampler;
+    // Set 'active' + 'in_use' flags
+    alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT | (u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
+   *ret_sampler = info->sampler;
+
+    return ret;
 }
         /* End Sampler Allocation */
 

@@ -482,23 +482,31 @@ struct Sampler { // This is potentially a bad name
 
     VkSampler sampler;
 };
+enum Sampler_Allocator_Result {
+    SAMPLER_ALLOCATOR_RESULT_CACHED      = 0,
+    SAMPLER_ALLOCATOR_RESULT_NEW         = 1,
+    SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE  = 2,
+    SAMPLER_ALLOCATOR_RESULT_INVALID_KEY = 3,
+};
 struct Sampler_Allocator {
     u32 device_cap;
 
     u32 cap;
     u32 count;
     u32 active;
+    u32 in_use;
     HashMap<u64, Sampler> map;
 
     u64 *hashes;
     u8  *weights;
+    u8  *flags;
 };
 // Set cap to zero to let the allocator decide a size
 Sampler_Allocator create_sampler_allocator (u32 sampler_cap, float anisotropy);
 void              destroy_sampler_allocator(Sampler_Allocator *alloc);
 
-u64               add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
-VkSampler         get_sampler(Sampler_Allocator *alloc, u64 hash);
+u64                      add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
+Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler);
 
 struct Uniform_Allocator {
     u64 cap;
