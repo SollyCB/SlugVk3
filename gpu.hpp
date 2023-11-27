@@ -56,7 +56,7 @@ enum Memory_Flag_Bits {
 typedef u8 Memory_Flags;
 struct Gpu_Memory {
 
-    u32 attachment_mem_index; 
+    u32 attachment_mem_index;
     u32 vertex_mem_index;
     u32 uniform_mem_index;
 
@@ -401,15 +401,15 @@ Gpu_Allocator create_allocator (Gpu_Allocator_Config *info);
 void          destroy_allocator(Gpu_Allocator *alloc);
 
 Gpu_Allocator_Result begin_allocation    (Gpu_Allocator *alloc);
-Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc,  u64 size, void *ptr, u64 *ret_offset);
-Gpu_Allocator_Result submit_allocation   (Gpu_Allocator *alloc,  u32 *key);
+Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc, u64 size, void *ptr, u64 *ret_offset);
+Gpu_Allocator_Result submit_allocation   (Gpu_Allocator *alloc, u32 *key);
 
 Gpu_Allocator_Result staging_queue_begin (Gpu_Allocator *alloc);
 Gpu_Allocator_Result staging_queue_add   (Gpu_Allocator *alloc, u32 key);
 Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc);
 
 Gpu_Allocator_Result upload_queue_begin  (Gpu_Allocator *alloc);
-Gpu_Allocator_Result upload_queue_add    (Gpu_Allocator *alloc,  u32 key);
+Gpu_Allocator_Result upload_queue_add    (Gpu_Allocator *alloc, u32 key);
 Gpu_Allocator_Result upload_queue_submit (Gpu_Allocator *alloc);
 
 struct Gpu_Tex_Allocation { // @Note I would like struct to be smaller. Cannot see a good shrink rn...
@@ -503,6 +503,7 @@ struct Sampler { // This is potentially a bad name
     VkFilter min_filter;
 
     VkSampler sampler;
+    // u32 reference_count; <- idk about threading yet...
 };
 enum Sampler_Allocator_Result {
     SAMPLER_ALLOCATOR_RESULT_CACHED      = 0,

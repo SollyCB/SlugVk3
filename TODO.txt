@@ -1,23 +1,33 @@
-1. Current thing:
-    Reimplement some of the shader code (should take two seconds) so that shaders are not so tied together into
-    'sets' so early in their lifetime. Dont collapse descriptors, allocate them per shader. I previously though
-    that there could be overlap between the descriptors used by each shader, therefore they could be reused. But
-    now this does not seem to be the case, I am fairly sure that resources between shaders in the same set are
-    pretty separate.
+                            ** Current Tasks **
+1. Look again at the model loading. I was really uncomfortable with how general the model
+   loading functions were looking, and how many 'if's that this caused, and I kept leaving
+   comments like 'in a production app you can constrain this to these things' etc. But now
+   I realise that I can just constrain this myself! I do not need to handle every model right
+   now.
 
-    For now I want to implement it as descriptor sets are created and allocated for each shader at load time,
-    then they are just freed when the program ends. This can easily be improved later to used similar caching
-    and reloading features as the allocators, with the stages of caching as:
-        1. descriptors allocated
-        2. spirv in memory
-        3. unloaded
-    I could do this trivially now since I have experience in it, but really the model allocators are sooo much
-    more data than everything else that they are only where memory will really matter for a long time, so I
-    want to start implementing more actual rendering stuff now...
+   In a production app, the constraints I can imagine would resemble "load_player_model()",
+   "draw_players()", "draw_vegetation()", "draw_base_map()" and these could have "player_shaders()",
+   "vegetation_shaders()", "map_shaders()". I can just have this too! Idk I thought otherwise...
+   My player will be cesium man, my map the cubes.
 
-    Hence now I want to work on the pipeline + renderpass + framebuffer builder struct. But in order to do
-    pipelines, I need to go over the shader setup, since they are the first thing in the pipeline list.
+   This is my current leap forward, I will make these specific functions and structs (Acton dont
+   be general, why did I think I needed to be general lol???) and this will make moving forward
+   nice and easy. I just have to spend two days (maybe one if I am a genius) and then we can do this.
+   Then animations (shouldnt be too hard) and then map editor and gui (which will be fucking
+   AMAZING fun to implement).
 
-                            ** Current Goal **
-I will feel like I have reached a mile stone when I have animated models/cesium-man and rendered
-it using the flow chart shown in deferred-renderer-flow-chart.png
+                            ** Current Long Term Goal **
+1. Get the animations up and running.
+2. Super simple basic gui system
+3. Map editor type thing using the gui:
+    - be able to morph cubes to make ramps, boxes, ledges by selecting shape corners etc.
+4. Use the maps to test wall and floor collision detection
+    - just have a basic bounding box around the player
+    - leverage compute shader for detection
+5. Extend the map editor for creating player hit boxes:
+    - morph and bind cubes to bones.
+6. Use the player hit boxes to get shooting.
+7. Networking.
+
+                            ** Other Fun Stuff To Implement **
+1. Compute shader particle system

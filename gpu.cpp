@@ -1097,7 +1097,7 @@ inline static Descriptor_Allocator create_descriptor_allocator(u64 size, u64 add
 inline static void descriptor_allocator_reset(Descriptor_Allocator *allocator) {
     allocator->used = 0;
 }
-inline static void* descriptor_allocate(Descriptor_Allocator *alloc, VkDescriptorSetLayout layout, u64 *offset) {
+inline static u8* descriptor_allocate(Descriptor_Allocator *alloc, VkDescriptorSetLayout layout, u64 *offset) {
     u64 size;
     vkGetDescriptorSetLayoutSizeEXT(get_gpu_instance()->device, layout, &size);
 
@@ -1107,7 +1107,7 @@ inline static void* descriptor_allocate(Descriptor_Allocator *alloc, VkDescripto
     alloc->used += size;
 
     assert(alloc->used <= alloc->cap && "Descriptor Allocator Overflow");
-    return (void*)ret;
+    return ret;
 }
 inline static u64 descriptor_get_binding_offset(VkDescriptorSetLayout layout, u32 binding) {
     u64 ret;
@@ -1138,7 +1138,7 @@ inline static void descriptor_write_combined_image_sampler(Descriptor_Allocator 
 
     u8 *tmp;
     u64 sampler_offset;
-    if (alloc->info.combinedImageSamplerDescriptorSingleArray) {
+    if (!alloc->info.combinedImageSamplerDescriptorSingleArray) {
         tmp            = malloc_t(combined_size, alloc->info.descriptorBufferOffsetAlignment);
         sampler_offset = image_size * count;
         image_size     = alloc->info.sampledImageDescriptorSize;
@@ -2114,18 +2114,28 @@ static u32 sampler_find_lowest_weight_flagged_active_not_in_use(u32 count, u8 *f
     }
     return offset + (15 - count_leading_zeros_u16(mask));
 }
-inline static void sampler_set_flag_in_use(Sampler_Allocator *alloc, u64 key) {
+//
+// Idk what I am going to do about multithreading this thing... It seems dumb to try to circumvent
+// where it is not possible to avoid it: implementations can have a sampler limit, therefore there
+// must be some central point which tracks sampler allocations as such, it seems sensible to collate
+// a list of required resources, then have one thread which controls the allocations chew through
+// the list, then the other worker threads can continue with other things. The draw back to this
+// is you do not know how long the list is, but then it cannot be THAT long because of the sampler
+// cap.
+//
+#if 0
+inline static void mark_sampler_usage_complete(Sampler_Allocator *alloc, u64 key) {
     u32 idx = find_hash_idx(alloc->count, alloc->hashes, key);
-    // 0th bit == active flag
-    // 1st bit == in_use flag
-    alloc->flags[idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT;
+
+    Sampler *sampler = alloc->map.find_hash(alloc->hashes[idx]);
+    sampler->reference_count -= 1 & (int)(sampler->reference_count > 0);
+
+    // if reference count == 0 then tmp = 0;
+    // else tmp == Max and the 'in use' flag is preserved
+    u8 tmp = Max_u32 + (int)(sampler->reference_count == 0);
+    alloc->flags[idx] &= ~(u8)SAMPLER_ALLOCATOR_IN_USE_BIT | tmp;
 }
-inline static void sampler_clear_flag_in_use(Sampler_Allocator *alloc, u64 key) {
-    u32 idx = find_hash_idx(alloc->count, alloc->hashes, key);
-    // 0th bit == active flag
-    // 1st bit == in_use flag
-    alloc->flags[idx] &= ~(u8)SAMPLER_ALLOCATOR_IN_USE_BIT;
-}
+#endif
 
 static void recreate_images(Gpu_Tex_Allocator *alloc, u32 count, u32 *indices) {
     VkDevice device = get_gpu_instance()->device;
@@ -2158,7 +2168,6 @@ static void recreate_images(Gpu_Tex_Allocator *alloc, u32 count, u32 *indices) {
     /* End Allocator Helper Algorithms */
 
     /* Model Texture and Vertex/Index Attribute Allocators */
-
 Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocator *allocator) {
     assert(config->stage_bit_granularity  % 2 == 0 && "Bit granularity must be a power of 2");
     assert(config->upload_bit_granularity % 2 == 0 && "Bit granularity must be a power of 2");
@@ -2213,15 +2222,18 @@ Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocato
     u32 allocation_cap = ret.allocation_cap;
     ret.allocations        =             (Gpu_Allocation*) malloc_h(sizeof(Gpu_Allocation)             * allocation_cap, 16);
     ret.allocation_states  = (Gpu_Allocation_State_Flags*) malloc_h(sizeof(Gpu_Allocation_State_Flags) * allocation_cap, 16);
-    ret.allocation_indices =                    (u32*) malloc_h(sizeof(u32)                    * allocation_cap, 16);
-    ret.allocation_weights =                     (u8*) malloc_h(sizeof(u8)                     * allocation_cap, 16);
+    ret.allocation_indices =                        (u32*) malloc_h(sizeof(u32)                        * allocation_cap, 16);
+    ret.allocation_weights =                         (u8*) malloc_h(sizeof(u8)                         * allocation_cap, 16);
+
     memset(ret.allocation_states,   0, sizeof(u8) * allocation_cap);
     memset(ret.allocation_weights,  0, sizeof(u8) * allocation_cap);
 
     ret.stage_mask_count  = config->stage_cap  / (64 * ret.stage_bit_granularity);
     ret.upload_mask_count = config->upload_cap / (64 * ret.upload_bit_granularity);
+
     ret.stage_masks       = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count,  16);
     ret.upload_masks      = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 16);
+
     memset(ret.stage_masks,  0, sizeof(u64) * ret.stage_mask_count);
     memset(ret.upload_masks, 0, sizeof(u64) * ret.upload_mask_count);
 
@@ -2339,9 +2351,9 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     u32 allocation_cap = ret.allocation_cap;
     ret.allocations        =         (Gpu_Tex_Allocation*) malloc_h(sizeof(Gpu_Allocation)             * allocation_cap, 16);
     ret.allocation_states  = (Gpu_Allocation_State_Flags*) malloc_h(sizeof(Gpu_Allocation_State_Flags) * allocation_cap, 16);
-    ret.allocation_indices =                    (u32*) malloc_h(sizeof(u32)                    * allocation_cap, 16);
-    ret.allocation_weights =                     (u8*) malloc_h(sizeof(u8)                     * allocation_cap, 16);
-    ret.hashes             =                    (u64*) malloc_h(sizeof(u64)                    * allocation_cap, 16);
+    ret.allocation_indices =                            (u32*) malloc_h(sizeof(u32)                    * allocation_cap, 16);
+    ret.allocation_weights =                             (u8*) malloc_h(sizeof(u8)                     * allocation_cap, 16);
+    ret.hashes             =                            (u64*) malloc_h(sizeof(u64)                    * allocation_cap, 16);
 
     memset(ret.allocation_states,   0, sizeof(u8)  * allocation_cap);
     memset(ret.allocation_weights,  0, sizeof(u8)  * allocation_cap);
@@ -2349,6 +2361,7 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
 
     ret.stage_mask_count  = config->stage_cap  / (64 * ret.stage_bit_granularity);
     ret.upload_mask_count = config->upload_cap / (64 * ret.upload_bit_granularity);
+
     ret.stage_masks       = (u64*)malloc_h(sizeof(u64) * ret.stage_mask_count,  16);
     ret.upload_masks      = (u64*)malloc_h(sizeof(u64) * ret.upload_mask_count, 16);
 
@@ -3786,6 +3799,7 @@ u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
     // sampler is inserted with will always be its key.
     //
     sampler_info->sampler = NULL; // Ensure only type data influences hash, not the handle
+    sampler_info->reference_count = 0;
 
     u64 hash = hash_bytes(sampler_info, sizeof(Sampler));
     u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
@@ -3858,6 +3872,7 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
     // Set 'active' + 'in_use' flags
     alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT | (u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
    *ret_sampler = info->sampler;
+   info->reference_count++;
 
     return ret;
 }
@@ -4423,33 +4438,12 @@ void free_static_model(Static_Model *model) {
     free_h(model->mats);
     //free_h(model->nodes);
 }
-struct Model_Draw_Info {
 
-};
-void model_prepare_to_draw(Model_Allocators *alloc, u32 count, Static_Model *models) {
-    staging_queue_begin(&alloc->index);
-    staging_queue_begin(&alloc->vertex);
-    tex_staging_queue_begin(&alloc->tex);
-
-    for(u32 i = 0; i < count; ++i) {
-        staging_queue_add(&alloc->index,  models[i].index_allocation_key);
-        staging_queue_add(&alloc->vertex, models[i].vertex_allocation_key);
-        for(u32 j = 0; j < models[i].mat_count; ++j) {
-            if (models[i].mats[j].tex_base.sampler_key) {
-                tex_staging_queue_add(&alloc->tex, models[i].mats[j].tex_base.allocation_key);
-                get_sampler(&alloc->sampler, models[i].mats[j].tex_base.sampler_key);
-            }
-        }
-    }
-
-    staging_queue_submit(&alloc->index);
-    staging_queue_submit(&alloc->vertex);
-    tex_staging_queue_submit(&alloc->tex);
-}
+// @TODO CURRENT TASK!! See the TODO.txt
 
     /* Renderpass Framebuffer Pipeline */
 
-#ifdef _WIN32
+#ifdef _WIN32 // Different drivers for different OSs, so I assume cache impl would be different
 #define PL_CACHE_FILE_NAME "pl-caches/window.bin"
 #else
 #define PL_CACHE_FILE_NAME "pl-caches/ubuntu.bin"
