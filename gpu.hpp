@@ -322,6 +322,13 @@ enum Gpu_Allocator_Result {
     ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY = 7,
     ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE       = 8,
 };
+
+#define CHECK_GPU_ALLOCATOR_RESULT(res)          \
+    if (res != ALLOCATOR_RESULT_SUCCESS) {       \
+        assert(res == ALLOCATOR_RESULT_SUCCESS); \
+        return {};                               \
+    }
+
 enum Gpu_Allocation_State_Flag_Bits {
     ALLOCATION_STATE_TO_DRAW_BIT   = 0x01,
     ALLOCATION_STATE_STAGED_BIT    = 0x02,
@@ -577,6 +584,8 @@ inline static void uniform_allocator_reset_and_zero(Uniform_Allocator *allocator
     /* Model Memory Management End */
 
     /* Model Data */
+
+#if 0 // General model data (mostly for example)
 struct Node;
 struct Skin {
     u32       joint_count;
@@ -697,8 +706,13 @@ struct Static_Model {
 
     u32      index_allocation_key;
     u32      vertex_allocation_key;
-    // Texture *textures;
 };
+
+Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
+void         free_static_model(Static_Model *model);
+
+#endif // General model data (mostly for example)
+
 struct Model_Allocators {
     Gpu_Allocator     index;
     Gpu_Allocator     vertex;
@@ -710,11 +724,51 @@ struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary d
 Model_Allocators init_model_allocators(Model_Allocators_Config *config);
 void             shutdown_allocators  (Model_Allocators *allocs);
 
-Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
-void         free_static_model(Static_Model *model);
+struct Model_Cube {
+    u32 tex_key_base;
+    u32 tex_key_pbr;
+    u64 sampler_key_base;
+    u64 sampler_key_pbr;
 
+    u32 index_key;
+    u32 vertex_key;
+
+    u32 count; // draw count (num indices)
+    VkIndexType index_type;
+
+    // Allocation offsets
+    u64 offset_index;
+    u64 offset_position;
+    u64 offset_normal;
+    u64 offset_tangent;
+    u64 offset_tex_coords;
+
+    // Pipeline info
+    VkPrimitiveTopology topology;
+    u32 stride_position;
+    u32 stride_normal;
+    u32 stride_tangent;
+    u32 stride_tex_coords;
+    VkFormat fmt_position;
+    VkFormat fmt_normal;
+    VkFormat fmt_tangent;
+    VkFormat fmt_tex_coords;
+};
+
+enum Model_Type {
+    MODEL_TYPE_CUBE = 1;
+};
+union Model {
+    Model_Cube cube;
+};
 
     /* Renderpass Framebuffer Pipeline */
+struct Pl_Primitive_Info {
+    VkPrimitiveTopology topology;
+    u32       count;
+    u32      *strides;
+    VkFormat *formats;
+};
 
 struct Pl_Layout {
     u32                              stage_count;

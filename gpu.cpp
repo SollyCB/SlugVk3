@@ -3973,20 +3973,21 @@ void shutdown_allocators(Model_Allocators *allocs) {
     destroy_sampler_allocator(&allocs->sampler);
 }
 
-enum class Data_Type : u32 {
-    NONE    = 0,
-    VERTEX  = 1,
-    INDEX   = 2,
-    UNIFORM = 3,
+// These types are used for model loading
+enum Buffer_View_Data_Type {
+    BUFFER_VIEW_DATA_TYPE_NONE    = 0,
+    BUFFER_VIEW_DATA_TYPE_VERTEX  = 1,
+    BUFFER_VIEW_DATA_TYPE_INDEX   = 2,
+    BUFFER_VIEW_DATA_TYPE_UNIFORM = 3,
 };
 struct Buffer_View {
     u64 offset;
-    Data_Type type;
+    u64 size;
+    Buffer_View_Data_Type type;
 };
+
 //
-// @Todo load_skinned_models(); <- this will also need to load animations
-//
-//                  ** Todos for load_static_model(..) **
+//                  ** Todos for load_model_cube(..) **
 //
 // @Todo Properly document this function.
 // @Todo Create more local copies of variables to cut down on the derefing.
@@ -3999,447 +4000,208 @@ struct Buffer_View {
 // contiguous block method. It was good in principle, and has benefits in places, but I think it
 // does more harm than good. - See equivalent note in gltf header.
 //
-Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir) {
-    u64 mark = get_mark_temp();
+Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String *model_dir) {
+    Model_Cube ret = {};
 
+    // Setup model directory
+    char uri_buf[127];
+    memcpy(uri_buf, model_dir->str,  model_dir->len);
+    memcpy(uri_buf + model_dir->len, model_file->str, model_file->len);
+
+    Gltf gltf = parse_gltf(model_uri->str);
+
+    // Load base texture
+    Gltf_Material *gltf_mat     = gltf->materials;
+    Gltf_Texture  *gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->base_color_texture_index);
+    Gltf_Sampler  *gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+    Gltf_Image    *gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
+
+    // @Ugly This is a bit ugly
     String tmp_uri;
-    char uri_buffer[127];
-    memcpy(uri_buffer, dir->str, dir->len);
-    memcpy(&uri_buffer[0] + dir->len, model_name->str, model_name->len);
-    uri_buffer[dir->len + model_name->len] = '\0';
+    strcpy(uri_buffer + model_dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
+    tmp_uri = cstr_to_string((const char*)uri_buffer);
 
-    Gltf gltf = parse_gltf(uri_buffer);
+    sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+    sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+    sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+    sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
 
-    Gltf_Mesh *gltf_mesh;
-    Gltf_Mesh_Primitive *gltf_prim;
-    Gltf_Accessor *accessor;
+    ret.sampler_key_base = add_sampler(&allocs->sampler, &sampler_info);
+    allocation_result    = tex_add_texture(&allocs->tex, &tmp_uri, &ret.tex_key_base);
 
-    u32 accessor_count = gltf_accessor_get_count(&gltf);
-    u32 view_count     = gltf_buffer_view_get_count(&gltf);
-    u32 node_count     = gltf_node_get_count(&gltf);
-    u32 mat_count      = gltf_material_get_count(&gltf);
-    u32 mesh_count     = gltf_mesh_get_count(&gltf);
-    u32 prim_count     = gltf.total_primitive_count;
+    // Load pbr texture
+    gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->metallic_roughness_texture_index);
+    gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+    gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
 
-    Static_Model ret = {};
+    // @Ugly This is a bit ugly
+    strcpy(uri_buffer + model_dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
+    tmp_uri = cstr_to_string((const char*)uri_buffer);
 
-    ret.node_count = node_count;
-    ret.mesh_count = mesh_count;
-    ret.mat_count  = mat_count;
+    sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+    sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+    sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+    sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
 
-    //ret.nodes = (Node*)malloc_h(sizeof(Node) * node_count, 8); @Unused
-    ret.meshes = (Mesh*)malloc_h(sizeof(Mesh) * mesh_count, 8);
-    ret.mats   = (Material*)malloc_h(sizeof(Material) * mat_count, 8);
+    ret.sampler_key_pbr  = add_sampler(&allocs->sampler, &sampler_info);
+    allocation_result    = tex_add_texture(&allocs->tex, &tmp_uri, &ret.tex_key_pbr);
 
-    ret.meshes[0].primitives = (Primitive*)malloc_h(sizeof(Primitive) * prim_count, 8);
-    ret.meshes[0].pl_infos   = (Pl_Primitive_Info*)malloc_h(sizeof(Pl_Primitive_Info) * prim_count, 8);
+    // Load vertex/index data
+    Gltf_Buffer         *gltf_buffer;
+    Gltf_Accessor       *gltf_accessor;
+    Gltf_Buffer_View    *gltf_buffer_view;
+    Gltf_Mesh_Primitive *gltf_primitive;
 
-    // Allow summing offset
-    memset(ret.meshes[0].primitives, 0, sizeof(Primitive) * prim_count);
-    memset(ret.meshes[0].pl_infos, 0, sizeof(Pl_Primitive_Info) * prim_count);
+    u32          buffer_view_count = gltf_get_count_buffer_view(&gltf);
+    Buffer_View *buffer_views      = (Buffer_View*)malloc_t(sizeof(Buffer_View) * buffer_view_count, 8);
+    memset(buffer_views, 0, sizeof(Buffer_View) * gltf->buffer_view_count);
 
-    /*
-        // @Todo properly document this function...
-        Vertex Attribute Load method:
-            1. Loop primitives   - mark data
-            2. Loop buffer views - load data
-            3. Loop primitives   - set offsets
-    */
+    u32 buffer_view_index;
+    u32 buffer_view_position;
+    u32 buffer_view_normal;
+    u32 buffer_view_tangent;
+    u32 buffer_view_tex_coords;
 
-    Buffer_View *views = (Buffer_View*)malloc_t(sizeof(Buffer_View) * view_count, 8);
-    memset(views, 0, sizeof(Buffer_View) * view_count); // ensure type is not wrongly matched
-    u32 *view_indices = (u32*)malloc_t(sizeof(u32) * accessor_count, 8); // no more deref accessors
+    // Index data
+    u32 tmp          = gltf->meshes[0].primitives[0].index;
+    ret.topology     = gltf->meshes[0].primitives[0].topology;
+    gltf_accessor    = gltf_accessor_by_index(&gltf, tmp);
+    ret.offset_index = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
+    ret.count        = gltf_accessor->count;
 
-    Primitive *prim;
-    Pl_Primitive_Info *pl_info;
-
-    // 1. Loop primitives - mark data
-    gltf_mesh = gltf.meshes;
-    u32 prim_track = 0;
-    for(u32 i = 0; i < mesh_count; ++i) {
-        gltf_prim = gltf_mesh->primitives;
-
-        ret.meshes[i].count      = gltf_mesh->primitive_count;
-        ret.meshes[i].primitives = ret.meshes[0].primitives + prim_track;
-        ret.meshes[i].pl_infos   = ret.meshes[0].pl_infos + prim_track;
-
-        prim_track += ret.meshes[i].count;
-        for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
-            prim    = &ret.meshes[i].primitives[j];
-            pl_info = &ret.meshes[i].pl_infos[j];
-
-            pl_info->topology = (VkPrimitiveTopology)gltf_prim->topology;
-
-            // Set Index
-            accessor = gltf_accessor_by_index(&gltf, gltf_prim->indices);
-
-            view_indices[gltf_prim->indices]  = accessor->buffer_view;
-            views[accessor->buffer_view].type = Data_Type::INDEX;
-
-            prim->offset_index = accessor->byte_offset;
-            prim->count        = accessor->count;
-            prim->material     = &ret.mats[gltf_prim->material];
-
-            switch(accessor->format) {
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
-            {
-                prim->index_type = VK_INDEX_TYPE_UINT16;
-                break;
-            }
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
-            {
-                prim->index_type = VK_INDEX_TYPE_UINT32;
-                break;
-            }
-            default:
-                assert(false && "Invalid Index Type");
-            }
-
-            if (gltf_prim->position != -1) {
-                accessor = gltf_accessor_by_index(&gltf, gltf_prim->position);
-
-                prim->offset_position = accessor->byte_offset;
-
-                pl_info->stride_position = get_accessor_byte_stride(accessor->format);
-                pl_info->fmt_position    = (VkFormat)accessor->format;
-
-                view_indices[gltf_prim->position] = accessor->buffer_view;
-                views[accessor->buffer_view].type = Data_Type::VERTEX;
-            }
-            if (gltf_prim->normal != -1) {
-                accessor = gltf_accessor_by_index(&gltf, gltf_prim->normal);
-
-                prim->offset_normal = accessor->byte_offset;
-
-                pl_info->stride_normal = get_accessor_byte_stride(accessor->format);
-                pl_info->fmt_normal    = (VkFormat)accessor->format;
-
-                view_indices[gltf_prim->normal]   = accessor->buffer_view;
-                views[accessor->buffer_view].type = Data_Type::VERTEX;
-            }
-            if (gltf_prim->tangent != -1) {
-                accessor = gltf_accessor_by_index(&gltf, gltf_prim->tangent);
-
-                prim->offset_tangent = accessor->byte_offset;
-
-                pl_info->stride_tangent = get_accessor_byte_stride(accessor->format);
-                pl_info->fmt_tangent    = (VkFormat)accessor->format;
-
-                view_indices[gltf_prim->tangent]  = accessor->buffer_view;
-                views[accessor->buffer_view].type = Data_Type::VERTEX;
-            }
-            if (gltf_prim->tex_coord_0 != -1) {
-                accessor = gltf_accessor_by_index(&gltf, gltf_prim->tex_coord_0);
-
-                prim->offset_tex_coords = accessor->byte_offset;
-
-                pl_info->stride_tex_coords = get_accessor_byte_stride(accessor->format);
-                pl_info->fmt_tex_coords    = (VkFormat)accessor->format;
-
-                view_indices[gltf_prim->tex_coord_0] = accessor->buffer_view;
-                views[accessor->buffer_view].type    = Data_Type::VERTEX;
-            }
-
-            gltf_prim = (Gltf_Mesh_Primitive*)((u8*)gltf_prim + gltf_prim->stride);
-        }
-        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
+    switch(gltf_accessor->format) {
+    case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
+    {
+        ret.index_type = VK_INDEX_TYPE_UINT16;
+        break;
+    }
+    case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
+    {
+        ret.index_type = VK_INDEX_TYPE_UINT32;
+        break;
+    }
+    default:
+        assert(false && "Invalid Index Type");
     }
 
-    // 2. Loop buffer views - load data
-    assert(gltf_buffer_get_count(&gltf) == 1 && "Too Many Buffers");
-    Gltf_Buffer *gltf_buf = gltf.buffers;
+    tmp                      = gltf_accessor->buffer_view;
+    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
+    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_INDEX;
+    buffer_views[tmp].offset = gltf_buffer_view->offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
 
-    memcpy(uri_buffer, dir->str, dir->len);
-    strcpy(&uri_buffer[0] + dir->len, gltf_buf->uri);
+    buffer_view_index = tmp;
 
-    u8 *buf = (u8*)file_read_bin_temp_large(uri_buffer, gltf_buf->byte_length);
+    // Position data
+    tmp = gltf->meshes[0].primitives[0].position;
 
-    Gltf_Buffer_View *gltf_view = gltf.buffer_views;
-    void *ptr;
-    Gpu_Allocator_Result allocation_result;
+    gltf_accessor       = gltf_accessor_by_index(&gltf, tmp);
+    ret.offset_position = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
+    ret.fmt_position    = gltf_accessor->format;
+    ret.stride_position = gltf_accessor->byte_stride;
+    ret.count           = gltf_accessor->count;
 
-    // These should never fail. If they do, adjust memory layout.
-    allocation_result = begin_allocation(&allocs->vertex);
-    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-        return {};
+    tmp                      = gltf_accessor->buffer_view;
+    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
+    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
+    buffer_views[tmp].offset = gltf_buffer_view->offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
 
-    allocation_result = begin_allocation(&allocs->index);
-    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-        return {};
+    buffer_view_position = tmp;
 
-    u64 vertex_allocation_size = 0;
-    u64 index_allocation_size  = 0;
-    for(u32 i = 0; i < view_count; ++i) {
-        // This switch seems lame, but in reality gltf views are likely packed by type, so it should
-        // be well predicted.
-        switch(views[i].type) {
-        case Data_Type::VERTEX:
+    // Normal data
+    tmp = gltf->meshes[0].primitives[0].normal;
+
+    gltf_accessor     = gltf_accessor_by_index(&gltf, tmp);
+    ret.offset_normal = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
+    ret.fmt_normal    = gltf_accessor->format;
+    ret.stride_normal = gltf_accessor->byte_stride;
+    ret.count         = gltf_accessor->count;
+
+    tmp = gltf_accessor->buffer_view;
+    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
+    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
+    buffer_views[tmp].offset = gltf_buffer_view->offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
+
+    buffer_view_normal = tmp;
+
+    // Tangent data
+    tmp = gltf->meshes[0].primitives[0].tangent;
+
+    gltf_accessor      = gltf_accessor_by_index(&gltf, tmp);
+    ret.offset_tangent = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
+    ret.fmt_tangent    = gltf_accessor->format;
+    ret.stride_tangent = gltf_accessor->byte_stride;
+    ret.count          = gltf_accessor->count;
+
+    tmp                      = gltf_accessor->buffer_view;
+    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
+    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
+    buffer_views[tmp].offset = gltf_buffer_view->offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
+
+    buffer_view_tangent = tmp;
+
+    // Tex Coords
+    tmp = gltf->meshes[0].primitives[0].tex_coord_0;
+
+    gltf_accessor         = gltf_accessor_by_index(&gltf, tmp);
+    ret.offset_tex_coords = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
+    ret.fmt_tex_coords    = gltf_accessor->format;
+    ret.stride_tex_coords = gltf_accessor->byte_stride;
+    ret.count             = gltf_accessor->count;
+
+    tmp                      = gltf_accessor->buffer_view;
+    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
+    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
+    buffer_views[tmp].offset = gltf_buffer_view->offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
+
+    buffer_view_tex_coords = tmp;
+
+    // Allocate vertex/index data
+    Allocation_Result res;
+    res = begin_allocation(&allocs->index);
+    CHECK_GPU_ALLOCATOR_RESULT(res);
+    res = begin_allocation(&allocs->vertex);
+    CHECK_GPU_ALLOCATOR_RESULT(res);
+
+    u8 *buffer_data = file_read_bin_temp_large(gltf->buffers[0].uri, gltf->buffers[i].byte_len);
+    u64 tmp_offset;
+    for(u32 i = 0; i < buffer_view_count; ++i) {
+        switch(buffer_views[i]) {
+        case BUFFER_VIEW_DATA_TYPE_INDEX:
         {
-            allocation_result = continue_allocation(&allocs->vertex, gltf_view->byte_length,
-                                                    buf + gltf_view->byte_offset);
-
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-                return {};
-
-            views[i].offset         = vertex_allocation_size;
-            vertex_allocation_size += gltf_view->byte_length;
-
+            res = continue_allocation(&allocs->index, buffer_views[i].size, buffer_data + buffer_views[i].offset, &buffer_views[i].offset);
+            CHECK_GPU_ALLOCATOR_RESULT(res);
             break;
         }
-        case Data_Type::INDEX:
+        case BUFFER_VIEW_DATA_TYPE_VERTEX:
         {
-            allocation_result = continue_allocation(&allocs->index, gltf_view->byte_length,
-                                                    buf + gltf_view->byte_offset);
-
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-                return {};
-
-            views[i].offset         = index_allocation_size;
-            index_allocation_size  += gltf_view->byte_length;
-
+            res = continue_allocation(&allocs->vertex, buffer_views[i].size, buffer_data + buffer_views[i].offset, &buffer_views[i].offset);
+            CHECK_GPU_ALLOCATOR_RESULT(res);
             break;
         }
-        case Data_Type::NONE:
-        {
-            break;
-        }
-        case Data_Type::UNIFORM:
-            assert(false && "No Uniform Data Allowed In Static Model");
-            break;
         default:
-            assert(false && "Invalid Buffer View Type");
+            continue;
         }
-
-        gltf_view = (Gltf_Buffer_View*)((u8*)gltf_view + gltf_view->stride);
     }
 
-    // Submit index allocation
-    allocation_result = submit_allocation(&allocs->index, &ret.index_allocation_key);
-    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-        return {};
+    res = submit_allocation(&allocs->index,  &ret.index_key);
+    CHECK_GPU_ALLOCATOR_RESULT(res);
+    res = submit_allocation(&allocs->vertex, &ret.vertex_key);
+    CHECK_GPU_ALLOCATOR_RESULT(res);
 
-    // Submit vertex allocation
-    allocation_result = submit_allocation(&allocs->vertex, &ret.vertex_allocation_key);
-    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-        return {};
+    // Offset the data into the allocator's buffer
+    ret.offset_index      += buffer_views[buffer_view_index].offset;
+    ret.offset_position   += buffer_views[buffer_view_position].offset;
+    ret.offset_normal     += buffer_views[buffer_view_normal].offset;
+    ret.offset_tangent    += buffer_views[buffer_view_tangent].offset;
+    ret.offset_tex_coords += buffer_views[buffer_view_tex_coords].offset;
 
-    // 3. Loop primitives - set offsets
-    gltf_mesh = gltf.meshes;
-    for(u32 i = 0; i < mesh_count; ++i) {
-        gltf_prim = gltf_mesh->primitives;
-        for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
-
-            //
-            // Previously acquired the offsets of buffer views into their respective allocation.
-            // Now add these offsets to the offsets of the primitives into their respective
-            // buffer view; this gives the total offset of the primitive data into the
-            // model's allocation (vertex or index allocation).
-            //
-
-            ret.meshes[i].primitives[j].offset_index +=
-                views[view_indices[gltf_prim->indices]].offset;
-
-            if (gltf_prim->position != -1)
-                ret.meshes[i].primitives[j].offset_position +=
-                    views[view_indices[gltf_prim->position]].offset;
-
-            if (gltf_prim->normal != -1)
-                ret.meshes[i].primitives[j].offset_normal +=
-                    views[view_indices[gltf_prim->normal]].offset;
-
-            if (gltf_prim->tangent != -1)
-                ret.meshes[i].primitives[j].offset_tangent +=
-                    views[view_indices[gltf_prim->tangent]].offset;
-
-            if (gltf_prim->tex_coord_0 != -1)
-                ret.meshes[i].primitives[j].offset_tex_coords +=
-                    views[view_indices[gltf_prim->tex_coord_0]].offset;
-
-            gltf_prim = (Gltf_Mesh_Primitive*)((u8*)gltf_prim + gltf_prim->stride);
-        }
-
-        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
-    }
-
-    // Load Material Data
-    Sampler        sampler_info;
-    Gltf_Material *gltf_mat = gltf.materials;
-    Gltf_Texture  *gltf_tex;
-    Gltf_Sampler  *gltf_sampler;
-    Gltf_Image    *gltf_image;
-    for(u32 i = 0; i < mat_count; ++i) {
-
-        ret.mats[i].base_factors[0] = gltf_mat->base_color_factor[0];
-        ret.mats[i].base_factors[1] = gltf_mat->base_color_factor[1];
-        ret.mats[i].base_factors[2] = gltf_mat->base_color_factor[2];
-        ret.mats[i].base_factors[3] = gltf_mat->base_color_factor[3];
-
-        ret.mats[i].emissive_factors[0] = gltf_mat->emissive_factor[0];
-        ret.mats[i].emissive_factors[1] = gltf_mat->emissive_factor[1];
-        ret.mats[i].emissive_factors[2] = gltf_mat->emissive_factor[2];
-
-        ret.mats[i].metal_factor       = gltf_mat->metallic_factor;
-        ret.mats[i].rough_factor       = gltf_mat->roughness_factor;
-        ret.mats[i].norm_scale         = gltf_mat->normal_scale;
-        ret.mats[i].occlusion_strength = gltf_mat->occlusion_strength;
-
-        //
-        // @Todo alpha settings
-        //
-
-        // *** Older comment: ***
-        // Texture method:
-        //     Add textures to an array.
-        //     Material stores the index to the texture. As textures are quite expensive,
-        //     I think it will be sensible to store and manage them elsewhere: I imagine
-        //     that I can store vertex data indefinitely in memory, but texture data would
-        //     likely often need to be streamed from disk and cached well etc. and the model
-        //     allocator system does not facilitate this super well.
-        //
-        //     I like the vertex data being handled by the model fine, but textures should
-        //     work differently.
-        memcpy(uri_buffer, dir->str, dir->len);
-
-        //
-        // @Todo Think about converting some of the below stuff to functions. Maybe this would be easier
-        // to understand, but then again maybe not.
-        //
-
-        // base
-        if (gltf_mat->base_color_texture_index != -1) {
-            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->base_color_texture_index);
-            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-            gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
-
-            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
-            tmp_uri = cstr_to_string((const char*)uri_buffer);
-
-            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
-            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
-
-            ret.mats[i].tex_base.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
-            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_base.allocation_key);
-
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-                return {};
-        }
-
-
-        // metallic roughness
-        if (gltf_mat->metallic_roughness_texture_index != -1) {
-            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->metallic_roughness_texture_index);
-            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-            gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
-
-            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
-            tmp_uri = cstr_to_string((const char*)uri_buffer);
-
-            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
-            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
-
-            ret.mats[i].tex_pbr.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
-            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_pbr.allocation_key);
-
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-                return {};
-        }
-
-
-        // normal
-        if (gltf_mat->normal_texture_index != -1) {
-            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->normal_texture_index);
-            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-            gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
-
-            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
-            tmp_uri = cstr_to_string((const char*)uri_buffer);
-
-            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
-            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
-
-            ret.mats[i].tex_norm.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
-            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_norm.allocation_key);
-
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-                return {};
-        }
-
-
-        // occlusion
-        if (gltf_mat->occlusion_texture_index != -1) {
-            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->occlusion_texture_index);
-            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-            gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
-
-            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
-            tmp_uri = cstr_to_string((const char*)uri_buffer);
-
-            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
-            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
-
-            ret.mats[i].tex_occlusion.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
-            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_occlusion.allocation_key);
-
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-                return {};
-        }
-
-
-        // emissive
-        if (gltf_mat->emissive_texture_index != -1) {
-            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->emissive_texture_index);
-            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-            gltf_image   = gltf_image_by_index(&gltf, gltf_tex->source_image);
-
-            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
-            tmp_uri = cstr_to_string((const char*)uri_buffer);
-
-            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
-            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
-
-            ret.mats[i].tex_emissive.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
-            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_emissive.allocation_key);
-
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
-                return {};
-        }
-
-        gltf_mat = (Gltf_Material*)((u8*)gltf_mat + gltf_mat->stride);
-    }
-
-    reset_to_mark_temp(mark);
     return ret;
 }
-void free_static_model(Static_Model *model) {
-    free_h(model->meshes[0].primitives);
-    free_h(model->meshes[0].pl_infos);
-    free_h(model->meshes);
-    free_h(model->mats);
-    //free_h(model->nodes);
-}
-
-// @TODO CURRENT TASK!! See the TODO.txt
 
     /* Renderpass Framebuffer Pipeline */
 
@@ -5210,6 +4972,445 @@ void DestroyDebugUtilsMessengerEXT(
     auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
     if (func != nullptr)
         return func(instance, messenger, pAllocator);
+}
+#endif
+
+//
+// Below is unimplemented code/old code that I want to keep around for examples later if I need it (this code often does too much, so it is not useful for now, but it may be useful later when I need more stuff)
+//
+
+#if 0
+Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir) {
+    u64 mark = get_mark_temp();
+
+    String tmp_uri;
+    char uri_buffer[127];
+    memcpy(uri_buffer, dir->str, dir->len);
+    memcpy(&uri_buffer[0] + dir->len, model_name->str, model_name->len);
+    uri_buffer[dir->len + model_name->len] = '\0';
+
+    Gltf gltf = parse_gltf(uri_buffer);
+
+    Gltf_Mesh *gltf_mesh;
+    Gltf_Mesh_Primitive *gltf_prim;
+    Gltf_Accessor *accessor;
+
+    u32 accessor_count = gltf_accessor_get_count(&gltf);
+    u32 view_count     = gltf_buffer_view_get_count(&gltf);
+    u32 node_count     = gltf_node_get_count(&gltf);
+    u32 mat_count      = gltf_material_get_count(&gltf);
+    u32 mesh_count     = gltf_mesh_get_count(&gltf);
+    u32 prim_count     = gltf.total_primitive_count;
+
+    Static_Model ret = {};
+
+    ret.node_count = node_count;
+    ret.mesh_count = mesh_count;
+    ret.mat_count  = mat_count;
+
+    //ret.nodes = (Node*)malloc_h(sizeof(Node) * node_count, 8); @Unused
+    ret.meshes = (Mesh*)malloc_h(sizeof(Mesh) * mesh_count, 8);
+    ret.mats   = (Material*)malloc_h(sizeof(Material) * mat_count, 8);
+
+    ret.meshes[0].primitives = (Primitive*)malloc_h(sizeof(Primitive) * prim_count, 8);
+    ret.meshes[0].pl_infos   = (Pl_Primitive_Info*)malloc_h(sizeof(Pl_Primitive_Info) * prim_count, 8);
+
+    // Allow summing offset
+    memset(ret.meshes[0].primitives, 0, sizeof(Primitive) * prim_count);
+    memset(ret.meshes[0].pl_infos, 0, sizeof(Pl_Primitive_Info) * prim_count);
+
+    /*
+        // @Todo properly document this function...
+        Vertex Attribute Load method:
+            1. Loop primitives   - mark data
+            2. Loop buffer views - load data
+            3. Loop primitives   - set offsets
+    */
+
+    Buffer_View *views = (Buffer_View*)malloc_t(sizeof(Buffer_View) * view_count, 8);
+    memset(views, 0, sizeof(Buffer_View) * view_count); // ensure type is not wrongly matched
+    u32 *view_indices = (u32*)malloc_t(sizeof(u32) * accessor_count, 8); // no more deref accessors
+
+    Primitive *prim;
+    Pl_Primitive_Info *pl_info;
+
+    // 1. Loop primitives - mark data
+    gltf_mesh = gltf.meshes;
+    u32 prim_track = 0;
+    for(u32 i = 0; i < mesh_count; ++i) {
+        gltf_prim = gltf_mesh->primitives;
+
+        ret.meshes[i].count      = gltf_mesh->primitive_count;
+        ret.meshes[i].primitives = ret.meshes[0].primitives + prim_track;
+        ret.meshes[i].pl_infos   = ret.meshes[0].pl_infos + prim_track;
+
+        prim_track += ret.meshes[i].count;
+        for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
+            prim    = &ret.meshes[i].primitives[j];
+            pl_info = &ret.meshes[i].pl_infos[j];
+
+            pl_info->topology = (VkPrimitiveTopology)gltf_prim->topology;
+
+            // Set Index
+            accessor = gltf_accessor_by_index(&gltf, gltf_prim->indices);
+
+            view_indices[gltf_prim->indices]  = accessor->buffer_view;
+            views[accessor->buffer_view].type = Data_Type::INDEX;
+
+            prim->offset_index = accessor->byte_offset;
+            prim->count        = accessor->count;
+            prim->material     = &ret.mats[gltf_prim->material];
+
+            switch(accessor->format) {
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
+            {
+                prim->index_type = VK_INDEX_TYPE_UINT16;
+                break;
+            }
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
+            {
+                prim->index_type = VK_INDEX_TYPE_UINT32;
+                break;
+            }
+            default:
+                assert(false && "Invalid Index Type");
+            }
+
+            if (gltf_prim->position != -1) {
+                accessor = gltf_accessor_by_index(&gltf, gltf_prim->position);
+
+                prim->offset_position = accessor->byte_offset;
+
+                pl_info->stride_position = get_accessor_byte_stride(accessor->format);
+                pl_info->fmt_position    = (VkFormat)accessor->format;
+
+                view_indices[gltf_prim->position] = accessor->buffer_view;
+                views[accessor->buffer_view].type = Data_Type::VERTEX;
+            }
+            if (gltf_prim->normal != -1) {
+                accessor = gltf_accessor_by_index(&gltf, gltf_prim->normal);
+
+                prim->offset_normal = accessor->byte_offset;
+
+                pl_info->stride_normal = get_accessor_byte_stride(accessor->format);
+                pl_info->fmt_normal    = (VkFormat)accessor->format;
+
+                view_indices[gltf_prim->normal]   = accessor->buffer_view;
+                views[accessor->buffer_view].type = Data_Type::VERTEX;
+            }
+            if (gltf_prim->tangent != -1) {
+                accessor = gltf_accessor_by_index(&gltf, gltf_prim->tangent);
+
+                prim->offset_tangent = accessor->byte_offset;
+
+                pl_info->stride_tangent = get_accessor_byte_stride(accessor->format);
+                pl_info->fmt_tangent    = (VkFormat)accessor->format;
+
+                view_indices[gltf_prim->tangent]  = accessor->buffer_view;
+                views[accessor->buffer_view].type = Data_Type::VERTEX;
+            }
+            if (gltf_prim->tex_coord_0 != -1) {
+                accessor = gltf_accessor_by_index(&gltf, gltf_prim->tex_coord_0);
+
+                prim->offset_tex_coords = accessor->byte_offset;
+
+                pl_info->stride_tex_coords = get_accessor_byte_stride(accessor->format);
+                pl_info->fmt_tex_coords    = (VkFormat)accessor->format;
+
+                view_indices[gltf_prim->tex_coord_0] = accessor->buffer_view;
+                views[accessor->buffer_view].type    = Data_Type::VERTEX;
+            }
+
+            gltf_prim = (Gltf_Mesh_Primitive*)((u8*)gltf_prim + gltf_prim->stride);
+        }
+        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
+    }
+
+    // 2. Loop buffer views - load data
+    assert(gltf_buffer_get_count(&gltf) == 1 && "Too Many Buffers");
+    Gltf_Buffer *gltf_buf = gltf.buffers;
+
+    memcpy(uri_buffer, dir->str, dir->len);
+    strcpy(&uri_buffer[0] + dir->len, gltf_buf->uri);
+
+    u8 *buf = (u8*)file_read_bin_temp_large(uri_buffer, gltf_buf->byte_length);
+
+    Gltf_Buffer_View *gltf_view = gltf.buffer_views;
+    void *ptr;
+    Gpu_Allocator_Result allocation_result;
+
+    // These should never fail. If they do, adjust memory layout.
+    allocation_result = begin_allocation(&allocs->vertex);
+    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+        return {};
+
+    allocation_result = begin_allocation(&allocs->index);
+    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+        return {};
+
+    u64 vertex_allocation_size = 0;
+    u64 index_allocation_size  = 0;
+    for(u32 i = 0; i < view_count; ++i) {
+        // This switch seems lame, but in reality gltf views are likely packed by type, so it should
+        // be well predicted.
+        switch(views[i].type) {
+        case Data_Type::VERTEX:
+        {
+            allocation_result = continue_allocation(&allocs->vertex, gltf_view->byte_length,
+                                                    buf + gltf_view->byte_offset);
+
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+                return {};
+
+            views[i].offset         = vertex_allocation_size;
+            vertex_allocation_size += gltf_view->byte_length;
+
+            break;
+        }
+        case Data_Type::INDEX:
+        {
+            allocation_result = continue_allocation(&allocs->index, gltf_view->byte_length,
+                                                    buf + gltf_view->byte_offset);
+
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+                return {};
+
+            views[i].offset         = index_allocation_size;
+            index_allocation_size  += gltf_view->byte_length;
+
+            break;
+        }
+        case Data_Type::NONE:
+        {
+            break;
+        }
+        case Data_Type::UNIFORM:
+            assert(false && "No Uniform Data Allowed In Static Model");
+            break;
+        default:
+            assert(false && "Invalid Buffer View Type");
+        }
+
+        gltf_view = (Gltf_Buffer_View*)((u8*)gltf_view + gltf_view->stride);
+    }
+
+    // Submit index allocation
+    allocation_result = submit_allocation(&allocs->index, &ret.index_allocation_key);
+    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+        return {};
+
+    // Submit vertex allocation
+    allocation_result = submit_allocation(&allocs->vertex, &ret.vertex_allocation_key);
+    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+        return {};
+
+    // 3. Loop primitives - set offsets
+    gltf_mesh = gltf.meshes;
+    for(u32 i = 0; i < mesh_count; ++i) {
+        gltf_prim = gltf_mesh->primitives;
+        for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
+
+            //
+            // Previously acquired the offsets of buffer views into their respective allocation.
+            // Now add these offsets to the offsets of the primitives into their respective
+            // buffer view; this gives the total offset of the primitive data into the
+            // model's allocation (vertex or index allocation).
+            //
+
+            ret.meshes[i].primitives[j].offset_index +=
+                views[view_indices[gltf_prim->indices]].offset;
+
+            if (gltf_prim->position != -1)
+                ret.meshes[i].primitives[j].offset_position +=
+                    views[view_indices[gltf_prim->position]].offset;
+
+            if (gltf_prim->normal != -1)
+                ret.meshes[i].primitives[j].offset_normal +=
+                    views[view_indices[gltf_prim->normal]].offset;
+
+            if (gltf_prim->tangent != -1)
+                ret.meshes[i].primitives[j].offset_tangent +=
+                    views[view_indices[gltf_prim->tangent]].offset;
+
+            if (gltf_prim->tex_coord_0 != -1)
+                ret.meshes[i].primitives[j].offset_tex_coords +=
+                    views[view_indices[gltf_prim->tex_coord_0]].offset;
+
+            gltf_prim = (Gltf_Mesh_Primitive*)((u8*)gltf_prim + gltf_prim->stride);
+        }
+
+        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
+    }
+
+    // Load Material Data
+    Sampler        sampler_info;
+    Gltf_Material *gltf_mat = gltf.materials;
+    Gltf_Texture  *gltf_tex;
+    Gltf_Sampler  *gltf_sampler;
+    Gltf_Image    *gltf_image;
+    for(u32 i = 0; i < mat_count; ++i) {
+
+        ret.mats[i].base_factors[0] = gltf_mat->base_color_factor[0];
+        ret.mats[i].base_factors[1] = gltf_mat->base_color_factor[1];
+        ret.mats[i].base_factors[2] = gltf_mat->base_color_factor[2];
+        ret.mats[i].base_factors[3] = gltf_mat->base_color_factor[3];
+
+        ret.mats[i].emissive_factors[0] = gltf_mat->emissive_factor[0];
+        ret.mats[i].emissive_factors[1] = gltf_mat->emissive_factor[1];
+        ret.mats[i].emissive_factors[2] = gltf_mat->emissive_factor[2];
+
+        ret.mats[i].metal_factor       = gltf_mat->metallic_factor;
+        ret.mats[i].rough_factor       = gltf_mat->roughness_factor;
+        ret.mats[i].norm_scale         = gltf_mat->normal_scale;
+        ret.mats[i].occlusion_strength = gltf_mat->occlusion_strength;
+
+        //
+        // @Todo alpha settings
+        //
+
+        // *** Older comment: ***
+        // Texture method:
+        //     Add textures to an array.
+        //     Material stores the index to the texture. As textures are quite expensive,
+        //     I think it will be sensible to store and manage them elsewhere: I imagine
+        //     that I can store vertex data indefinitely in memory, but texture data would
+        //     likely often need to be streamed from disk and cached well etc. and the model
+        //     allocator system does not facilitate this super well.
+        //
+        //     I like the vertex data being handled by the model fine, but textures should
+        //     work differently.
+        memcpy(uri_buffer, dir->str, dir->len);
+
+        //
+        // @Todo Think about converting some of the below stuff to functions. Maybe this would be easier
+        // to understand, but then again maybe not.
+        //
+
+        // base
+        if (gltf_mat->base_color_texture_index != -1) {
+            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->base_color_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
+
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+
+            ret.mats[i].tex_base.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_base.allocation_key);
+
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+                return {};
+        }
+
+
+        // metallic roughness
+        if (gltf_mat->metallic_roughness_texture_index != -1) {
+            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->metallic_roughness_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
+
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+
+            ret.mats[i].tex_pbr.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_pbr.allocation_key);
+
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+                return {};
+        }
+
+
+        // normal
+        if (gltf_mat->normal_texture_index != -1) {
+            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->normal_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
+
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+
+            ret.mats[i].tex_norm.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_norm.allocation_key);
+
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+                return {};
+        }
+
+
+        // occlusion
+        if (gltf_mat->occlusion_texture_index != -1) {
+            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->occlusion_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
+
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+
+            ret.mats[i].tex_occlusion.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_occlusion.allocation_key);
+
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+                return {};
+        }
+
+
+        // emissive
+        if (gltf_mat->emissive_texture_index != -1) {
+            gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->emissive_texture_index);
+            gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
+            gltf_image   = gltf_image_by_index(&gltf, gltf_tex->source_image);
+
+            strcpy(&uri_buffer[0] + dir->len, gltf_image->uri);
+            tmp_uri = cstr_to_string((const char*)uri_buffer);
+
+            sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
+            sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
+            sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
+            sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
+
+            ret.mats[i].tex_emissive.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
+            allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_emissive.allocation_key);
+
+            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+                return {};
+        }
+
+        gltf_mat = (Gltf_Material*)((u8*)gltf_mat + gltf_mat->stride);
+    }
+
+    reset_to_mark_temp(mark);
+    return ret;
 }
 #endif
 
