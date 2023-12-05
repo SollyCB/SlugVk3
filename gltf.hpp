@@ -118,7 +118,7 @@ struct Gltf_Accessor {
     Gltf_Accessor_Format format;
     Gltf_Accessor_Type indices_component_type;
 
-    int stride;
+    int stride; // Stride to reach next accessor in the array NOT the stride of the accessed data
 
     int buffer_view;
     int byte_stride;
