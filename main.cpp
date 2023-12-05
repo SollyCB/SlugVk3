@@ -30,44 +30,6 @@ int main() {
 
     zero_temp();
 
-    gpu->shader_memory = init_shaders();
-
-    // Load Models
-    u32 model_count = 2;
-    String model_dirs[] = {
-        cstr_to_string("models/cube-static/"),
-        cstr_to_string("models/cesium-man/"),
-    };
-    String model_files[] = {
-        cstr_to_string("Cube.gltf"),
-        cstr_to_string("CesiumMan.gltf"),
-    };
-    String model_names[] = {
-        cstr_to_string("static_cube"), // These should be turned into enum values.
-        cstr_to_string("cesium_man"),
-    };
-
-    Model_Allocators_Config model_allocators_config = {}; // @Unused
-    Model_Allocators model_allocators = init_model_allocators(&model_allocators_config);
-
-    Static_Model *models = (Static_Model*)malloc_h(sizeof(Static_Model) * model_count, 8);
-    for(u32 i = 0; i < model_count; ++i) {
-        models[i] = load_static_model(&model_allocators, &model_files[i], &model_dirs[i]);
-    }
-
-    Gpu_Allocator_Result res;
-    res = staging_queue_begin(&model_allocators.vertex);
-    assert(res == ALLOCATOR_RESULT_SUCCESS);
-
-    u32 vertex_key = model_allocators.vertex.allocation_indices[models[1].vertex_allocation_key];
-    Gpu_Allocator *alloc = &model_allocators.vertex;
-
-    res = staging_queue_add(&model_allocators.vertex, vertex_key);
-    assert(res == ALLOCATOR_RESULT_SUCCESS);
-
-    res = staging_queue_submit(&model_allocators.vertex);
-    assert(res == ALLOCATOR_RESULT_SUCCESS);
-
     VkFence     acquire_image_fence     = create_fence(false);
     VkSemaphore acquire_image_semaphore = create_semaphore();
 
@@ -81,40 +43,21 @@ int main() {
 
     u32 frame_index = 0;
     while(!glfwWindowShouldClose(glfw->window)) {
-        vkAcquireNextImageKHR(gpu->device, window->swapchain, 10e9, NULL, acquire_image_fence, &present_image_index); 
+        vkAcquireNextImageKHR(gpu->device, window->swapchain, 10e9, NULL, acquire_image_fence, &present_image_index);
 
         poll_and_get_input(glfw);
 
         wait_and_reset_fence(acquire_image_fence);
 
-        Draw_Final_Basic_Config draw_config;
-        draw_config.count  = 1;
-        draw_config.models = &models[0];
-
-        draw_config.rp_config.present = window->views[present_image_index];
-        draw_config.rp_config.depth   = gpu->memory.depth_views[frame_index];
-        draw_config.rp_config.shadow  = gpu->memory.shadow_views[frame_index];
-
-        Draw_Final_Basic draw_basic = draw_create_basic(&draw_config);
-
         vkQueuePresentKHR(gpu->graphics_queue, &present_info);
-        
-        draw_destroy_basic(&draw_basic);
 
         zero_temp(); // Empty temp allocator at the end of the frame
         frame_index = (frame_index + 1) & 1;
     }
 
-    for(u32 i = 0; i < model_count; ++i) {
-        free_static_model(&models[i]);
-    }
-    free_h(models);
-
     destroy_fence(acquire_image_fence);
     destroy_semaphore(acquire_image_semaphore);
 
-    shutdown_allocators(&model_allocators);
-    shutdown_shaders(&gpu->shader_memory);
     kill_window(gpu, window);
     kill_gpu(gpu);
     kill_glfw(glfw);

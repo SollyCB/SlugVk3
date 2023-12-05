@@ -9,6 +9,7 @@
 #include "image.hpp"
 #include "simd.hpp"
 #include "shader.hpp"
+#include "models.hpp"
 #include "assert.h"
 
 #define ALLOCATOR_MEMORY_FOOTPRINT 0
@@ -29,6 +30,9 @@ static VkFormat COLOR_ATTACHMENT_FORMAT;
 // @Todo Move the other gpu initialization functions out of the header and into static functions.
 static void gpu_create_image_views();
 static void gpu_destroy_image_views();
+
+static Model_Memory init_models();
+static void         shutdown_models();
 
 void init_gpu() {
     // keep struct data together (not pointing to random heap addresses)
@@ -51,9 +55,13 @@ void init_gpu() {
     gpu_create_image_views();
 
     pl_load_cache();
+    init_shaders();
+    init_models();
 }
 void kill_gpu(Gpu *gpu) {
     pl_store_cache();
+    shutdown_shaders();
+    shutdown_models();
 
     gpu_destroy_image_views();
 
@@ -1413,6 +1421,8 @@ Shader_Memory init_shaders() {
     ret.sampler_descriptor_allocator  = create_descriptor_allocator(ret.descriptor_buffer_size, sampler_buffer_address, sampler_ptr, ret.sampler_descriptor_buffer);
     ret.resource_descriptor_allocator = create_descriptor_allocator(ret.descriptor_buffer_size, resource_buffer_address, resource_ptr, ret.resource_descriptor_buffer);
 
+    gpu->shader_memory = ret;
+
     return ret;
 
     /*
@@ -1483,6 +1493,24 @@ void shutdown_shaders(Shader_Memory *mem) {
 }
 
 // `Model Loading
+static Model_Memory init_models() {
+    Gpu *gpu                           = get_gpu_instance();
+    gpu->model_memory.model_allocators = init_model_allocators();
+
+    Model *models = (Model*)malloc_t(sizeof(Model) * g_model_file_count, 8);
+    Model_Id model_id;
+
+    for(u32 i = 0; i < g_model_file_count; ++i) {
+        model_id  = (Model_Id)i;
+        models[i] = load_model(gpu->model_memory.model_allocators, model_id);
+    }
+
+    return gpu->model_memory;
+}
+static void shutdown_models() {
+    shutdown_model_allocators(&get_gpu_instance()->model_memory.model_allocators);
+}
+
 u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format);
 
         /* Begin Allocator Helper Algorithms */
@@ -3799,7 +3827,6 @@ u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
     // sampler is inserted with will always be its key.
     //
     sampler_info->sampler = NULL; // Ensure only type data influences hash, not the handle
-    sampler_info->reference_count = 0;
 
     u64 hash = hash_bytes(sampler_info, sizeof(Sampler));
     u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
@@ -3872,7 +3899,6 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
     // Set 'active' + 'in_use' flags
     alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT | (u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
    *ret_sampler = info->sampler;
-   info->reference_count++;
 
     return ret;
 }
@@ -3966,7 +3992,7 @@ Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
 
     return ret;
 }
-void shutdown_allocators(Model_Allocators *allocs) {
+void shutdown_model_allocators(Model_Allocators *allocs) {
     destroy_allocator(&allocs->index);
     destroy_allocator(&allocs->vertex);
     destroy_tex_allocator(&allocs->tex);
@@ -3987,20 +4013,17 @@ struct Buffer_View {
 };
 
 //
-//                  ** Todos for load_model_cube(..) **
+// The below function is a simulation of what a real loading function would look like. For instance, in a more
+// developed app with a broader set of models, it would still be true that sets of models have specific
+// characteristics: even though you may have 200 buildings, each building model may share an equivalent shader, etc.
+// and so loading the buildings/map can be grouped to a 'load_buildings()' function. I just currently do not have
+// well defined subsets of models yet, so 'load_cube()' and 'load_player()' (<- coming soon, Cesium_Man) will do for
+// now.
 //
-// @Todo Properly document this function.
-// @Todo Create more local copies of variables to cut down on the derefing.
+// @Note Maybe I should go through and revert gltf parser to use counts, rather than the procedural temp allocation
+// method. It is cool in principle, but I cannot tell if it is worth it, need to @Test.
 //
-// @Note I really do not like the amount of derefing inside loops in this function. But due to the
-// layout of gltf and the tree nature of the data, I assume that any model loader would look like
-// this. Luckily, in a production app, this can all just be baked once.
-//
-// @Note I also need to go through and revert the gltf parser to using counts instead of the one
-// contiguous block method. It was good in principle, and has benefits in places, but I think it
-// does more harm than good. - See equivalent note in gltf header.
-//
-Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String *model_dir) {
+static Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String *model_dir) {
     Model_Cube ret = {};
 
     // Setup model directory
@@ -4008,26 +4031,29 @@ Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String 
     memcpy(uri_buf, model_dir->str,  model_dir->len);
     memcpy(uri_buf + model_dir->len, model_file->str, model_file->len);
 
-    Gltf gltf = parse_gltf(model_uri->str);
+    Gltf gltf = parse_gltf(uri_buf);
 
     // Load base texture
-    Gltf_Material *gltf_mat     = gltf->materials;
+    Gltf_Material *gltf_mat     = gltf.materials;
     Gltf_Texture  *gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->base_color_texture_index);
     Gltf_Sampler  *gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
     Gltf_Image    *gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
 
     // @Ugly This is a bit ugly
     String tmp_uri;
-    strcpy(uri_buffer + model_dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
-    tmp_uri = cstr_to_string((const char*)uri_buffer);
+    strcpy(uri_buf + model_dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
+    tmp_uri = cstr_to_string((const char*)uri_buf);
+
+    Gpu_Allocator_Result res;
+    Sampler sampler_info = {};
 
     sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
     sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
     sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
     sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
 
-    ret.sampler_key_base = add_sampler(&allocs->sampler, &sampler_info);
-    allocation_result    = tex_add_texture(&allocs->tex, &tmp_uri, &ret.tex_key_base);
+    res                      = tex_add_texture(&allocs->tex, &tmp_uri, &ret.tex_key_base);
+    ret.sampler_key_base     = add_sampler(&allocs->sampler, &sampler_info);
 
     // Load pbr texture
     gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->metallic_roughness_texture_index);
@@ -4035,16 +4061,16 @@ Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String 
     gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
 
     // @Ugly This is a bit ugly
-    strcpy(uri_buffer + model_dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
-    tmp_uri = cstr_to_string((const char*)uri_buffer);
+    strcpy(uri_buf + model_dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
+    tmp_uri = cstr_to_string((const char*)uri_buf);
 
     sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
     sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
     sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
     sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
 
+    res                  = tex_add_texture(&allocs->tex, &tmp_uri, &ret.tex_key_pbr);
     ret.sampler_key_pbr  = add_sampler(&allocs->sampler, &sampler_info);
-    allocation_result    = tex_add_texture(&allocs->tex, &tmp_uri, &ret.tex_key_pbr);
 
     // Load vertex/index data
     Gltf_Buffer         *gltf_buffer;
@@ -4052,9 +4078,9 @@ Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String 
     Gltf_Buffer_View    *gltf_buffer_view;
     Gltf_Mesh_Primitive *gltf_primitive;
 
-    u32          buffer_view_count = gltf_get_count_buffer_view(&gltf);
+    u32          buffer_view_count = gltf_buffer_view_get_count(&gltf);
     Buffer_View *buffer_views      = (Buffer_View*)malloc_t(sizeof(Buffer_View) * buffer_view_count, 8);
-    memset(buffer_views, 0, sizeof(Buffer_View) * gltf->buffer_view_count);
+    memset(buffer_views, 0, sizeof(Buffer_View) * buffer_view_count);
 
     u32 buffer_view_index;
     u32 buffer_view_position;
@@ -4063,8 +4089,8 @@ Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String 
     u32 buffer_view_tex_coords;
 
     // Index data
-    u32 tmp          = gltf->meshes[0].primitives[0].index;
-    ret.topology     = gltf->meshes[0].primitives[0].topology;
+    u32 tmp          = gltf.meshes[0].primitives[0].indices;
+    ret.topology     = (VkPrimitiveTopology)gltf.meshes[0].primitives[0].topology;
     gltf_accessor    = gltf_accessor_by_index(&gltf, tmp);
     ret.offset_index = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
     ret.count        = gltf_accessor->count;
@@ -4087,100 +4113,110 @@ Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String 
     tmp                      = gltf_accessor->buffer_view;
     gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
     buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_INDEX;
-    buffer_views[tmp].offset = gltf_buffer_view->offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
+    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
 
     buffer_view_index = tmp;
 
     // Position data
-    tmp = gltf->meshes[0].primitives[0].position;
+    tmp = gltf.meshes[0].primitives[0].position;
 
     gltf_accessor       = gltf_accessor_by_index(&gltf, tmp);
     ret.offset_position = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.fmt_position    = gltf_accessor->format;
+    ret.fmt_position    = (VkFormat)gltf_accessor->format;
     ret.stride_position = gltf_accessor->byte_stride;
     ret.count           = gltf_accessor->count;
 
     tmp                      = gltf_accessor->buffer_view;
     gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
     buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
-    buffer_views[tmp].offset = gltf_buffer_view->offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
+    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
 
     buffer_view_position = tmp;
 
     // Normal data
-    tmp = gltf->meshes[0].primitives[0].normal;
+    tmp = gltf.meshes[0].primitives[0].normal;
 
     gltf_accessor     = gltf_accessor_by_index(&gltf, tmp);
     ret.offset_normal = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.fmt_normal    = gltf_accessor->format;
+    ret.fmt_normal    = (VkFormat)gltf_accessor->format;
     ret.stride_normal = gltf_accessor->byte_stride;
     ret.count         = gltf_accessor->count;
 
     tmp = gltf_accessor->buffer_view;
     gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
     buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
-    buffer_views[tmp].offset = gltf_buffer_view->offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
+    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
 
     buffer_view_normal = tmp;
 
     // Tangent data
-    tmp = gltf->meshes[0].primitives[0].tangent;
+    tmp = gltf.meshes[0].primitives[0].tangent;
 
     gltf_accessor      = gltf_accessor_by_index(&gltf, tmp);
     ret.offset_tangent = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.fmt_tangent    = gltf_accessor->format;
+    ret.fmt_tangent    = (VkFormat)gltf_accessor->format;
     ret.stride_tangent = gltf_accessor->byte_stride;
     ret.count          = gltf_accessor->count;
 
     tmp                      = gltf_accessor->buffer_view;
     gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
     buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
-    buffer_views[tmp].offset = gltf_buffer_view->offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
+    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
 
     buffer_view_tangent = tmp;
 
     // Tex Coords
-    tmp = gltf->meshes[0].primitives[0].tex_coord_0;
+    tmp = gltf.meshes[0].primitives[0].tex_coord_0;
 
     gltf_accessor         = gltf_accessor_by_index(&gltf, tmp);
     ret.offset_tex_coords = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.fmt_tex_coords    = gltf_accessor->format;
+    ret.fmt_tex_coords    = (VkFormat)gltf_accessor->format;
     ret.stride_tex_coords = gltf_accessor->byte_stride;
     ret.count             = gltf_accessor->count;
 
     tmp                      = gltf_accessor->buffer_view;
     gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
     buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
-    buffer_views[tmp].offset = gltf_buffer_view->offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_len;
+    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
+    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
 
     buffer_view_tex_coords = tmp;
 
     // Allocate vertex/index data
-    Allocation_Result res;
     res = begin_allocation(&allocs->index);
     CHECK_GPU_ALLOCATOR_RESULT(res);
     res = begin_allocation(&allocs->vertex);
     CHECK_GPU_ALLOCATOR_RESULT(res);
 
-    u8 *buffer_data = file_read_bin_temp_large(gltf->buffers[0].uri, gltf->buffers[i].byte_len);
+    u64 current_index_allocation_offset  = 0;
+    u64 current_vertex_allocation_offset = 0;
+
+    u8 *buffer_data = (u8*)file_read_bin_temp_large(gltf.buffers[0].uri, gltf.buffers[0].byte_length);
     u64 tmp_offset;
     for(u32 i = 0; i < buffer_view_count; ++i) {
-        switch(buffer_views[i]) {
+        switch(buffer_views[i].type) {
         case BUFFER_VIEW_DATA_TYPE_INDEX:
         {
-            res = continue_allocation(&allocs->index, buffer_views[i].size, buffer_data + buffer_views[i].offset, &buffer_views[i].offset);
+            res = continue_allocation(&allocs->index, buffer_views[i].size, buffer_data + buffer_views[i].offset);
             CHECK_GPU_ALLOCATOR_RESULT(res);
+
+            buffer_views[i].offset           = current_index_allocation_offset;
+            current_index_allocation_offset += buffer_views[i].size;
+
             break;
         }
         case BUFFER_VIEW_DATA_TYPE_VERTEX:
         {
-            res = continue_allocation(&allocs->vertex, buffer_views[i].size, buffer_data + buffer_views[i].offset, &buffer_views[i].offset);
+            res = continue_allocation(&allocs->vertex, buffer_views[i].size, buffer_data + buffer_views[i].offset);
             CHECK_GPU_ALLOCATOR_RESULT(res);
+
+            buffer_views[i].offset            = current_vertex_allocation_offset;
+            current_vertex_allocation_offset += buffer_views[i].size;
+
             break;
         }
         default:
@@ -4193,7 +4229,7 @@ Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String 
     res = submit_allocation(&allocs->vertex, &ret.vertex_key);
     CHECK_GPU_ALLOCATOR_RESULT(res);
 
-    // Offset the data into the allocator's buffer
+    // Offset the data into the allocation.
     ret.offset_index      += buffer_views[buffer_view_index].offset;
     ret.offset_position   += buffer_views[buffer_view_position].offset;
     ret.offset_normal     += buffer_views[buffer_view_normal].offset;
@@ -4203,316 +4239,38 @@ Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String 
     return ret;
 }
 
+// @Unimplemented
+Model_Player load_model_player(Model_Allocators *allocs, String *model_file_name, String *model_dir_name) {
+    return {};
+}
+
+Model load_model(Model_Allocators *allocs, Model_Id model_id) {
+    u32 model_index = (u32)model_id;
+
+    Model ret;
+    Model_Type model_type = get_model_type(model_id);
+
+    switch(model_type) {
+    case MODEL_TYPE_CUBE:
+    {
+        ret.cube = load_model_cube(allocs, &g_model_file_names[model_index], &g_model_dir_names[model_index]);
+        break;
+    }
+    case MODEL_TYPE_PLAYER:
+    {
+        ret.player = load_model_player(allocs, &g_model_file_names[model_index], &g_model_dir_names[model_index]);
+        break;
+    }
+    default:
+        assert(false && "Invalid Model Type");
+    }
+    return ret;
+}
+
     /* Renderpass Framebuffer Pipeline */
-
-#ifdef _WIN32 // Different drivers for different OSs, so I assume cache impl would be different
-#define PL_CACHE_FILE_NAME "pl-caches/window.bin"
-#else
-#define PL_CACHE_FILE_NAME "pl-caches/ubuntu.bin"
-#endif
-
-// Pipeline Cache
-VkPipelineCache pl_load_cache() {
-    u64 size;
-    const u8 *cache_data = file_read_bin_temp(PL_CACHE_FILE_NAME, &size);
-
-    if (size) {
-        VkPipelineCacheHeaderVersionOne *header = (VkPipelineCacheHeaderVersionOne*)cache_data;
-
-        assert(header->headerVersion == 1 && "Failed to read pipeline cache header file");
-        if (header->headerVersion != 1)
-            return NULL;
-
-        VkPhysicalDeviceProperties props = get_gpu_instance()->info.props;
-
-        if (header->vendorID != props.vendorID) {
-            println("Pipeline Cache vendor id does not match");
-            return NULL;
-        }
-
-        if (header->deviceID != props.deviceID) {
-            println("Pipeline Cache device id does not match");
-            return NULL;
-        }
-
-        int result = memcmp(header->pipelineCacheUUID, props.pipelineCacheUUID, VK_UUID_SIZE);
-        if (result != 0) {
-            println("Pipeline Cache UUID does not match");
-            return NULL;
-        }
-    }
-
-    //
-    // @Todo Consider setting externally syncd flag.
-    //
-    VkPipelineCacheCreateInfo create_info = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
-    create_info.initialDataSize = size;
-    create_info.pInitialData = cache_data;
-
-    VkDevice device = get_gpu_instance()->device;
-
-    VkPipelineCache pl_cache;
-    auto check = vkCreatePipelineCache(device, &create_info, ALLOCATION_CALLBACKS, &pl_cache);
-    DEBUG_OBJ_CREATION(vkCreatePipelineCache, check);
-
-    // Store pipeline cache in global gpu
-    get_gpu_instance()->pl_cache = pl_cache;
-
-    return pl_cache; // return it cos why not (because it is confusing cos its unused, but here is a comment telling you so, so dont fret)
-}
-void pl_store_cache() {
-    Gpu *gpu = get_gpu_instance();
-    VkDevice device = gpu->device;
-    VkPipelineCache pl_cache = gpu->pl_cache;
-
-    u64 size;
-    auto check = vkGetPipelineCacheData(device, pl_cache, &size, NULL);
-
-    void *cache_data = (void*)malloc_t(size, 8);
-    vkGetPipelineCacheData(device, pl_cache, &size, cache_data);
-
-    file_write_bin(PL_CACHE_FILE_NAME, size, cache_data);
-
-    vkDestroyPipelineCache(device, pl_cache, ALLOCATION_CALLBACKS);
-}
-
-// Begin graphics pipeline
-void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count, VkPushConstantRange *push_constants, Pl_Layout *layout) {
-    Gpu *gpu                   =  get_gpu_instance();
-    VkDevice device            =  gpu->device;
-    Shader_Memory *shader_info = &gpu->shader_memory;
-
-    // @Note Assumes that the number of descriptor sets that will be bound is less than DESCRIPTOR_SET_COUNT.
-    VkDescriptorSetLayout *set_layouts = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * DESCRIPTOR_SET_COUNT, 8);
-
-    layout->stages      = (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
-    layout->set_count   = 0;
-    layout->stage_count = 0;
-
-    //
-    // @Note I am pretty sure that the order of the set layouts in the pipeline layout does not need to be the
-    // same as their set numbers, that is only for bind order.
-    //
-
-    #if DEBUG
-    bool zero_index = false;
-    u32 last_set_index = 0;
-    #endif
-
-    Shader shader;
-    for(u32 i = 0; i < count; ++i) {
-        shader = shader_info->shaders[shader_indices[i]];
-
-        //
-        // @Note Shaders must be submitted to this function with increasing seqeuential set order. This means
-        // that they do not need to be sorted in order to be bound, but instead can just be memcpyd into the
-        // 'to bind' descriptor set array. This is perfectly reasonable: it would be very error prone to allow
-        // programming shaders without strict rules on set sequencing.
-        //
-        #if DEBUG
-        for(u32 j = 0; j < shader.layout_count; ++j) {
-            if (zero_index == false) {
-                assert(shader.layout_indices[j] == 0);
-                zero_index = true;
-            }
-
-            assert(shader.layout_indices[j] == last_set_index     ||
-                   shader.layout_indices[j] == last_set_index + 1 &&
-                  "Shaders MUST appear with sequential set layout indices starting from 0");
-
-            last_set_index = shader.layout_indices[j];
-        }
-        #endif
-
-        layout->stages[i]        = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-        layout->stages[i].stage  = shader.stage;
-        layout->stages[i].module = shader.module;
-        layout->stages[i].pName  = shader_info->entry_point;
-
-        memcpy(set_layouts  + layout->set_count, shader_info->layouts + shader.layout_index, sizeof(VkDescriptorSetLayout) * shader.layout_count);
-        layout->set_count   += shader.layout_count;
-    }
-
-    VkPipelineLayoutCreateInfo layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount         = layout->set_count;
-    layout_info.pSetLayouts            = set_layouts;
-    layout_info.pushConstantRangeCount = push_constant_count;
-    layout_info.pPushConstantRanges    = push_constants;
-
-    auto check = vkCreatePipelineLayout(device, &layout_info, ALLOCATION_CALLBACKS, &layout->pl_layout);
-    DEBUG_OBJ_CREATION(vkCreatePipelineLayout, check);
-
-    if (check != VK_SUCCESS) {
-        *layout = {};
-        return;
-    }
-}
-void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info) {
-    // @Todo Properly handle if a static model does not have one of these fields. Really in a production app where
-    // you can manage how the models are created, this would not need to be a worry.
-    assert(primitive->fmt_position && primitive->fmt_normal && primitive->fmt_tangent && primitive->fmt_tex_coords);
-
-    //
-    // @Note Binding is always zero. I use one large vertex buffer managed by an allocator.
-    //
-
-    VkVertexInputBindingDescription *bindings = (VkVertexInputBindingDescription*)malloc_t(sizeof(VkVertexInputBindingDescription) * 4, 8);
-    memset(bindings, 0, sizeof(VkVertexInputBindingDescription) * 4);
-
-    bindings[0].stride  = primitive->stride_position;
-    bindings[1].stride  = primitive->stride_normal;
-    bindings[2].stride  = primitive->stride_tangent;
-    bindings[3].stride  = primitive->stride_tex_coords;
-    bindings[0].binding = 0;
-    bindings[1].binding = 1;
-    bindings[2].binding = 2;
-    bindings[3].binding = 3;
-
-    VkVertexInputAttributeDescription *attrs = (VkVertexInputAttributeDescription*)malloc_t(sizeof(VkVertexInputAttributeDescription) * 4, 8);
-    memset(attrs, 0, sizeof(VkVertexInputAttributeDescription) * 4);
-
-    // All have binding 0 (one big vertex buffer)
-    attrs[0].binding  = 0;
-    attrs[1].binding  = 1;
-    attrs[2].binding  = 2;
-    attrs[3].binding  = 3;
-    attrs[0].location = 0;
-    attrs[1].location = 1;
-    attrs[2].location = 2;
-    attrs[3].location = 3;
-    attrs[0].format   = primitive->fmt_position;
-    attrs[1].format   = primitive->fmt_normal;
-    attrs[2].format   = primitive->fmt_tangent;
-    attrs[3].format   = primitive->fmt_tex_coords;
-
-    //
-    // C++ is so fucking lame... I can reassign the pointer, but cannot edit what is underneath. And cannot easily
-    // change the permissions in order to edit in place what is underneath! I have to create new variables, edit
-    // those, and then stick those in. If I can freely reassign the pointer, how tf is not being able to edit under
-    // the pointer adding safety. If anything is does the opposite, as it makes it seem like I can trust the data
-    // under the pointer when I cannot, because the pointer can point to anything. Marking stuff as read only is
-    // useful (obviously) but only when it does not get in the way by encouraging more complicated and error prone
-    // behaviour in order to get around it when you need to...
-    //
-   *ret_input_info = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    ret_input_info->vertexBindingDescriptionCount   = 4;
-    ret_input_info->pVertexBindingDescriptions      = bindings;
-    ret_input_info->vertexAttributeDescriptionCount = 4;
-    ret_input_info->pVertexAttributeDescriptions    = attrs;
-
-   *ret_assembly_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    ret_assembly_info->topology = primitive->topology;
-}
-void pl_get_vertex_input_and_assembly_static_shadow(Pl_Primitive_Info *primitive, VkPipelineVertexInputStateCreateInfo *ret_input_info, VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info) {
-    assert(primitive->fmt_position);
-
-    //
-    // @Note Binding is always zero. I use one large vertex buffer managed by an allocator.
-    //
-
-    //
-    // @Note Temp allocation to be persistent outside function. Idk if it is cleaner or faster to pass these nested
-    // structures into the function... This does feel a bit lame...
-    //
-    VkVertexInputBindingDescription *binding = (VkVertexInputBindingDescription*)malloc_t(sizeof(VkVertexInputBindingDescription), 8);
-    *binding = {};
-
-    binding->binding = 0;
-    binding->stride  = primitive->stride_position;
-
-    VkVertexInputAttributeDescription *attr = (VkVertexInputAttributeDescription*)malloc_t(sizeof(VkVertexInputAttributeDescription), 8);
-    *attr = {};
-
-    attr->location = 0;
-    attr->binding  = 0;
-    attr->format   = primitive->fmt_position;
-
-   *ret_input_info = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    ret_input_info->vertexBindingDescriptionCount   = 1;
-    ret_input_info->pVertexBindingDescriptions      = binding;
-    ret_input_info->vertexAttributeDescriptionCount = 1;
-    ret_input_info->pVertexAttributeDescriptions    = attr;
-
-   *ret_assembly_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    ret_assembly_info->topology = primitive->topology;
-}
-void pl_get_viewport_and_scissor(VkPipelineViewportStateCreateInfo *ret_info) {
-    Settings *settings = get_global_settings();
-    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    ret_info->viewportCount = 1;
-    ret_info->pViewports    = &settings->viewport;
-    ret_info->scissorCount  = 1;
-    ret_info->pScissors     = &settings->scissor;
-}
-void pl_get_rasterization(Pl_Rasterization_Args args, VkPipelineRasterizationStateCreateInfo *ret_info) {
-    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    ret_info->lineWidth = 1.0f;
-
-    //
-    // I very much dislike branching: it, memory access, and parallelism are by far the primary things mentioned
-    // in the intel optimisation manual. Sure this section is not super performance critical, but you will be
-    // compiling pipelines a lot, and it is lame to not take this basic, simple step.
-    // Plus this really is not anymore difficult to read than a ternary if a competent programmer (it is clear
-    // the right side of the '&' evaluates to zero or 0xff...), and trivial to test if you are worried about
-    // a mistake. Plus with the comments it is impossible to misunderstand (again if you are competent).
-    //
-
-    // If wire frame true: 1 &= 0b1111...; else 1 &= 0b0000...;
-    ret_info->polygonMode = (VkPolygonMode)((int)VK_POLYGON_MODE_LINE   & ~(Max_u32 + (int)args.wire_frame));
-
-    // If cull_mode true: 1 &= 0b1111...; else 1 &= 0b0000...;
-    ret_info->cullMode |= (VkCullModeFlags)((int)VK_CULL_MODE_FRONT_BIT & ~(Max_u32 + (int)args.cull_front));
-    ret_info->cullMode |= (VkCullModeFlags)((int)VK_CULL_MODE_BACK_BIT  & ~(Max_u32 + (int)args.cull_back ));
-}
-void pl_get_multisample(VkPipelineMultisampleStateCreateInfo *ret_info) {
-    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ret_info->rasterizationSamples = get_global_settings()->sample_count;
-}
-void pl_get_depth_stencil(Pl_Depth_Stencil_Args args, VkPipelineDepthStencilStateCreateInfo *ret_info) {
-    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-
-    ret_info->depthTestEnable   = args.depth_test_enable;
-    ret_info->depthWriteEnable  = args.depth_write_enable;
-    ret_info->depthCompareOp    = args.depth_compare_op;
-    ret_info->stencilTestEnable = args.stencil_test_enable;
-    ret_info->front             = args.stencil_op_front;
-    ret_info->back              = args.stencil_op_back;
-}
-void pl_attachment_get_no_blend(VkPipelineColorBlendAttachmentState *ret_blend_function) {
-    *ret_blend_function = {};
-
-    ret_blend_function->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-}
-void pl_attachment_get_alpha_blend(VkPipelineColorBlendAttachmentState *ret_blend_function) {
-    *ret_blend_function = {};
-
-    ret_blend_function->colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    ret_blend_function->blendEnable         = VK_TRUE;
-    ret_blend_function->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    ret_blend_function->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    ret_blend_function->colorBlendOp        = VK_BLEND_OP_ADD;
-    ret_blend_function->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    ret_blend_function->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    ret_blend_function->alphaBlendOp        = VK_BLEND_OP_ADD;
-}
-void pl_get_color_blend(u32 attachment_count, VkPipelineColorBlendAttachmentState *attachment_blend_states, VkPipelineColorBlendStateCreateInfo *ret_info) {
-    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    ret_info->attachmentCount = attachment_count;
-    ret_info->pAttachments    = attachment_blend_states;
-}
-void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info) {
-    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-
-    Settings *settings = get_global_settings();
-    ret_info->dynamicStateCount = settings->pl_dynamic_state_count;
-    ret_info->pDynamicStates    = settings->pl_dynamic_states;
-}
-
-// Begin Renderpass
-// Includes a shadow subpass
-void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFramebuffer *framebuffer) {
+void rp_forward_shadow(VkImageView present_attachment, VkImageView depth_attachment, VkImageView shadow_attachment,
+                       VkRenderPass *renderpass, VkFramebuffer *framebuffer)
+{
     VkAttachmentDescription depth_description = {};
     depth_description.format         = VK_FORMAT_D16_UNORM;
     depth_description.samples        = VK_SAMPLE_COUNT_1_BIT;
@@ -4601,7 +4359,7 @@ void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFram
     auto check = vkCreateRenderPass(device, &rp_info, ALLOCATION_CALLBACKS, renderpass);
     DEBUG_OBJ_CREATION(vkCreateRenderPass, check);
 
-    VkImageView attachments[3] = {config->present, config->depth, config->shadow};
+    VkImageView attachments[3] = {present_attachment, depth_attachment, shadow_attachment};
 
     VkViewport viewport = get_global_settings()->viewport;
 
@@ -4617,6 +4375,555 @@ void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFram
     DEBUG_OBJ_CREATION(vkCreateFramebuffer, check);
 }
 
+#ifdef _WIN32 // Different drivers for different OSs, so I assume cache impl would be different
+#define PL_CACHE_FILE_NAME "pl-caches/window.bin"
+#else
+#define PL_CACHE_FILE_NAME "pl-caches/ubuntu.bin"
+#endif
+
+// Pipeline Cache
+VkPipelineCache pl_load_cache() {
+    u64 size;
+    const u8 *cache_data = file_read_bin_temp(PL_CACHE_FILE_NAME, &size);
+
+    if (size) {
+        VkPipelineCacheHeaderVersionOne *header = (VkPipelineCacheHeaderVersionOne*)cache_data;
+
+        assert(header->headerVersion == 1 && "Failed to read pipeline cache header file");
+        if (header->headerVersion != 1)
+            return NULL;
+
+        VkPhysicalDeviceProperties props = get_gpu_instance()->info.props;
+
+        if (header->vendorID != props.vendorID) {
+            println("Pipeline Cache vendor id does not match");
+            return NULL;
+        }
+
+        if (header->deviceID != props.deviceID) {
+            println("Pipeline Cache device id does not match");
+            return NULL;
+        }
+
+        int result = memcmp(header->pipelineCacheUUID, props.pipelineCacheUUID, VK_UUID_SIZE);
+        if (result != 0) {
+            println("Pipeline Cache UUID does not match");
+            return NULL;
+        }
+    }
+
+    //
+    // @Todo Consider setting externally syncd flag.
+    //
+    VkPipelineCacheCreateInfo create_info = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    create_info.initialDataSize = size;
+    create_info.pInitialData = cache_data;
+
+    VkDevice device = get_gpu_instance()->device;
+
+    VkPipelineCache pl_cache;
+    auto check = vkCreatePipelineCache(device, &create_info, ALLOCATION_CALLBACKS, &pl_cache);
+    DEBUG_OBJ_CREATION(vkCreatePipelineCache, check);
+
+    // Store pipeline cache in global gpu
+    get_gpu_instance()->pl_cache = pl_cache;
+
+    return pl_cache; // return it cos why not (because it is confusing cos its unused, but here is a comment telling you so, so dont fret)
+}
+void pl_store_cache() {
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+    VkPipelineCache pl_cache = gpu->pl_cache;
+
+    u64 size;
+    auto check = vkGetPipelineCacheData(device, pl_cache, &size, NULL);
+
+    void *cache_data = (void*)malloc_t(size, 8);
+    vkGetPipelineCacheData(device, pl_cache, &size, cache_data);
+
+    file_write_bin(PL_CACHE_FILE_NAME, size, cache_data);
+
+    vkDestroyPipelineCache(device, pl_cache, ALLOCATION_CALLBACKS);
+}
+
+// Begin graphics pipeline
+static VkPipelineShaderStageCreateInfo* pl_get_shader_stages(u32 count, Shader_Id *ids) {
+    VkPipelineShaderStageCreateInfo *ret =
+        (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
+
+    u32 tmp;
+    Shader_Memory *shader_memory = &get_gpu_instance()->shader_memory;
+    for(u32 i = 0; i < count; ++i) {
+        tmp    = (u32)ids[i];
+        ret[i] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+
+        ret[i].stage  = shader_memory->shaders[tmp].stage;
+        ret[i].module = shader_memory->shaders[tmp].module;
+        ret[i].pName  = "main";
+    }
+
+    return ret;
+}
+static void pl_get_vertex_input_and_assembly(Pl_Primitive_Info                      *info,
+                                             VkPipelineVertexInputStateCreateInfo   *ret_input_info,
+                                             VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info)
+{
+    VkVertexInputBindingDescription *bindings =
+        (VkVertexInputBindingDescription*)malloc_t(sizeof(VkVertexInputBindingDescription) * info->count, 8);
+    VkVertexInputAttributeDescription *attributes =
+        (VkVertexInputAttributeDescription*)malloc_t(sizeof(VkVertexInputAttributeDescription) * info->count, 8);
+
+    // @Note Offsets are set at bind time, as the allocation may not be uploaded yet.
+    // Idk if this is less efficient than enforcing pipeline creation after allocation upload,
+    // But that seems much worse, as then the upload cannot be part of the draw command.
+    for(u32 i = 0; i < info->count; ++i) {
+        bindings[i].binding = i;
+        bindings[i].stride  = info->strides[i];
+
+        attributes[i].format   = info->formats[i];
+        attributes[i].location = i;
+        attributes[i].binding  = i;
+    }
+
+   *ret_input_info = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    ret_input_info->vertexBindingDescriptionCount   = info->count;
+    ret_input_info->pVertexBindingDescriptions      = bindings;
+    ret_input_info->vertexAttributeDescriptionCount = info->count;
+    ret_input_info->pVertexAttributeDescriptions    = attributes;
+
+   *ret_assembly_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ret_assembly_info->topology = info->topology;
+}
+static void pl_get_viewport_and_scissor(VkPipelineViewportStateCreateInfo *ret_info) {
+    Settings *settings = get_global_settings();
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    ret_info->viewportCount = 1;
+    ret_info->pViewports    = &settings->viewport;
+    ret_info->scissorCount  = 1;
+    ret_info->pScissors     = &settings->scissor;
+}
+static void pl_get_rasterization(Pl_Config_Flags flags, VkPipelineRasterizationStateCreateInfo *ret_info) {
+   *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    ret_info->lineWidth = 1.0f;
+
+    if (flags & PL_CONFIG_WIRE_FRAME_BIT)
+        ret_info->polygonMode = VK_POLYGON_MODE_LINE;
+    else
+        ret_info->polygonMode = VK_POLYGON_MODE_FILL;
+
+    ret_info->frontFace = (VkFrontFace)(flags & (Pl_Config_Flags)PL_CONFIG_CLOCKWISE_FRONT_FACE_BIT);
+
+    //
+    // @Note The below is not robust to changes to Pl_Config_Flag_Bits, hence asserts
+    //
+    ret_info->cullMode = (flags & (Pl_Config_Flags)PL_CONFIG_CULL_FRONT_BIT) |
+                         (flags & (Pl_Config_Flags)PL_CONFIG_CULL_BACK_BIT);
+
+    assert((int)PL_CONFIG_CULL_FRONT_BIT == (int)VK_CULL_MODE_FRONT_BIT);
+    assert((int)PL_CONFIG_CULL_BACK_BIT  == (int)VK_CULL_MODE_BACK_BIT);
+}
+static void pl_get_multisample(VkPipelineMultisampleStateCreateInfo *ret_info) {
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ret_info->rasterizationSamples = get_global_settings()->sample_count;
+}
+static void pl_get_depth_stencil(Pl_Config_Flags flags, VkStencilOpState stencil_op_front,
+                                 VkStencilOpState stencil_op_back, VkPipelineDepthStencilStateCreateInfo *ret_info)
+{
+    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+
+    // Clear all flags except those related to depth stencil settings
+    flags &= PL_CONFIG_DEPTH_STENCIL_BITS;
+
+    ret_info->depthTestEnable   = flags & PL_CONFIG_DEPTH_TEST_ENABLE_BIT;
+    ret_info->depthWriteEnable  = flags & PL_CONFIG_DEPTH_WRITE_ENABLE_BIT;
+    ret_info->stencilTestEnable = flags & PL_CONFIG_STENCIL_TEST_ENABLE_BIT;
+
+    // Clear all flags except those related to compare operations
+    flags &= ~(PL_CONFIG_DEPTH_TEST_ENABLE_BIT | PL_CONFIG_DEPTH_WRITE_ENABLE_BIT | PL_CONFIG_STENCIL_TEST_ENABLE_BIT);
+
+    switch(flags) {
+    case PL_CONFIG_DEPTH_COMPARE_EQUAL_BIT:
+    {
+         ret_info->depthCompareOp = VK_COMPARE_OP_EQUAL;
+         break;
+    }
+    case PL_CONFIG_DEPTH_COMPARE_LESS_BIT:
+    {
+         ret_info->depthCompareOp = VK_COMPARE_OP_LESS;
+         break;
+    }
+    case PL_CONFIG_DEPTH_COMPARE_GREATER_BIT:
+    {
+        ret_info->depthCompareOp = VK_COMPARE_OP_GREATER;
+        break;
+    }
+    case PL_CONFIG_DEPTH_COMPARE_LESS_BIT | PL_CONFIG_DEPTH_COMPARE_EQUAL_BIT:
+    {
+        ret_info->depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        break;
+    }
+    case PL_CONFIG_DEPTH_COMPARE_GREATER_BIT | PL_CONFIG_DEPTH_COMPARE_EQUAL_BIT:
+    {
+        ret_info->depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+        break;
+    }
+    case PL_CONFIG_DEPTH_COMPARE_GREATER_BIT | PL_CONFIG_DEPTH_COMPARE_LESS_BIT:
+    {
+        ret_info->depthCompareOp = VK_COMPARE_OP_NOT_EQUAL;
+        break;
+    }
+    case PL_CONFIG_DEPTH_COMPARE_GREATER_BIT | PL_CONFIG_DEPTH_COMPARE_LESS_BIT | PL_CONFIG_DEPTH_COMPARE_EQUAL_BIT:
+    {
+        ret_info->depthCompareOp = VK_COMPARE_OP_ALWAYS;
+        break;
+    }
+    default:
+        break;
+    }
+
+    ret_info->front = stencil_op_front;
+    ret_info->back  = stencil_op_back;
+}
+static void pl_attachment_get_no_blend(VkPipelineColorBlendAttachmentState *ret_blend_function) {
+   *ret_blend_function = {};
+    ret_blend_function->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+}
+static void pl_attachment_get_alpha_blend(VkPipelineColorBlendAttachmentState *ret_blend_function) {
+    *ret_blend_function = {};
+
+    ret_blend_function->colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    ret_blend_function->blendEnable         = VK_TRUE;
+    ret_blend_function->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    ret_blend_function->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    ret_blend_function->colorBlendOp        = VK_BLEND_OP_ADD;
+    ret_blend_function->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    ret_blend_function->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    ret_blend_function->alphaBlendOp        = VK_BLEND_OP_ADD;
+}
+static void pl_get_color_blend(u32 attachment_count, VkPipelineColorBlendAttachmentState *attachment_blend_states,
+                               VkPipelineColorBlendStateCreateInfo *ret_info)
+{
+   *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    ret_info->attachmentCount = attachment_count;
+    ret_info->pAttachments    = attachment_blend_states;
+}
+static void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info) {
+    Settings *settings = get_global_settings();
+   *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    ret_info->dynamicStateCount = settings->pl_dynamic_state_count;
+    ret_info->pDynamicStates    = settings->pl_dynamic_states;
+}
+
+void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipelines) {
+
+    //
+    // Could collapse all of the below into a single allocation, and then fill that, but I doubt that
+    // there is any difference.
+    //
+
+    VkGraphicsPipelineCreateInfo *create_infos =
+        (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * count, 8);
+
+    VkPipelineVertexInputStateCreateInfo *vertex_input_states =
+        (VkPipelineVertexInputStateCreateInfo*)malloc_t(sizeof(VkPipelineVertexInputStateCreateInfo) * count, 8);
+
+    VkPipelineInputAssemblyStateCreateInfo *input_assembly_states =
+        (VkPipelineInputAssemblyStateCreateInfo*)malloc_t(sizeof(VkPipelineInputAssemblyStateCreateInfo) * count, 8);
+
+    VkPipelineRasterizationStateCreateInfo *rasterization_states =
+        (VkPipelineRasterizationStateCreateInfo*)malloc_t(sizeof(VkPipelineRasterizationStateCreateInfo) * count, 8);
+
+    VkPipelineDepthStencilStateCreateInfo *depth_stencil_states =
+        (VkPipelineDepthStencilStateCreateInfo*)malloc_t(sizeof(VkPipelineDepthStencilStateCreateInfo) * count, 8);
+
+    VkPipelineColorBlendAttachmentState *blend_attachments =
+        (VkPipelineColorBlendAttachmentState*)malloc_t(sizeof(VkPipelineColorBlendAttachmentState) * count, 8);
+
+    VkPipelineColorBlendStateCreateInfo *color_blend_states =
+        (VkPipelineColorBlendStateCreateInfo*)malloc_t(sizeof(VkPipelineColorBlendStateCreateInfo) * count, 8);
+
+    VkPipelineViewportStateCreateInfo viewport_state;
+    pl_get_viewport_and_scissor(&viewport_state);
+
+    // @Todo Incoporate multisampling.
+    VkPipelineMultisampleStateCreateInfo multisample_state;
+    pl_get_multisample(&multisample_state);
+
+    VkPipelineDynamicStateCreateInfo dyn_state;
+    pl_get_dynamic(&dyn_state); // Takes its value from global settings struct (top of gpu.hpp)
+
+    for(u32 i = 0; i < count; ++i) {
+        create_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        create_infos[i].flags             = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        create_infos[i].stageCount        = configs[i].shader_count;
+        create_infos[i].pStages           = pl_get_shader_stages(configs[i].shader_count, configs[i].shader_ids);
+        create_infos[i].pViewportState    = &viewport_state;
+        create_infos[i].pMultisampleState = &multisample_state;
+        create_infos[i].pDynamicState     = &dyn_state;
+
+        create_infos[i].renderPass = configs[i].renderpass;
+        create_infos[i].layout     = configs[i].layout;
+        create_infos[i].subpass    = configs[i].subpass;
+
+        pl_get_vertex_input_and_assembly(&configs[i].primitive_info, &vertex_input_states[i],
+                                         &input_assembly_states[i]);
+        create_infos[i].pVertexInputState   = &vertex_input_states[i];
+        create_infos[i].pInputAssemblyState = &input_assembly_states[i];
+
+        pl_get_rasterization(configs[i].flags, &rasterization_states[i]);
+        create_infos[i].pRasterizationState = &rasterization_states[i];
+
+        pl_get_depth_stencil(configs[i].flags, {}, {}, &depth_stencil_states[i]);
+        create_infos[i].pDepthStencilState = &depth_stencil_states[i];
+
+        switch(configs[i].blend_setting) {
+        case PL_BLEND_SETTING_ALPHA_BLEND:
+        {
+            pl_attachment_get_alpha_blend(&blend_attachments[i]);
+            pl_get_color_blend(1, &blend_attachments[i], &color_blend_states[i]);
+            break;
+        }
+        case PL_BLEND_SETTING_NO_BLEND:
+        {
+            pl_attachment_get_no_blend(&blend_attachments[i]);
+            pl_get_color_blend(1, &blend_attachments[i], &color_blend_states[i]);
+            break;
+        }
+        default:
+            assert(false && "Invalid Blend Setting");
+        }
+    }
+
+    Gpu *gpu              = get_gpu_instance();
+    VkDevice device       = gpu->device;
+    VkPipelineCache cache = gpu->pl_cache;
+
+    auto check = vkCreateGraphicsPipelines(device, cache, count, create_infos, ALLOCATION_CALLBACKS, ret_pipelines);
+    DEBUG_OBJ_CREATION(vkCreateGraphicsPipelines, check);
+}
+
+/*
+   Below are the big lumpy functions that sometimes arise that I never want to
+               see and hardly have to use
+*/
+
+// functions like this are such a waste of time to write...
+u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
+        switch(accessor_format) {
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U8:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S8:
+                return 1;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S8:
+                return 2;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S8:
+                return 3;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U8:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S8:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S16:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT16:
+                return 2;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT16:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT16:
+                return 6;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U16:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S16:
+            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT16:
+                 return 8;
+
+            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_S32:
+            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT32:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_VEC2_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC2_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT32:
+                return 8;
+
+            case GLTF_ACCESSOR_FORMAT_VEC3_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC3_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT32:
+                return 12;
+
+            case GLTF_ACCESSOR_FORMAT_VEC4_U32:
+            case GLTF_ACCESSOR_FORMAT_VEC4_S32:
+            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT32:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S8:
+                return 4;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S8:
+                return 9;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U8:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S8:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT16:
+                return 8;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT16:
+                return 18;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U16:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S16:
+            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT16:
+                return 32;
+
+            case GLTF_ACCESSOR_FORMAT_MAT2_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT2_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT32:
+                return 16;
+
+            case GLTF_ACCESSOR_FORMAT_MAT3_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT3_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT32:
+                return 36;
+
+            case GLTF_ACCESSOR_FORMAT_MAT4_U32:
+            case GLTF_ACCESSOR_FORMAT_MAT4_S32:
+            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT32:
+                return 64;
+
+            default:
+                assert(false && "Invalid Accessor Format");
+                return Max_u32;
+        }
+}
+
+#if DEBUG
+VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info) {
+    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info = fill_vk_debug_messenger_info(info);
+
+    VkDebugUtilsMessengerEXT debug_messenger;
+    auto check = CreateDebugUtilsMessengerEXT(info->instance, &debug_messenger_create_info, NULL, &debug_messenger);
+
+    DEBUG_OBJ_CREATION(vkCreateDebugUtilsMessengerEXT, check)
+    return debug_messenger;
+}
+
+VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger)
+{
+    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
+    if (func != nullptr) {
+        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
+    } else {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+}
+void DestroyDebugUtilsMessengerEXT(
+        VkInstance instance,
+        VkDebugUtilsMessengerEXT messenger,
+        const VkAllocationCallbacks *pAllocator)
+{
+    auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+    if (func != nullptr)
+        return func(instance, messenger, pAllocator);
+}
+#endif
+
+//
+// Below is unimplemented code/old code that I want to keep around for examples later if I need it
+// (this code often does too much/is too general for what I currently want, so it is not useful for now,
+// but it may be useful later when I want to do different things).
+//
+
+#if 0
+void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count, VkPushConstantRange *push_constants, Pl_Layout *layout) {
+    Gpu *gpu                   =  get_gpu_instance();
+    VkDevice device            =  gpu->device;
+    Shader_Memory *shader_info = &gpu->shader_memory;
+
+    // @Note Assumes that the number of descriptor sets that will be bound is less than DESCRIPTOR_SET_COUNT.
+    VkDescriptorSetLayout *set_layouts = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * DESCRIPTOR_SET_COUNT, 8);
+
+    layout->stages      = (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
+    layout->set_count   = 0;
+    layout->stage_count = 0;
+
+    //
+    // @Note I am pretty sure that the order of the set layouts in the pipeline layout does not need to be the
+    // same as their set numbers, that is only for bind order.
+    //
+
+    #if DEBUG
+    bool zero_index = false;
+    u32 last_set_index = 0;
+    #endif
+
+    Shader shader;
+    for(u32 i = 0; i < count; ++i) {
+        shader = shader_info->shaders[shader_indices[i]];
+
+        //
+        // @Note Shaders must be submitted to this function with increasing seqeuential set order. This means
+        // that they do not need to be sorted in order to be bound, but instead can just be memcpyd into the
+        // 'to bind' descriptor set array. This is perfectly reasonable: it would be very error prone to allow
+        // programming shaders without strict rules on set sequencing.
+        //
+        #if DEBUG
+        for(u32 j = 0; j < shader.layout_count; ++j) {
+            if (zero_index == false) {
+                assert(shader.layout_indices[j] == 0);
+                zero_index = true;
+            }
+
+            assert(shader.layout_indices[j] == last_set_index     ||
+                   shader.layout_indices[j] == last_set_index + 1 &&
+                  "Shaders MUST appear with sequential set layout indices starting from 0");
+
+           last_set_index = shader.layout_indices[j];
+        }
+        #endif
+
+        layout->stages[i]        = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        layout->stages[i].stage  = shader.stage;
+        layout->stages[i].module = shader.module;
+        layout->stages[i].pName  = shader_info->entry_point;
+
+        memcpy(set_layouts  + layout->set_count, shader_info->layouts + shader.layout_index, sizeof(VkDescriptorSetLayout) * shader.layout_count);
+        layout->set_count   += shader.layout_count;
+    }
+
+    VkPipelineLayoutCreateInfo layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_info.setLayoutCount         = layout->set_count;
+    layout_info.pSetLayouts            = set_layouts;
+    layout_info.pushConstantRangeCount = push_constant_count;
+    layout_info.pPushConstantRanges    = push_constants;
+
+    auto check = vkCreatePipelineLayout(device, &layout_info, ALLOCATION_CALLBACKS, &layout->pl_layout);
+    DEBUG_OBJ_CREATION(vkCreatePipelineLayout, check);
+
+    if (check != VK_SUCCESS) {
+        *layout = {};
+        return;
+    }
+}
 // Pipeline creation minor helpers
 inline static u32 pl_count_primitives(Static_Model *model) {
     u32 primitive_count = 0;
@@ -4831,155 +5138,6 @@ Draw_Final_Basic draw_create_basic(Draw_Final_Basic_Config *config) {
 
     return ret;
 }
-
-        /*
-           Below are the big lumpy functions that sometimes arise that I never want to
-                       see and hardly have to use
-        */
-
-// functions like this are such a waste of time to write...
-u32 get_accessor_byte_stride(Gltf_Accessor_Format accessor_format) {
-        switch(accessor_format) {
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U8:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S8:
-                return 1;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S8:
-                return 2;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S8:
-                return 3;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U8:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S8:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S16:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT16:
-                return 2;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT16:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT16:
-                return 6;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U16:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S16:
-            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT16:
-                 return 8;
-
-            case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_S32:
-            case GLTF_ACCESSOR_FORMAT_SCALAR_FLOAT32:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_VEC2_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC2_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC2_FLOAT32:
-                return 8;
-
-            case GLTF_ACCESSOR_FORMAT_VEC3_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC3_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC3_FLOAT32:
-                return 12;
-
-            case GLTF_ACCESSOR_FORMAT_VEC4_U32:
-            case GLTF_ACCESSOR_FORMAT_VEC4_S32:
-            case GLTF_ACCESSOR_FORMAT_VEC4_FLOAT32:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S8:
-                return 4;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S8:
-                return 9;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U8:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S8:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT16:
-                return 8;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT16:
-                return 18;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U16:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S16:
-            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT16:
-                return 32;
-
-            case GLTF_ACCESSOR_FORMAT_MAT2_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT2_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT2_FLOAT32:
-                return 16;
-
-            case GLTF_ACCESSOR_FORMAT_MAT3_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT3_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT3_FLOAT32:
-                return 36;
-
-            case GLTF_ACCESSOR_FORMAT_MAT4_U32:
-            case GLTF_ACCESSOR_FORMAT_MAT4_S32:
-            case GLTF_ACCESSOR_FORMAT_MAT4_FLOAT32:
-                return 64;
-
-            default:
-                assert(false && "Invalid Accessor Format");
-                return Max_u32;
-        }
-}
-
-#if DEBUG
-VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info) {
-    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info = fill_vk_debug_messenger_info(info);
-
-    VkDebugUtilsMessengerEXT debug_messenger;
-    auto check = CreateDebugUtilsMessengerEXT(info->instance, &debug_messenger_create_info, NULL, &debug_messenger);
-
-    DEBUG_OBJ_CREATION(vkCreateDebugUtilsMessengerEXT, check)
-    return debug_messenger;
-}
-
-VkResult CreateDebugUtilsMessengerEXT(VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkDebugUtilsMessengerEXT* pDebugMessenger)
-{
-    auto func = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT");
-    if (func != nullptr) {
-        return func(instance, pCreateInfo, pAllocator, pDebugMessenger);
-    } else {
-        return VK_ERROR_EXTENSION_NOT_PRESENT;
-    }
-}
-void DestroyDebugUtilsMessengerEXT(
-        VkInstance instance,
-        VkDebugUtilsMessengerEXT messenger,
-        const VkAllocationCallbacks *pAllocator)
-{
-    auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
-    if (func != nullptr)
-        return func(instance, messenger, pAllocator);
-}
-#endif
-
-//
-// Below is unimplemented code/old code that I want to keep around for examples later if I need it (this code often does too much, so it is not useful for now, but it may be useful later when I need more stuff)
-//
-
-#if 0
 Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir) {
     u64 mark = get_mark_temp();
 

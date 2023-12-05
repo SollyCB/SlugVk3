@@ -1,4 +1,24 @@
                             ** Current Tasks **
+1. Move the model stuff into its own file. gpu files are starting to get bloated and
+   difficult to organise. Shaders should be the last thing in that file.
+
+                            ** Current Long Term Goal **
+1. Get the animations up and running.
+2. Super simple basic gui system
+3. Map editor type thing using the gui:
+    - be able to morph cubes to make ramps, boxes, ledges by selecting shape corners etc.
+4. Use the maps to test wall and floor collision detection
+    - just have a basic bounding box around the player
+    - leverage compute shader for detection
+5. Extend the map editor for creating player hit boxes:
+    - morph and bind cubes to bones.
+6. Use the player hit boxes to get shooting.
+7. Networking.
+
+                            ** Other Fun Stuff To Implement **
+1. Compute shader particle system
+
+                            ** Completed Tasks **
 1. Look again at the model loading. I was really uncomfortable with how general the model
    loading functions were looking, and how many 'if's that this caused, and I kept leaving
    comments like 'in a production app you can constrain this to these things' etc. But now
@@ -16,18 +36,3 @@
    Then animations (shouldnt be too hard) and then map editor and gui (which will be fucking
    AMAZING fun to implement).
 
-                            ** Current Long Term Goal **
-1. Get the animations up and running.
-2. Super simple basic gui system
-3. Map editor type thing using the gui:
-    - be able to morph cubes to make ramps, boxes, ledges by selecting shape corners etc.
-4. Use the maps to test wall and floor collision detection
-    - just have a basic bounding box around the player
-    - leverage compute shader for detection
-5. Extend the map editor for creating player hit boxes:
-    - morph and bind cubes to bones.
-6. Use the player hit boxes to get shooting.
-7. Networking.
-
-                            ** Other Fun Stuff To Implement **
-1. Compute shader particle system

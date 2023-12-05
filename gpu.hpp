@@ -18,6 +18,7 @@
 #include "math.hpp"
 #include "string.hpp"
 #include "shader.hpp" // include g_shader_file_names global array
+#include "models.hpp"
 
 struct Settings {
     VkSampleCountFlagBits sample_count           = VK_SAMPLE_COUNT_1_BIT;
@@ -160,6 +161,7 @@ struct Gpu {
     u32 transfer_queue_index;
 
     Gpu_Memory    memory;
+    Model_Memory  model_memory;
     Shader_Memory shader_memory;
 };
 Gpu* get_gpu_instance();
@@ -408,7 +410,7 @@ Gpu_Allocator create_allocator (Gpu_Allocator_Config *info);
 void          destroy_allocator(Gpu_Allocator *alloc);
 
 Gpu_Allocator_Result begin_allocation    (Gpu_Allocator *alloc);
-Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc, u64 size, void *ptr, u64 *ret_offset);
+Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc, u64 size, void *ptr);
 Gpu_Allocator_Result submit_allocation   (Gpu_Allocator *alloc, u32 *key);
 
 Gpu_Allocator_Result staging_queue_begin (Gpu_Allocator *alloc);
@@ -584,7 +586,208 @@ inline static void uniform_allocator_reset_and_zero(Uniform_Allocator *allocator
     /* Model Memory Management End */
 
     /* Model Data */
+struct Model_Allocators {
+    Gpu_Allocator     index;
+    Gpu_Allocator     vertex;
+    Gpu_Tex_Allocator tex;
+    Sampler_Allocator sampler;
+};
+struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary defaults atm.
 
+Model_Allocators init_model_allocators(Model_Allocators_Config *config);
+void             shutdown_allocators  (Model_Allocators *allocs);
+
+struct Model_Cube {
+    u32 tex_key_base;
+    u32 tex_key_pbr;
+    u64 sampler_key_base;
+    u64 sampler_key_pbr;
+
+    u32 index_key;
+    u32 vertex_key;
+
+    u32 count; // draw count (num indices)
+    VkIndexType index_type;
+
+    // Allocation offsets
+    u64 offset_index;
+    u64 offset_position;
+    u64 offset_normal;
+    u64 offset_tangent;
+    u64 offset_tex_coords;
+
+    // Pipeline info
+    VkPrimitiveTopology topology;
+    u32 stride_position;
+    u32 stride_normal;
+    u32 stride_tangent;
+    u32 stride_tex_coords;
+    VkFormat fmt_position;
+    VkFormat fmt_normal;
+    VkFormat fmt_tangent;
+    VkFormat fmt_tex_coords;
+};
+struct Model_Player {}; // @Unimplemented
+
+union Model {
+    Model_Cube   cube;
+    Model_Player player;
+};
+Model load_models(Model_Allocators *allocs, Model_Id model_id);
+
+struct Model_Memory {
+    Model_Allocs  model_allocators;
+    u32           count;
+    Model        *models;
+};
+
+    /* Renderpass Framebuffer Pipeline */
+// @Todo Add more renderpass types
+void rp_forward_shadow(VkImageView present_attachment, VkImageView depth_attachment, VkImageView shadow_attachment,
+                       VkRenderPass *renderpass, VkFramebuffer *framebuffer);
+
+enum Pl_Blend_Setting {
+    PL_BLEND_SETTING_NO_BLEND    = 0,
+    PL_BLEND_SETTING_ALPHA_BLEND = 1,
+};
+enum Pl_Config_Flag_Bits {
+    PL_CONFIG_CULL_FRONT_BIT            = 0x0001,
+    PL_CONFIG_CULL_BACK_BIT             = 0x0002,
+    PL_CONFIG_WIRE_FRAME_BIT            = 0x0004,
+    PL_CONFIG_CLOCKWISE_FRONT_FACE_BIT  = 0x0008,
+    PL_CONFIG_DEPTH_TEST_ENABLE_BIT     = 0x0010,
+    PL_CONFIG_DEPTH_WRITE_ENABLE_BIT    = 0x0020,
+    PL_CONFIG_DEPTH_COMPARE_GREATER_BIT = 0x0040,
+    PL_CONFIG_DEPTH_COMPARE_LESS_BIT    = 0x0080,
+    PL_CONFIG_DEPTH_COMPARE_EQUAL_BIT   = 0x0100,
+    PL_CONFIG_STENCIL_TEST_ENABLE_BIT   = 0x0200,
+
+    PL_CONFIG_RASTERIZATION_BITS = PL_CONFIG_WIRE_FRAME_BIT | PL_CONFIG_CULL_FRONT_BIT |
+                                   PL_CONFIG_CULL_BACK_BIT  | PL_CONFIG_CLOCKWISE_FRONT_FACE_BIT,
+
+    PL_CONFIG_DEPTH_STENCIL_BITS = PL_CONFIG_DEPTH_TEST_ENABLE_BIT     | PL_CONFIG_DEPTH_WRITE_ENABLE_BIT |
+                                   PL_CONFIG_DEPTH_COMPARE_GREATER_BIT | PL_CONFIG_DEPTH_COMPARE_LESS_BIT |
+                                   PL_CONFIG_DEPTH_COMPARE_EQUAL_BIT   | PL_CONFIG_DEPTH_WRITE_ENABLE_BIT |
+                                   PL_CONFIG_STENCIL_TEST_ENABLE_BIT,
+};
+typedef u32 Pl_Config_Flags;
+
+struct Pl_Primitive_Info {
+    VkPrimitiveTopology  topology;
+    u32                  count;
+    u32                 *strides;
+    VkFormat            *formats;
+};
+struct Pl_Config { // @Todo multisample state settings
+    u32                shader_count;
+    Shader_Id         *shader_ids;
+    VkPipelineLayout   layout;
+    VkRenderPass       renderpass;
+    u32                subpass;
+
+    Pl_Config_Flags    flags;
+    Pl_Blend_Setting   blend_setting; // This could probably just be an on or off flag for now.
+    Pl_Primitive_Info  primitive_info;
+};
+void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipelines);
+
+// Sync
+inline static VkFence create_fence(bool signalled) {
+    VkFenceCreateInfo info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    info.flags = (VkFenceCreateFlags)signalled;
+
+    VkFence fence;
+    auto check = vkCreateFence(get_gpu_instance()->device, &info, ALLOCATION_CALLBACKS, &fence);
+    return fence;
+}
+inline static void destroy_fence(VkFence fence) {
+    vkDestroyFence(get_gpu_instance()->device, fence, ALLOCATION_CALLBACKS);
+}
+inline static void reset_fence(VkFence fence) {
+    vkResetFences(get_gpu_instance()->device, 1, &fence);
+}
+inline static void wait_fence(VkFence fence) {
+    vkWaitForFences(get_gpu_instance()->device, 1, &fence, 1, 10e9);
+}
+inline static void wait_and_reset_fence(VkFence fence) {
+    wait_fence(fence);
+    reset_fence(fence);
+}
+inline static VkSemaphore create_semaphore() {
+    VkSemaphoreCreateInfo info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    VkSemaphore ret;
+    auto check = vkCreateSemaphore(get_gpu_instance()->device, &info, ALLOCATION_CALLBACKS, &ret);
+    return ret;
+}
+inline static void destroy_semaphore(VkSemaphore semaphore) {
+    vkDestroySemaphore(get_gpu_instance()->device, semaphore, ALLOCATION_CALLBACKS);
+}
+
+#if DEBUG
+static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
+        VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+        VkDebugUtilsMessageTypeFlagsEXT messageType,
+        const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
+        void* pUserData)
+{
+    if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
+        println("\nValidation Layer: %s", pCallbackData->pMessage);
+
+    return VK_FALSE;
+}
+
+struct Create_Debug_Messenger_Info {
+    VkInstance instance;
+
+    VkDebugUtilsMessageSeverityFlagsEXT severity =
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT    |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+
+    VkDebugUtilsMessageTypeFlagsEXT type =
+        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
+
+    PFN_vkDebugUtilsMessengerCallbackEXT callback = debug_messenger_callback;
+};
+
+VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info);
+
+VkResult CreateDebugUtilsMessengerEXT(
+        VkInstance instance,
+        const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
+        const VkAllocationCallbacks* pAllocator,
+        VkDebugUtilsMessengerEXT* pDebugMessenger);
+void DestroyDebugUtilsMessengerEXT(
+        VkInstance instance,
+        VkDebugUtilsMessengerEXT messenger,
+        const VkAllocationCallbacks *pAllocator);
+
+inline VkDebugUtilsMessengerCreateInfoEXT fill_vk_debug_messenger_info(Create_Debug_Messenger_Info *info) {
+    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info =
+    {VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
+
+    debug_messenger_create_info.messageSeverity = info->severity;
+    debug_messenger_create_info.messageType     = info->type;
+    debug_messenger_create_info.pfnUserCallback = info->callback;
+
+    return debug_messenger_create_info;
+}
+
+#endif // DEBUG (debug messenger setup)
+
+#endif // include guard
+
+//
+// Below is code that was created very general in the prototype phase when I would see everything that I would need.
+// I keep it around as it is useful as an example of how I did stuff before when I come to do different things that
+// I have already kind of implemented to whatever extent.
+//
+
+#if 0
 #if 0 // General model data (mostly for example)
 struct Node;
 struct Skin {
@@ -712,243 +915,4 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 void         free_static_model(Static_Model *model);
 
 #endif // General model data (mostly for example)
-
-struct Model_Allocators {
-    Gpu_Allocator     index;
-    Gpu_Allocator     vertex;
-    Gpu_Tex_Allocator tex;
-    Sampler_Allocator sampler;
-};
-struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary defaults atm.
-
-Model_Allocators init_model_allocators(Model_Allocators_Config *config);
-void             shutdown_allocators  (Model_Allocators *allocs);
-
-struct Model_Cube {
-    u32 tex_key_base;
-    u32 tex_key_pbr;
-    u64 sampler_key_base;
-    u64 sampler_key_pbr;
-
-    u32 index_key;
-    u32 vertex_key;
-
-    u32 count; // draw count (num indices)
-    VkIndexType index_type;
-
-    // Allocation offsets
-    u64 offset_index;
-    u64 offset_position;
-    u64 offset_normal;
-    u64 offset_tangent;
-    u64 offset_tex_coords;
-
-    // Pipeline info
-    VkPrimitiveTopology topology;
-    u32 stride_position;
-    u32 stride_normal;
-    u32 stride_tangent;
-    u32 stride_tex_coords;
-    VkFormat fmt_position;
-    VkFormat fmt_normal;
-    VkFormat fmt_tangent;
-    VkFormat fmt_tex_coords;
-};
-
-enum Model_Type {
-    MODEL_TYPE_CUBE = 1;
-};
-union Model {
-    Model_Cube cube;
-};
-
-    /* Renderpass Framebuffer Pipeline */
-struct Pl_Primitive_Info {
-    VkPrimitiveTopology topology;
-    u32       count;
-    u32      *strides;
-    VkFormat *formats;
-};
-
-struct Pl_Layout {
-    u32                              stage_count;
-    u32                              set_count;
-    VkPipelineShaderStageCreateInfo *stages;
-    VkPipelineLayout                 pl_layout;
-};
-void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count, VkPushConstantRange *push_constants, Pl_Layout *layout);
-
-void pl_get_vertex_input_and_assembly_static(Pl_Primitive_Info *primitive,
-                                             VkPipelineVertexInputStateCreateInfo *ret_input_info,
-                                             VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info);
-void pl_get_viewport_and_scissor(VkPipelineViewportStateCreateInfo *ret_info);
-
-//
-// Ik the below two are not in keeping with every where else in passing func args, but create graphics pipelines
-// is a pretty unique setup so I am ok with it being different. This allows easily zeroing stuff, not creating
-// new local vars etc...
-//
-struct Pl_Rasterization_Args {
-    bool wire_frame;
-    bool cull_front;
-    bool cull_back;
-    bool clockwise_front_face;
-};
-void pl_get_rasterization(Pl_Rasterization_Args args, VkPipelineRasterizationStateCreateInfo *ret_info);
-void pl_get_multisample(VkPipelineMultisampleStateCreateInfo *ret_info);
-
-struct Pl_Depth_Stencil_Args { // @Todo @BoolsInStructs These should be done as flags
-    bool             depth_test_enable;
-    bool             depth_write_enable;
-    bool             stencil_test_enable;
-    VkCompareOp      depth_compare_op;
-    VkStencilOpState stencil_op_front;
-    VkStencilOpState stencil_op_back;
-};
-void pl_get_depth_stencil(Pl_Depth_Stencil_Args args, VkPipelineDepthStencilStateCreateInfo *ret_info);
-
-// Blend functions -- I plan to add more for quickly filling out common blend options
-void pl_attachment_get_no_blend   (VkPipelineColorBlendAttachmentState *ret_blend_function);
-void pl_attachment_get_alpha_blend(VkPipelineColorBlendAttachmentState *ret_blend_function);
-void pl_get_color_blend           (u32 attachment_count,
-                                   VkPipelineColorBlendAttachmentState *attachment_blend_states,
-                                   VkPipelineColorBlendStateCreateInfo *ret_info);
-
-void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info);
-
-// Begin renderpass
-struct Rp_Config { // Bad name, should be something like "_Attachments"
-    VkImageView present;
-    VkImageView depth;
-    VkImageView shadow;
-};
-void rp_forward_shadow_basic(Rp_Config *config, VkRenderPass *renderpass, VkFramebuffer *framebuffer);
-
-// Final pipeline creation
-struct Pl_Final {
-    u32         count;
-    VkPipeline *pipelines;
-    Pl_Layout   layout;
-};
-Pl_Final pl_create_basic (VkRenderPass renderpass, u32 count, Static_Model *models);
-Pl_Final pl_create_shadow(VkRenderPass renderpass, u32 count, Static_Model *models);
-
-inline static void pl_destroy_final(Pl_Final *pl) {
-    VkDevice device = get_gpu_instance()->device;
-    for(u32 i = 0; i < pl->count; ++i)
-        vkDestroyPipeline(device, pl->pipelines[i], ALLOCATION_CALLBACKS);
-
-    vkDestroyPipelineLayout(device, pl->layout.pl_layout, ALLOCATION_CALLBACKS);
-}
-
-struct Draw_Final_Basic {
-    Pl_Final      pl_basic;
-    Pl_Final      pl_shadow;
-    VkRenderPass  renderpass;
-    VkFramebuffer framebuffer;
-};
-struct Draw_Final_Basic_Config {
-    u32           count;
-    Static_Model *models;
-    Rp_Config     rp_config;
-};
-Draw_Final_Basic draw_create_basic(Draw_Final_Basic_Config *config);
-
-inline static void draw_destroy_basic(Draw_Final_Basic *draw) {
-    pl_destroy_final(&draw->pl_basic);
-    pl_destroy_final(&draw->pl_shadow);
-
-    VkDevice device = get_gpu_instance()->device;
-    vkDestroyRenderPass(device, draw->renderpass, ALLOCATION_CALLBACKS);
-    vkDestroyFramebuffer(device, draw->framebuffer, ALLOCATION_CALLBACKS);
-}
-
-// Sync
-inline static VkFence create_fence(bool signalled) {
-    VkFenceCreateInfo info = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-    info.flags = (VkFenceCreateFlags)signalled;
-
-    VkFence fence;
-    auto check = vkCreateFence(get_gpu_instance()->device, &info, ALLOCATION_CALLBACKS, &fence);
-    return fence;
-}
-inline static void destroy_fence(VkFence fence) {
-    vkDestroyFence(get_gpu_instance()->device, fence, ALLOCATION_CALLBACKS);
-}
-inline static void reset_fence(VkFence fence) {
-    vkResetFences(get_gpu_instance()->device, 1, &fence);
-}
-inline static void wait_fence(VkFence fence) {
-    vkWaitForFences(get_gpu_instance()->device, 1, &fence, 1, 10e9);
-}
-inline static void wait_and_reset_fence(VkFence fence) {
-    wait_fence(fence);
-    reset_fence(fence);
-}
-inline static VkSemaphore create_semaphore() {
-    VkSemaphoreCreateInfo info = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    VkSemaphore ret;
-    auto check = vkCreateSemaphore(get_gpu_instance()->device, &info, ALLOCATION_CALLBACKS, &ret);
-    return ret;
-}
-inline static void destroy_semaphore(VkSemaphore semaphore) {
-    vkDestroySemaphore(get_gpu_instance()->device, semaphore, ALLOCATION_CALLBACKS);
-}
-
-#if DEBUG
-static VKAPI_ATTR VkBool32 VKAPI_CALL debug_messenger_callback(
-        VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-        VkDebugUtilsMessageTypeFlagsEXT messageType,
-        const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-        void* pUserData)
-{
-    if (messageSeverity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
-        println("\nValidation Layer: %s", pCallbackData->pMessage);
-
-    return VK_FALSE;
-}
-
-struct Create_Debug_Messenger_Info {
-    VkInstance instance;
-
-    VkDebugUtilsMessageSeverityFlagsEXT severity =
-        VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
-        VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT    |
-        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
-        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-
-    VkDebugUtilsMessageTypeFlagsEXT type =
-        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT     |
-        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT  |
-        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
-        VK_DEBUG_UTILS_MESSAGE_TYPE_DEVICE_ADDRESS_BINDING_BIT_EXT;
-
-    PFN_vkDebugUtilsMessengerCallbackEXT callback = debug_messenger_callback;
-};
-
-VkDebugUtilsMessengerEXT create_debug_messenger(Create_Debug_Messenger_Info *info);
-
-VkResult CreateDebugUtilsMessengerEXT(
-        VkInstance instance,
-        const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
-        const VkAllocationCallbacks* pAllocator,
-        VkDebugUtilsMessengerEXT* pDebugMessenger);
-void DestroyDebugUtilsMessengerEXT(
-        VkInstance instance,
-        VkDebugUtilsMessengerEXT messenger,
-        const VkAllocationCallbacks *pAllocator);
-
-inline VkDebugUtilsMessengerCreateInfoEXT fill_vk_debug_messenger_info(Create_Debug_Messenger_Info *info) {
-    VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info =
-    {VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
-
-    debug_messenger_create_info.messageSeverity = info->severity;
-    debug_messenger_create_info.messageType     = info->type;
-    debug_messenger_create_info.pfnUserCallback = info->callback;
-
-    return debug_messenger_create_info;
-}
-
-#endif // DEBUG (debug messenger setup)
-
-#endif // include guard
+#endif
