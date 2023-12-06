@@ -2491,6 +2491,7 @@ Gpu_Allocator_Result begin_allocation(Gpu_Allocator *alloc) {
     alloc->to_stage_count           = 0;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result continue_allocation(Gpu_Allocator *alloc, u64 size, void *ptr) {
     // @Note Test against upload cap, assuming that the stage cap is at least as large as the upload
     // cap.
@@ -2523,6 +2524,7 @@ Gpu_Allocator_Result continue_allocation(Gpu_Allocator *alloc, u64 size, void *p
     alloc->staging_queue_byte_count += size;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result submit_allocation(Gpu_Allocator *alloc, u32 *key) {
     u32  allocation_count          = alloc->allocation_count;
     Gpu_Allocation *allocations        = alloc->allocations;
@@ -2558,6 +2560,7 @@ Gpu_Allocator_Result submit_allocation(Gpu_Allocator *alloc, u32 *key) {
     alloc->to_stage_count           = Max_u32;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result staging_queue_begin(Gpu_Allocator *alloc) {
     if (alloc->disk) { // Close the file: using the queue indicates allocation adding phase is complete.
         fclose(alloc->disk);
@@ -2571,6 +2574,7 @@ Gpu_Allocator_Result staging_queue_begin(Gpu_Allocator *alloc) {
     alloc->staging_queue_byte_count = 0;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
     if (alloc->to_stage_count >= alloc->to_stage_cap)
         return ALLOCATOR_RESULT_QUEUE_FULL;
@@ -2615,6 +2619,23 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
     alloc->to_stage_count++;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
+void staging_queue_remove(Gpu_Allocator *alloc, u32 key) {
+    u32 idx = alloc->allocation_indices[key];
+
+    // Operator precedence with bit shifting so dumb...
+    if (!(alloc->allocation_states[idx] & ALLOCATION_STATE_TO_STAGE_BIT))
+        return;
+
+    u64 bit_aligned_size = align(alloc->allocations[idx].size, alloc->stage_bit_granularity);
+
+    alloc->allocation_states[idx]   &= ~(ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
+    alloc->staging_queue_byte_count -= bit_aligned_size;
+    alloc->to_stage_count--;
+
+    return;
+}
+
 Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
     // If the 'to_stage' count is zero on queue submission, just assume that everything queued was
     // already cached, and we need not do anything. This is most likely, as vertex data should just
@@ -2757,6 +2778,7 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
     alloc->to_stage_count = Max_u32; // Indicate that it is safe to begin a new queue.
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result upload_queue_begin(Gpu_Allocator *alloc) {
     // .to_upload_count is set to max upon successful queue submission,
     // indicating that the queue is safe to use again.
@@ -2766,6 +2788,7 @@ Gpu_Allocator_Result upload_queue_begin(Gpu_Allocator *alloc) {
     alloc->upload_queue_byte_count = 0;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
     if (alloc->to_upload_count >= alloc->to_upload_cap)
         return ALLOCATOR_RESULT_QUEUE_FULL;
@@ -2808,6 +2831,23 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
     alloc->to_upload_count++;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
+void upload_queue_remove(Gpu_Allocator *alloc, u32 key) {
+    u32 idx = alloc->allocation_indices[key];
+
+    // Operator precedence with bit shifting so dumb...
+    if (!(alloc->allocation_states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT))
+        return;
+
+    u64 bit_aligned_size = align(alloc->allocations[idx].size, alloc->upload_bit_granularity);
+
+    alloc->allocation_states[idx]   &= ~(ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
+    alloc->upload_queue_byte_count -= bit_aligned_size;
+    alloc->to_upload_count--;
+
+    return;
+}
+
 Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
     // If the to upload count is zero on queue submission, just assume that everything queued was
     // already cached, and we need not do anything.
@@ -3054,6 +3094,7 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
     alloc->to_upload_count = Max_u32;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name, u32 *key) {
     // Check if the texture has already been seen. If so, early return.
     u64 hash = get_string_hash(file_name);
@@ -3168,6 +3209,7 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     alloc->allocation_count++;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result tex_staging_queue_begin(Gpu_Tex_Allocator *alloc) {
     // .to_stage_count is set to Max_u32 on queue submission, indicating it is safe to use again.
     if (alloc->to_stage_count != Max_u32)
@@ -3176,6 +3218,7 @@ Gpu_Allocator_Result tex_staging_queue_begin(Gpu_Tex_Allocator *alloc) {
     alloc->staging_queue_byte_count = 0;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
     // Increment the allocation's cache weight since it has been called on.
     // See implementation details to understand (grep '~MAID').
@@ -3191,7 +3234,7 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
     };
     u32 idx = adjust_allocation_weights(&w_args);
 
-    u32 allocation_count           = alloc->allocation_count;
+    u32 allocation_count               = alloc->allocation_count;
     Gpu_Tex_Allocation *allocations    = alloc->allocations;
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
 
@@ -3206,6 +3249,7 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
     // information (grep '~MAID').
     u64 img_size = allocations[idx].width * allocations[idx].height * 4;
     u64 bit_align_size = align(img_size, alloc->stage_bit_granularity);
+
     if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
         states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
         return ALLOCATOR_RESULT_QUEUE_FULL;
@@ -3216,6 +3260,24 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
     alloc->to_stage_count++;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
+void tex_staging_queue_remove(Gpu_Tex_Allocator *alloc, u32 key) {
+    u32 idx = alloc->allocation_indices[key];
+
+    // Operator precedence with bit shifting so dumb...
+    if (!(alloc->allocation_states[idx] & ALLOCATION_STATE_TO_STAGE_BIT))
+        return;
+
+    u64 img_size         = alloc->allocations[idx].width * alloc->allocations[idx].height * 4;
+    u64 bit_aligned_size = align(img_size, alloc->stage_bit_granularity);
+
+    alloc->allocation_states[idx]   &= ~(ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
+    alloc->staging_queue_byte_count -= bit_aligned_size;
+    alloc->to_stage_count--;
+
+    return;
+}
+
 Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     // If the to stage count is zero on queue submission, just assume that everything queued was
     // already cached, and we need not do anything.
@@ -3359,6 +3421,7 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     alloc->to_stage_count = Max_u32;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result tex_upload_queue_begin(Gpu_Tex_Allocator *alloc) {
     // .to_upload_count is set to max upon successful queue submission, indicating the queue
     // is safe to use again.
@@ -3368,6 +3431,7 @@ Gpu_Allocator_Result tex_upload_queue_begin(Gpu_Tex_Allocator *alloc) {
     alloc->upload_queue_byte_count = 0;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
 Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
     if (alloc->to_upload_count >= alloc->to_upload_cap)
         return ALLOCATOR_RESULT_QUEUE_FULL;
@@ -3386,7 +3450,7 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
     };
     idx = adjust_allocation_weights(&w_args);
 
-    Gpu_Tex_Allocation *allocations       = alloc->allocations;
+    Gpu_Tex_Allocation *allocations    = alloc->allocations;
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
 
     // Mark allocation as having been called up.
@@ -3413,6 +3477,21 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
     alloc->to_upload_count++;
     return ALLOCATOR_RESULT_SUCCESS;
 }
+
+void tex_upload_queue_remove(Gpu_Tex_Allocator *alloc, u32 key) {
+    u32 idx = alloc->allocation_indices[key];
+
+    // Operator precedence with bit shifting so dumb...
+    if (!(alloc->allocation_states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT))
+        return;
+
+    alloc->allocation_states[idx]  &= ~(ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
+    alloc->upload_queue_byte_count -= alloc->allocations[idx].size;
+    alloc->to_upload_count--;
+
+    return;
+}
+
 Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
     // If the to upload count is zero on queue submission, just assume that everything queued was
     // already cached, and we need not do anything.
