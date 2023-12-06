@@ -2,6 +2,7 @@
 #include "print.h"
 #include "spirv.hpp"
 #include "gpu.hpp"
+#include "asset.hpp"
 #include "gltf.hpp"
 #include "glfw.hpp"
 #include "hash_map.hpp"
@@ -27,6 +28,9 @@ int main() {
 
     init_window(gpu, glfw);
     Window *window = get_window_instance();
+
+    init_assets();
+    Assets *assets = get_assets_instance();
 
     zero_temp();
 
@@ -58,6 +62,7 @@ int main() {
     destroy_fence(acquire_image_fence);
     destroy_semaphore(acquire_image_semaphore);
 
+    kill_assets();
     kill_window(gpu, window);
     kill_gpu(gpu);
     kill_glfw(glfw);

@@ -18,7 +18,6 @@
 #include "math.hpp"
 #include "string.hpp"
 #include "shader.hpp" // include g_shader_file_names global array
-#include "models.hpp"
 
 struct Settings {
     VkSampleCountFlagBits sample_count           = VK_SAMPLE_COUNT_1_BIT;
@@ -161,7 +160,6 @@ struct Gpu {
     u32 transfer_queue_index;
 
     Gpu_Memory    memory;
-    Model_Memory  model_memory;
     Shader_Memory shader_memory;
 };
 Gpu* get_gpu_instance();
@@ -236,10 +234,6 @@ inline static void reset_viewport_and_scissor_to_window_extent() {
 // Memory -- struct declarations above gpu
 void allocate_memory(); // @Note I could remove these functions and structs from the header file. Probably should.
 void free_memory();
-
-// Shaders -- struct declarations above gpu
-Shader_Memory init_shaders();
-void shutdown_shaders(Shader_Memory *mem);
 
 VkPipelineCache pl_load_cache();
 void pl_store_cache();
@@ -406,8 +400,8 @@ struct Gpu_Allocator_Config {
     VkBuffer upload;
     String   disk_storage;
 };
-Gpu_Allocator create_allocator (Gpu_Allocator_Config *info);
-void          destroy_allocator(Gpu_Allocator *alloc);
+Gpu_Allocator_Result create_allocator (Gpu_Allocator_Config *config, Gpu_Allocator *allocator);
+void                 destroy_allocator(Gpu_Allocator *alloc);
 
 Gpu_Allocator_Result begin_allocation    (Gpu_Allocator *alloc);
 Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc, u64 size, void *ptr);
@@ -490,10 +484,10 @@ struct Gpu_Tex_Allocator_Config {
     VkBuffer       stage;
     VkDeviceMemory upload;
 };
-Gpu_Tex_Allocator create_tex_allocator (Gpu_Tex_Allocator_Config *config);
-void              destroy_tex_allocator(Gpu_Tex_Allocator *alloc);
+Gpu_Allocator_Result create_tex_allocator (Gpu_Tex_Allocator_Config *config, Gpu_Tex_Allocator *allocator);
+void                 destroy_tex_allocator(Gpu_Tex_Allocator *alloc);
 
-Gpu_Allocator_Result tex_add_texture(Gpu_Allocator *alloc, String *file_name);
+Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name, u32 *key);
 
 Gpu_Allocator_Result tex_staging_queue_begin (Gpu_Allocator *alloc);
 Gpu_Allocator_Result tex_staging_queue_add   (Gpu_Allocator *alloc, u32 key);
@@ -534,7 +528,7 @@ struct Sampler_Allocator {
     u8  *flags;
 };
 // Set cap to zero to let the allocator decide a size
-Sampler_Allocator create_sampler_allocator (u32 sampler_cap, float anisotropy);
+Sampler_Allocator create_sampler_allocator (u32 cap);
 void              destroy_sampler_allocator(Sampler_Allocator *alloc);
 
 u64                      add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
@@ -583,63 +577,7 @@ inline static void uniform_allocator_reset_and_zero(Uniform_Allocator *allocator
     memset(allocator->mem, 0, allocator->used);
     allocator->used = 0;
 }
-    /* Model Memory Management End */
-
-    /* Model Data */
-struct Model_Allocators {
-    Gpu_Allocator     index;
-    Gpu_Allocator     vertex;
-    Gpu_Tex_Allocator tex;
-    Sampler_Allocator sampler;
-};
-struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary defaults atm.
-
-Model_Allocators init_model_allocators(Model_Allocators_Config *config);
-void             shutdown_allocators  (Model_Allocators *allocs);
-
-struct Model_Cube {
-    u32 tex_key_base;
-    u32 tex_key_pbr;
-    u64 sampler_key_base;
-    u64 sampler_key_pbr;
-
-    u32 index_key;
-    u32 vertex_key;
-
-    u32 count; // draw count (num indices)
-    VkIndexType index_type;
-
-    // Allocation offsets
-    u64 offset_index;
-    u64 offset_position;
-    u64 offset_normal;
-    u64 offset_tangent;
-    u64 offset_tex_coords;
-
-    // Pipeline info
-    VkPrimitiveTopology topology;
-    u32 stride_position;
-    u32 stride_normal;
-    u32 stride_tangent;
-    u32 stride_tex_coords;
-    VkFormat fmt_position;
-    VkFormat fmt_normal;
-    VkFormat fmt_tangent;
-    VkFormat fmt_tex_coords;
-};
-struct Model_Player {}; // @Unimplemented
-
-union Model {
-    Model_Cube   cube;
-    Model_Player player;
-};
-Model load_models(Model_Allocators *allocs, Model_Id model_id);
-
-struct Model_Memory {
-    Model_Allocs  model_allocators;
-    u32           count;
-    Model        *models;
-};
+    /* Allocation End */
 
     /* Renderpass Framebuffer Pipeline */
 // @Todo Add more renderpass types
@@ -780,139 +718,3 @@ inline VkDebugUtilsMessengerCreateInfoEXT fill_vk_debug_messenger_info(Create_De
 #endif // DEBUG (debug messenger setup)
 
 #endif // include guard
-
-//
-// Below is code that was created very general in the prototype phase when I would see everything that I would need.
-// I keep it around as it is useful as an example of how I did stuff before when I come to do different things that
-// I have already kind of implemented to whatever extent.
-//
-
-#if 0
-#if 0 // General model data (mostly for example)
-struct Node;
-struct Skin {
-    u32       joint_count;
-    Node     *joints;
-    Node     *skeleton;
-    VkBuffer  matrices;
-};
-struct Trs {
-    Vec3 trans;
-    Vec4 rot;
-    Vec3 scale;
-};
-struct Texture {
-    u32 allocation_key;
-    u64 sampler_key; // @Todo Look at if sampler allocator works with the vert/tex index system.
-};
-struct Material {
-    float base_factors[4];
-    float metal_factor;
-    float rough_factor;
-    float norm_scale;
-    float occlusion_strength;
-    float emissive_factors[3];
-
-    // @Note I do not know how to resolve texture coordinates defined on both the primitive
-    // and the material...?? I will experiment I guess??
-
-    // Texture indices
-    Texture tex_base;
-    Texture tex_pbr;
-    Texture tex_norm;
-    Texture tex_occlusion;
-    Texture tex_emissive;
-    // @Todo Alpha mode
-};
-struct Primitive {
-    u32 count; // draw count (num indices)
-    VkIndexType index_type;
-
-    u64 offset_index;
-    u64 offset_position;
-    u64 offset_normal;
-    u64 offset_tangent;
-    u64 offset_tex_coords;
-
-    Material *material;
-};
-struct Skinned_Primitive {
-    Primitive primitive;
-    u64 offset_joints;
-    u64 offset_weights;
-};
-struct Pl_Primitive_Info {
-    VkPrimitiveTopology topology;
-    u32 stride_position;
-    u32 stride_normal;
-    u32 stride_tangent;
-    u32 stride_tex_coords;
-    VkFormat fmt_position;
-    VkFormat fmt_normal;
-    VkFormat fmt_tangent;
-    VkFormat fmt_tex_coords;
-};
-struct Pl_Prim_Info_Skinned {
-    Pl_Primitive_Info prim;
-    u32 stride_joints;
-    u32 stride_weights;
-    VkFormat fmt_joints;
-    VkFormat fmt_weights;
-};
-struct Mesh {
-    u32 count;
-    Primitive         *primitives;
-    Pl_Primitive_Info *pl_infos;
-};
-struct Skinned_Mesh {
-    u32 count;
-    Skinned_Primitive *primitives;
-    Pl_Primitive_Info *pl_infos;
-};
-struct Node {
-union {
-    Trs trs;
-    Mat4 mat;
-};
-    u32 child_count;
-    Node *children;
-    Mesh *mesh;
-    Skin *skin;
-};
-struct Model {
-    u32 node_count;
-    u32 mesh_count;
-    u32 skinned_mesh_count;
-    u32 skin_count;
-    u32 material_count;
-
-    Node         *nodes;
-    Mesh         *meshes;
-    Material     *mats;
-    Skin         *skins;
-    Skinned_Mesh *skinned_meshes;
-
-    u32      index_allocation_key;
-    u32      vertex_allocation_key;
-    Texture *textures;
-
-    void *animation_data; // @Wip
-};
-struct Static_Model {
-    u32 node_count;
-    u32 mesh_count;
-    u32 mat_count;
-
-    // Node *nodes; <- Idk if this is necessary for a static model
-    Mesh     *meshes;
-    Material *mats;
-
-    u32      index_allocation_key;
-    u32      vertex_allocation_key;
-};
-
-Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
-void         free_static_model(Static_Model *model);
-
-#endif // General model data (mostly for example)
-#endif

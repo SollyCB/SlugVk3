@@ -18,6 +18,6 @@ static const char *g_shader_file_names[] = {
     "shaders/shadow.frag.spv",
 };
 
-static const u32 g_shader_file_count = sizeof(g_shader_file_names) / sizeof(g_shader_file_names[0]);
+static const u32 g_shader_count = sizeof(g_shader_file_names) / sizeof(g_shader_file_names[0]);
 
 #endif

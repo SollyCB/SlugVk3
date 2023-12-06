@@ -78,6 +78,7 @@ add_executable(Slug
     string.cpp
     image.cpp
     print.cpp
+    asset.cpp
 
     external/tlsf.cpp
 
