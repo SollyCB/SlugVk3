@@ -18,6 +18,7 @@
 #include "math.hpp"
 #include "string.hpp"
 #include "shader.hpp" // include g_shader_file_names global array
+#include "simd.hpp"
 
 struct Settings {
     VkSampleCountFlagBits sample_count           = VK_SAMPLE_COUNT_1_BIT;
@@ -407,15 +408,49 @@ Gpu_Allocator_Result begin_allocation    (Gpu_Allocator *alloc);
 Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc, u64 size, void *ptr);
 Gpu_Allocator_Result submit_allocation   (Gpu_Allocator *alloc, u32 *key);
 
-Gpu_Allocator_Result staging_queue_begin (Gpu_Allocator *alloc);
-Gpu_Allocator_Result staging_queue_add   (Gpu_Allocator *alloc, u32 key);
-void                 staging_queue_remove(Gpu_Allocator *alloc, u32 key);
-Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc);
+Gpu_Allocator_Result staging_queue_begin     (Gpu_Allocator *alloc);
+Gpu_Allocator_Result staging_queue_add       (Gpu_Allocator *alloc, u32 key);
+Gpu_Allocator_Result staging_queue_submit    (Gpu_Allocator *alloc);
+void                 staging_queue_remove    (Gpu_Allocator *alloc, u32 key);
 
-Gpu_Allocator_Result upload_queue_begin  (Gpu_Allocator *alloc);
-Gpu_Allocator_Result upload_queue_add    (Gpu_Allocator *alloc, u32 key);
-void                 upload_queue_remove (Gpu_Allocator *alloc, u32 key);
-Gpu_Allocator_Result upload_queue_submit (Gpu_Allocator *alloc);
+inline static void staging_queue_make_empty(Gpu_Allocator *alloc) {
+    /*
+       @Note This does potentially more than is necessary because the operation is so cheap I would rather avoid
+       bugs by ensuring any possible weird program state is handled.
+    */
+
+    // Find every allocation which is 'TO_STAGE' but not 'TO_UPLOAD' and clear the 'TO_DRAW' flag
+    simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, ALLOCATION_STATE_TO_STAGE_BIT,
+                         ALLOCATION_STATE_TO_UPLOAD_BIT, 0x0, ALLOCATION_STATE_TO_DRAW_BIT);
+    // Find every allocation which is 'TO_STAGE' and clear the 'TO_STAGE' flag
+    simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, ALLOCATION_STATE_TO_STAGE_BIT,
+                         0x0, 0x0, ALLOCATION_STATE_TO_STAGE_BIT);
+
+    alloc->to_stage_count           = 0;
+    alloc->staging_queue_byte_count = 0;
+}
+
+Gpu_Allocator_Result upload_queue_begin     (Gpu_Allocator *alloc);
+Gpu_Allocator_Result upload_queue_add       (Gpu_Allocator *alloc, u32 key);
+Gpu_Allocator_Result upload_queue_submit    (Gpu_Allocator *alloc);
+void                 upload_queue_remove    (Gpu_Allocator *alloc, u32 key);
+
+inline static void upload_queue_make_empty(Gpu_Allocator *alloc) {
+    /*
+       @Note This does potentially more than is necessary because the operation is so cheap I would rather avoid
+       bugs by ensuring any possible weird program state is handled.
+    */
+
+    // Find every allocation which is 'TO_STAGE' but not 'TO_UPLOAD' and clear the 'TO_DRAW' flag
+    simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, ALLOCATION_STATE_TO_UPLOAD_BIT,
+                         ALLOCATION_STATE_TO_STAGE_BIT, 0x0, ALLOCATION_STATE_TO_DRAW_BIT);
+    // Find every allocation which is 'TO_STAGE' and clear the 'TO_STAGE' flag
+    simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, ALLOCATION_STATE_TO_UPLOAD_BIT,
+                         0x0, 0x0, ALLOCATION_STATE_TO_UPLOAD_BIT);
+
+    alloc->to_upload_count         = 0;
+    alloc->upload_queue_byte_count = 0;
+}
 
 struct Gpu_Tex_Allocation { // @Note I would like struct to be smaller. Cannot see a good shrink rn...
     u64 stage_offset;
@@ -493,13 +528,47 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
 
 Gpu_Allocator_Result tex_staging_queue_begin (Gpu_Tex_Allocator *alloc);
 Gpu_Allocator_Result tex_staging_queue_add   (Gpu_Tex_Allocator *alloc, u32 key);
-void                 tex_staging_queue_remove(Gpu_Tex_Allocator *alloc, u32 key);
 Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc);
+void                 tex_staging_queue_remove(Gpu_Tex_Allocator *alloc, u32 key);
 
-Gpu_Allocator_Result tex_upload_queue_begin  (Gpu_Tex_Allocator *alloc);
-Gpu_Allocator_Result tex_upload_queue_add    (Gpu_Tex_Allocator *alloc, u32 key);
-void                 tex_upload_queue_remove (Gpu_Tex_Allocator *alloc, u32 key);
-Gpu_Allocator_Result tex_upload_queue_submit (Gpu_Tex_Allocator *alloc);
+inline static void tex_staging_queue_make_empty(Gpu_Tex_Allocator *alloc) {
+    /*
+       @Note This does potentially more than is necessary because the operation is so cheap I would rather avoid
+       bugs by ensuring any possible weird program state is handled.
+    */
+
+    // Find every allocation which is 'TO_STAGE' but not 'TO_UPLOAD' and clear the 'TO_DRAW' flag
+    simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, ALLOCATION_STATE_TO_STAGE_BIT,
+                         ALLOCATION_STATE_TO_UPLOAD_BIT, 0x0, ALLOCATION_STATE_TO_DRAW_BIT);
+    // Find every allocation which is 'TO_STAGE' and clear the 'TO_STAGE' flag
+    simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, ALLOCATION_STATE_TO_STAGE_BIT,
+                         0x0, 0x0, ALLOCATION_STATE_TO_STAGE_BIT);
+
+    alloc->to_stage_count           = 0;
+    alloc->staging_queue_byte_count = 0;
+}
+
+Gpu_Allocator_Result tex_upload_queue_begin      (Gpu_Tex_Allocator *alloc);
+Gpu_Allocator_Result tex_upload_queue_add        (Gpu_Tex_Allocator *alloc, u32 key);
+Gpu_Allocator_Result tex_upload_queue_submit     (Gpu_Tex_Allocator *alloc);
+void                 tex_upload_queue_remove     (Gpu_Tex_Allocator *alloc, u32 key);
+
+inline static void tex_upload_queue_make_empty(Gpu_Tex_Allocator *alloc) {
+    /*
+       @Note This does potentially more than is necessary because the operation is so cheap I would rather avoid
+       bugs by ensuring any possible weird program state is handled.
+    */
+
+    // Find every allocation which is 'TO_STAGE' but not 'TO_UPLOAD' and clear the 'TO_DRAW' flag
+    simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, ALLOCATION_STATE_TO_UPLOAD_BIT,
+                         ALLOCATION_STATE_TO_STAGE_BIT, 0x0, ALLOCATION_STATE_TO_DRAW_BIT);
+    // Find every allocation which is 'TO_STAGE' and clear the 'TO_STAGE' flag
+    simd_update_flags_u8(alloc->allocation_count, alloc->allocation_states, ALLOCATION_STATE_TO_UPLOAD_BIT,
+                         0x0, 0x0, ALLOCATION_STATE_TO_UPLOAD_BIT);
+
+    alloc->to_upload_count         = 0;
+    alloc->upload_queue_byte_count = 0;
+}
 
 typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Begin_Func)     (Gpu_Allocator*);
 typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Begin_Func) (Gpu_Tex_Allocator*);
