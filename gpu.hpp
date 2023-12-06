@@ -506,7 +506,7 @@ struct Sampler { // This is potentially a bad name
     VkFilter min_filter;
 
     VkSampler sampler;
-    // u32 reference_count; <- idk about threading yet...
+    u32 user_count;
 };
 enum Sampler_Allocator_Result {
     SAMPLER_ALLOCATOR_RESULT_CACHED      = 0,

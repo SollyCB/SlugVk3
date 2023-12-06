@@ -3956,14 +3956,30 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
         }
         auto check = vkCreateSampler(device, &create_info, ALLOCATION_CALLBACKS, &info->sampler);
         DEBUG_OBJ_CREATION(vkCreateSampler, check);
+
+        alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
         alloc->active++;
     }
 
-    // Set 'active' + 'in_use' flags
-    alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT | (u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
-   *ret_sampler = info->sampler;
+    alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT;
+    info->user_count++;
 
+   *ret_sampler = info->sampler;
     return ret;
+}
+
+void done_with_sampler(Sampler_Allocator *alloc, u64 hash) {
+    Sampler *sampler = alloc->map.find_hash(hash);
+
+    assert(sampler && "This is not a valid sampler hash");
+    sampler->user_count -= 1 & (int)(sampler->user_count > 0);
+
+    if (sampler->user_count == 0) {
+        u32 h_idx            = find_hash_idx(alloc->count, alloc->hashes, hash);
+        alloc->flags[h_idx] &= ~((u8)SAMPLER_ALLOCATOR_IN_USE_BIT);
+    }
+
+    return;
 }
         /* End Sampler Allocation */
     /* Renderpass Framebuffer Pipeline */
