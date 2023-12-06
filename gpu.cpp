@@ -2593,17 +2593,19 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
         .inc = 3,
         .dec = 1 // @Test Find effective inc and dec values
     };
-    u32 idx = adjust_allocation_weights(&w_args);
-
     Gpu_Allocation *allocations        = alloc->allocations;
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
+
+    u32 idx = alloc->allocation_indices[key];
 
     // Indicate that the allocation has been called up.
     states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
 
     // If the allocation is already staged or marked to be staged, early return.
-    if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT)
+    if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT) {
+        adjust_allocation_weights(&w_args);
         return GPU_ALLOCATOR_RESULT_SUCCESS;
+    }
 
     // Allocations' offsets must be aligned to their representation in the allocator bit masks.
     // See the implementation info for details (grep '~MAID').
@@ -2617,6 +2619,11 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
     states[idx]                     |= ALLOCATION_STATE_TO_STAGE_BIT;
     alloc->staging_queue_byte_count += bit_aligned_size;
     alloc->to_stage_count++;
+
+    // Only adjust weights if the queue was successful, otherwise retries to add an allocation to the
+    // queue will make the weights inaccurate.
+    adjust_allocation_weights(&w_args);
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
@@ -2793,10 +2800,6 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
     if (alloc->to_upload_count >= alloc->to_upload_cap)
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
-    // Adjust the allocations' cache weights.
-    //
-    // @Note This function does a number of things - see the allocator implementation explanation to
-    // understand (grep '~MAID').
     Weight_Args w_args = {
         .allocations = alloc->allocations,
         .weights     = alloc->allocation_weights,
@@ -2807,14 +2810,19 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
         .inc = 3,
         .dec = 1 // @Test Find effective inc and dec values
     };
-    u32 idx = adjust_allocation_weights(&w_args);
+
+    u32 idx = alloc->allocation_indices[key];
 
     // Indicate that the allocation has been called up.
     alloc->allocation_states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
 
     // If the allocation is already uploaded or marked to be uploaded, early return.
-    if (alloc->allocation_states[idx] & ALLOCATION_STATE_UPLOADED_BIT || alloc->allocation_states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT)
+    if (alloc->allocation_states[idx] & ALLOCATION_STATE_UPLOADED_BIT ||
+        alloc->allocation_states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT)
+    {
+        adjust_allocation_weights(&w_args);
         return GPU_ALLOCATOR_RESULT_SUCCESS;
+    }
 
     // Allocations' offsets must be aligned to their representation in the allocator bit masks.
     // See the implementation info for details (grep '~MAID').
@@ -2829,6 +2837,11 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
     alloc->allocation_states[idx]  |= ALLOCATION_STATE_TO_UPLOAD_BIT;
     alloc->upload_queue_byte_count += bit_align_size;
     alloc->to_upload_count++;
+
+    // Only adjust weights if the queue was successful, otherwise retries to add an allocation to the
+    // queue will make the weights inaccurate.
+    adjust_allocation_weights(&w_args);
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
@@ -3232,18 +3245,21 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
         .inc = 3,
         .dec = 1 // @Test Find effective inc and dec values
     };
-    u32 idx = adjust_allocation_weights(&w_args);
 
     u32 allocation_count               = alloc->allocation_count;
     Gpu_Tex_Allocation *allocations    = alloc->allocations;
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
 
+    u32 idx = alloc->allocation_indices[key];
+
     // Flag the allocation as having been called up.
     states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
 
     // If the allocation is already uploaded or marked to be uploaded, early return.
-    if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT)
+    if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT) {
+        adjust_allocation_weights(&w_args);
         return GPU_ALLOCATOR_RESULT_SUCCESS;
+    }
 
     // Allocations' offsets must be aligned to their bit representation. See implementation
     // information (grep '~MAID').
@@ -3258,6 +3274,11 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
     states[idx]                     |= ALLOCATION_STATE_TO_STAGE_BIT;
     alloc->staging_queue_byte_count += bit_align_size;
     alloc->to_stage_count++;
+
+    // Only adjust weights if the queue was successful, otherwise retries to add an allocation to the
+    // queue will make the weights inaccurate.
+    adjust_allocation_weights(&w_args);
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
@@ -3432,7 +3453,7 @@ Gpu_Allocator_Result tex_upload_queue_begin(Gpu_Tex_Allocator *alloc) {
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
-Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
+Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
     if (alloc->to_upload_count >= alloc->to_upload_cap)
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
@@ -3444,21 +3465,24 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
         .states      = alloc->allocation_states,
         .indices     = alloc->allocation_indices,
         .count       = alloc->allocation_count,
-        .idx = idx,
+        .idx = key,
         .inc = 3,
         .dec = 1 // @Test Find effective inc and dec values
     };
-    idx = adjust_allocation_weights(&w_args);
 
     Gpu_Tex_Allocation *allocations    = alloc->allocations;
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
+
+    u32 idx = alloc->allocation_indices[key];
 
     // Mark allocation as having been called up.
     states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
 
     // If the allocation is already uploaded or marked to be uploaded, early return.
-    if (states[idx] & ALLOCATION_STATE_UPLOADED_BIT || states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT)
+    if (states[idx] & ALLOCATION_STATE_UPLOADED_BIT || states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT) {
+        adjust_allocation_weights(&w_args);
         return GPU_ALLOCATOR_RESULT_SUCCESS;
+    }
 
     // Allocations' offsets must be aligned to their bit representation.
     // Grep '~MAID' for implementation information.
@@ -3475,6 +3499,11 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
     states[idx]                    |= ALLOCATION_STATE_TO_UPLOAD_BIT;
     alloc->upload_queue_byte_count += size;
     alloc->to_upload_count++;
+
+    // Only adjust weights if the queue was successful, otherwise retries to add an allocation to the
+    // queue will make the weights inaccurate.
+    adjust_allocation_weights(&w_args);
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
