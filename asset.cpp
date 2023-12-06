@@ -29,7 +29,7 @@ static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
 
     Gpu_Allocator vertex_allocator;
     Gpu_Allocator_Result creation_result = create_allocator(&vertex_allocator_config, &vertex_allocator);
-    assert(creation_result == ALLOCATOR_RESULT_SUCCESS);
+    assert(creation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
 
     // Index allocator
     Gpu_Allocator_Config index_allocator_config = {};
@@ -52,7 +52,7 @@ static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
 
     Gpu_Allocator index_allocator;
     creation_result = create_allocator(&index_allocator_config, &index_allocator);
-    assert(creation_result == ALLOCATOR_RESULT_SUCCESS);
+    assert(creation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
 
     // Tex allocator
     Gpu_Tex_Allocator_Config tex_allocator_config = {};
@@ -75,8 +75,8 @@ static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
 
     Gpu_Tex_Allocator tex_allocator;
     creation_result = create_tex_allocator(&tex_allocator_config, &tex_allocator);
-    assert(creation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (creation_result != ALLOCATOR_RESULT_SUCCESS) {
+    assert(creation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+    if (creation_result != GPU_ALLOCATOR_RESULT_SUCCESS) {
         println("Tex_Allocator creation result: %u", creation_result);
         return {};
     }
@@ -90,13 +90,13 @@ static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
         .sampler = sampler,
     };
 
-    Model_Allocators *model_allocators = &get_assets_instance()->allocators;
+    Model_Allocators *model_allocators = &get_assets_instance()->model_allocators;
     *model_allocators = ret;
 
     return ret;
 }
 static void shutdown_model_allocators() {
-    Model_Allocators *allocs = &get_assets_instance()->allocators;
+    Model_Allocators *allocs = &get_assets_instance()->model_allocators;
 
     destroy_allocator(&allocs->index);
     destroy_allocator(&allocs->vertex);
@@ -109,19 +109,20 @@ void init_assets() {
     init_model_allocators(&config);
 
     Assets           *g_assets = get_assets_instance();
-    Model_Allocators *allocs   = &g_assets->allocators;
+    Model_Allocators *allocs   = &g_assets->model_allocators;
 
-    g_assets->models = (Model*)malloc_h(sizeof(Model) * g_model_count, 8);
+    g_assets->model_count = g_model_count;
+    g_assets->models      = (Model*)malloc_h(sizeof(Model) * g_model_count, 8);
 
     for(u32 i = 0; i < g_model_count; ++i) {
-        g_assets->models[i] = load_model(allocs, g_model_identifiers[i]);
+        g_assets->models[i] = load_model(g_model_identifiers[i]);
     }
 }
 void kill_assets() {
     Assets *g_assets = get_assets_instance();
 
-    for(u32 i = 0; i < g_assets->count; ++i)
-        free_model(&g_assets->models[i], g_model_identifiers[i].type);
+    for(u32 i = 0; i < g_assets->model_count; ++i)
+        free_model(&g_assets->models[i]);
 
     free_h(g_assets->models);
     shutdown_model_allocators();
@@ -374,10 +375,11 @@ Model_Player load_model_player(Model_Allocators *allocs, String *model_file_name
 // @Unimplemented
 void free_model_player(Model *model) {}
 
-Model load_model(Model_Allocators *allocs, Model_Identifier model_id) {
+Model load_model(Model_Identifier model_id) {
     u32 model_index = (u32)model_id.id;
 
     Model ret;
+    Model_Allocators *allocs = &get_assets_instance()->model_allocators;
 
     switch(model_id.type) {
     case MODEL_TYPE_CUBE:
@@ -399,7 +401,9 @@ Model load_model(Model_Allocators *allocs, Model_Identifier model_id) {
     return ret;
 }
 
-void free_model(Model *model, Model_Type type) {
+void free_model(Model *model) {
+    Model_Type type = model->cube.type; // @Note type must always appear as the first field in a model struct
+
     switch(type) {
     case MODEL_TYPE_CUBE:
     {
@@ -415,4 +419,169 @@ void free_model(Model *model, Model_Type type) {
     default:
         assert(false && "Invalid Model Type");
     }
+}
+
+static Gpu_Allocator_Result model_queue_cube(
+    Model_Allocators                    *allocs,
+    Model                               *model,
+    Gpu_Allocator_Queue_Add_Func         queue_add_func,
+    Gpu_Tex_Allocator_Queue_Add_Func     tex_queue_add_func,
+    Gpu_Allocator_Queue_Remove_Func      queue_rm_func,
+    Gpu_Tex_Allocator_Queue_Remove_Func  tex_queue_rm_func)
+{
+    Gpu_Allocator_Result res[4];
+
+    res[0] = queue_add_func(&allocs->index,  model->cube.index_key);
+    res[1] = queue_add_func(&allocs->vertex, model->cube.vertex_key);
+    res[2] = tex_queue_add_func(&allocs->tex, model->cube.tex_key_base);
+    res[3] = tex_queue_add_func(&allocs->tex, model->cube.tex_key_pbr);
+
+    if (res[0] == GPU_ALLOCATOR_RESULT_QUEUE_FULL || res[1] == GPU_ALLOCATOR_RESULT_QUEUE_FULL ||
+        res[2] == GPU_ALLOCATOR_RESULT_QUEUE_FULL || res[3] == GPU_ALLOCATOR_RESULT_QUEUE_FULL)
+    {
+        queue_rm_func(&allocs->index,  model->cube.index_key);
+        queue_rm_func(&allocs->vertex, model->cube.vertex_key);
+        tex_queue_rm_func(&allocs->tex, model->cube.tex_key_base);
+        tex_queue_rm_func(&allocs->tex, model->cube.tex_key_pbr);
+
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
+    }
+
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
+}
+
+static u32 call_allocator_queue_functions_according_to_model_type(
+    Model_Allocators                    *allocs,
+    u32                                  count,
+    Model                               *models,
+    Gpu_Allocator_Queue_Add_Func         queue_add_func,
+    Gpu_Tex_Allocator_Queue_Add_Func     tex_queue_add_func,
+    Gpu_Allocator_Queue_Remove_Func      queue_rm_func,
+    Gpu_Tex_Allocator_Queue_Remove_Func  tex_queue_rm_func)
+{
+    Gpu_Allocator_Result res = GPU_ALLOCATOR_RESULT_SUCCESS;
+    u32 i;
+    for(i = 0; i < count && res == GPU_ALLOCATOR_RESULT_SUCCESS; ++i) {
+        switch(models[i].cube.type) { // Use any union member to find type
+        case MODEL_TYPE_CUBE:
+        {
+            res = model_queue_cube(allocs, &models[i], queue_add_func, tex_queue_add_func,
+                                   queue_rm_func, tex_queue_rm_func);
+            break;
+        }
+        case MODEL_TYPE_PLAYER:
+        {
+            assert(false && "Unimplemented");
+            return Max_u32;
+        }
+        case MODEL_TYPE_BUILDING:
+        {
+            assert(false && "Unimplemented");
+            return Max_u32;
+        }
+        default: // Really this should not be an error, so I won't do so much to handle it
+            assert(false && "Invalid Model Type");
+            return Max_u32;
+        }
+    }
+    return i;
+}
+
+enum Model_Upload_Phase {
+    MODEL_UPLOAD_PHASE_COMPLETE       = 0,
+    MODEL_UPLOAD_PHASE_QUEUE_STAGING  = 1,
+    MODEL_UPLOAD_PHASE_SUBMIT_STAGING = 2,
+    MODEL_UPLOAD_PHASE_QUEUE_UPLOAD   = 3,
+    MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD  = 4,
+};
+struct Model_Upload_Result {
+    u32                count;
+    Model_Upload_Phase phase;
+};
+
+static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Model *models,
+                                         Model_Upload_Phase phase)
+{
+    Model_Upload_Result  ret = {};
+
+    switch(phase) {
+    case MODEL_UPLOAD_PHASE_QUEUE_STAGING: // Deliberate fall-through
+    {
+        ret.count = 0;
+        ret.phase = MODEL_UPLOAD_PHASE_QUEUE_STAGING;
+
+        if (staging_queue_begin(&allocs->index)   != GPU_ALLOCATOR_RESULT_SUCCESS ||
+            staging_queue_begin(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
+            tex_staging_queue_begin(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
+        {
+            return ret;
+        }
+
+        ret.count = call_allocator_queue_functions_according_to_model_type(
+                                   allocs,
+                                   count,
+                                   models,
+                                   staging_queue_add,
+                                   tex_staging_queue_add,
+                                   staging_queue_remove,
+                                   tex_staging_queue_remove);
+
+        if (ret.count != count) {
+            return ret;
+        }
+    }
+    case MODEL_UPLOAD_PHASE_SUBMIT_STAGING: // Deliberate fall-through
+    {
+        ret.phase = MODEL_UPLOAD_PHASE_SUBMIT_STAGING;
+
+        if (staging_queue_submit(&allocs->index)   != GPU_ALLOCATOR_RESULT_SUCCESS ||
+            staging_queue_submit(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
+            tex_staging_queue_submit(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
+        {
+            return ret;
+        }
+    }
+    case MODEL_UPLOAD_PHASE_QUEUE_UPLOAD: // Deliberate fall-through
+    {
+        ret.count = 0;
+        ret.phase = MODEL_UPLOAD_PHASE_QUEUE_UPLOAD;
+
+        if (upload_queue_begin(&allocs->index)   != GPU_ALLOCATOR_RESULT_SUCCESS ||
+            upload_queue_begin(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
+            tex_upload_queue_begin(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
+        {
+            return ret;
+        }
+
+        ret.count = call_allocator_queue_functions_according_to_model_type(
+                                   allocs,
+                                   count,
+                                   models,
+                                   upload_queue_add,
+                                   tex_upload_queue_add,
+                                   upload_queue_remove,
+                                   tex_upload_queue_remove);
+
+        if (ret.count != count) {
+            return ret;
+        }
+    }
+    case MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD: // Deliberate fall-through
+    {
+        ret.phase = MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD;
+
+        if (upload_queue_submit(&allocs->index)   != GPU_ALLOCATOR_RESULT_SUCCESS ||
+            upload_queue_submit(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
+            tex_upload_queue_submit(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
+        {
+            return ret;
+        }
+    }
+    default:
+        assert(false && "Invalid Upload Phase");
+    } // switch upload phase
+
+    ret.count = count;
+    ret.phase = MODEL_UPLOAD_PHASE_COMPLETE;
+    return ret;
 }

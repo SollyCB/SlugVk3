@@ -14,9 +14,9 @@ struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary d
 
 union Model;
 struct Assets {
-    Model_Allocators allocators;
+    Model_Allocators model_allocators;
 
-    u32    count;
+    u32    model_count;
     Model *models;
 
     // fonts, etc.
@@ -50,10 +50,12 @@ struct Model_Cube {
 
     // Pipeline info
     VkPrimitiveTopology topology;
+
     u32 stride_position;
     u32 stride_normal;
     u32 stride_tangent;
     u32 stride_tex_coords;
+
     VkFormat fmt_position;
     VkFormat fmt_normal;
     VkFormat fmt_tangent;
@@ -67,8 +69,10 @@ union Model {
     Model_Cube   cube;
     Model_Player player;
 };
-Model load_model(Model_Allocators *allocs, Model_Identifier model_id);
-void  free_model(Model *model, Model_Type type);
+Model load_model(Model_Identifier model_id);
+void  free_model(Model *model);
+
+bool prepare_to_draw_models(u32 count, Model *models); // @Unimplemented
 
 #endif // include guard
 
