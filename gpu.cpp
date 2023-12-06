@@ -2187,7 +2187,7 @@ Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocato
     if (config->stage_bit_granularity  % 2 != 0 ||
         config->upload_bit_granularity % 2 != 0)
     {
-        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
     assert(config->stage_cap  % config->stage_bit_granularity  == 0 &&
@@ -2198,7 +2198,7 @@ Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocato
     if (config->stage_cap   % config->stage_bit_granularity  != 0 ||
         config->upload_cap  % config->upload_bit_granularity != 0)
     {
-        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
     Gpu *gpu = get_gpu_instance();
@@ -2210,7 +2210,7 @@ Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocato
     if (config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0 ||
         config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0)
     {
-        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
     Gpu_Allocator ret = {};
@@ -2293,7 +2293,7 @@ Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocato
     println(" total footprint = %u", total_memory_footprint);
     #endif
 
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 void destroy_allocator(Gpu_Allocator *alloc) {
     Gpu *gpu        = get_gpu_instance();
@@ -2320,7 +2320,7 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     if (config->stage_bit_granularity  % 2 != 0 ||
         config->upload_bit_granularity % 2 != 0)
     {
-        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
     assert(config->stage_cap  % config->stage_bit_granularity  == 0 &&
@@ -2331,7 +2331,7 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     if (config->stage_cap   % config->stage_bit_granularity  != 0 ||
         config->upload_cap  % config->upload_bit_granularity != 0)
     {
-        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
     Gpu *gpu = get_gpu_instance();
@@ -2343,7 +2343,7 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     if (config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0 ||
         config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0)
     {
-        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
     Gpu_Tex_Allocator ret = {};
@@ -2426,7 +2426,7 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     println("    total footprint = %u", total_memory_footprint);
     #endif
 
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 void destroy_tex_allocator(Gpu_Tex_Allocator *alloc) {
     Gpu *gpu        = get_gpu_instance();
@@ -2466,11 +2466,11 @@ Gpu_Allocator_Result begin_allocation(Gpu_Allocator *alloc) {
     assert(alloc->staging_queue_byte_count == Max_u64);
     // Upon completing an allocation, '.to_stage_count' is set to Max_u32.
     if (alloc->staging_queue_byte_count != Max_u64)
-        return ALLOCATOR_RESULT_QUEUE_IN_USE;
+        return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
 
     // '.allocations' is not a dynamic array.
     if (alloc->allocation_count >= alloc->allocation_cap)
-        return ALLOCATOR_RESULT_ALLOCATOR_FULL;
+        return GPU_ALLOCATOR_RESULT_ALLOCATOR_FULL;
 
     // Begin the new allocation. The allocation count is only incremented once submit has been
     // called.  Therefore, if this allocation is cancelled, (which really it never should be) the
@@ -2489,7 +2489,7 @@ Gpu_Allocator_Result begin_allocation(Gpu_Allocator *alloc) {
     // reuse it here for tracking in-progress allocations.
     alloc->staging_queue_byte_count = 0;
     alloc->to_stage_count           = 0;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result continue_allocation(Gpu_Allocator *alloc, u64 size, void *ptr) {
@@ -2497,7 +2497,7 @@ Gpu_Allocator_Result continue_allocation(Gpu_Allocator *alloc, u64 size, void *p
     // cap.
     u64 new_aligned_queue_size = align(alloc->staging_queue_byte_count + size, alloc->upload_bit_granularity);
     if (new_aligned_queue_size > alloc->upload_queue_byte_cap)
-        return ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
+        return GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
 
     // 'ptr' should be a pointer to model data pertinent to this allocation. Read from
     // this pointer into the allocator's disk storage.
@@ -2522,7 +2522,7 @@ Gpu_Allocator_Result continue_allocation(Gpu_Allocator *alloc, u64 size, void *p
         memcpy((u8*)alloc->stage_ptr + alloc->bytes_staged + alloc->staging_queue_byte_count, ptr, size);
 
     alloc->staging_queue_byte_count += size;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result submit_allocation(Gpu_Allocator *alloc, u32 *key) {
@@ -2558,7 +2558,7 @@ Gpu_Allocator_Result submit_allocation(Gpu_Allocator *alloc, u32 *key) {
     // Max_u64 indicates that the queue is safe to use again. This is used by 'begin_allocation(..)'.
     alloc->staging_queue_byte_count = Max_u64;
     alloc->to_stage_count           = Max_u32;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result staging_queue_begin(Gpu_Allocator *alloc) {
@@ -2569,15 +2569,15 @@ Gpu_Allocator_Result staging_queue_begin(Gpu_Allocator *alloc) {
     // '.to_stage_count' set to max by queue submission, indicating it
     // is safe to use again.
     if (alloc->to_stage_count != Max_u32)
-        return ALLOCATOR_RESULT_QUEUE_IN_USE;
+        return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
     alloc->to_stage_count = 0;
     alloc->staging_queue_byte_count = 0;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
     if (alloc->to_stage_count >= alloc->to_stage_cap)
-        return ALLOCATOR_RESULT_QUEUE_FULL;
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
     // Adjust the allocations' cache weights.
     //
@@ -2603,7 +2603,7 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
 
     // If the allocation is already staged or marked to be staged, early return.
     if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT)
-        return ALLOCATOR_RESULT_SUCCESS;
+        return GPU_ALLOCATOR_RESULT_SUCCESS;
 
     // Allocations' offsets must be aligned to their representation in the allocator bit masks.
     // See the implementation info for details (grep '~MAID').
@@ -2611,13 +2611,13 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
     if (bit_aligned_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
         // If the queue add fails, we do not want stuff marked as to draw that is not also part of a queue.
         states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
-        return ALLOCATOR_RESULT_QUEUE_FULL;
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
     states[idx]                     |= ALLOCATION_STATE_TO_STAGE_BIT;
     alloc->staging_queue_byte_count += bit_aligned_size;
     alloc->to_stage_count++;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 void staging_queue_remove(Gpu_Allocator *alloc, u32 key) {
@@ -2645,7 +2645,7 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
     if (alloc->to_stage_count == 0) {
         println("All Data Cached On Queue Submission");
         alloc->to_stage_count = Max_u32;
-        return ALLOCATOR_RESULT_SUCCESS;
+        return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
 
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
@@ -2715,7 +2715,7 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
         }
         // Restore the masks to before allocations were marked as free.
         memcpy(masks, mask_copies, sizeof(u64) * mask_count);
-        return ALLOCATOR_RESULT_STAGE_FULL; // Too many allocations waiting to draw
+        return GPU_ALLOCATOR_RESULT_STAGE_FULL; // Too many allocations waiting to draw
     }
 
     free_block_found: // goto
@@ -2776,22 +2776,22 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
     make_full(alloc->stage_mask_count, alloc->stage_masks, free_block, stage_offset / g);
 
     alloc->to_stage_count = Max_u32; // Indicate that it is safe to begin a new queue.
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result upload_queue_begin(Gpu_Allocator *alloc) {
     // .to_upload_count is set to max upon successful queue submission,
     // indicating that the queue is safe to use again.
     if (alloc->to_upload_count != Max_u32)
-        return ALLOCATOR_RESULT_QUEUE_IN_USE;
+        return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
     alloc->to_upload_count = 0;
     alloc->upload_queue_byte_count = 0;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
     if (alloc->to_upload_count >= alloc->to_upload_cap)
-        return ALLOCATOR_RESULT_QUEUE_FULL;
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
     // Adjust the allocations' cache weights.
     //
@@ -2814,7 +2814,7 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
 
     // If the allocation is already uploaded or marked to be uploaded, early return.
     if (alloc->allocation_states[idx] & ALLOCATION_STATE_UPLOADED_BIT || alloc->allocation_states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT)
-        return ALLOCATOR_RESULT_SUCCESS;
+        return GPU_ALLOCATOR_RESULT_SUCCESS;
 
     // Allocations' offsets must be aligned to their representation in the allocator bit masks.
     // See the implementation info for details (grep '~MAID').
@@ -2823,13 +2823,13 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
         // If the queue add fails, we do not want stuff marked as to draw that is not also part of a
         // queue.
         alloc->allocation_states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
-        return ALLOCATOR_RESULT_QUEUE_FULL;
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
     alloc->allocation_states[idx]  |= ALLOCATION_STATE_TO_UPLOAD_BIT;
     alloc->upload_queue_byte_count += bit_align_size;
     alloc->to_upload_count++;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 void upload_queue_remove(Gpu_Allocator *alloc, u32 key) {
@@ -2853,7 +2853,7 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
     // already cached, and we need not do anything.
     if (alloc->to_upload_count == 0) {
         alloc->to_upload_count = Max_u32;
-        return ALLOCATOR_RESULT_SUCCESS;
+        return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
 
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
@@ -2924,7 +2924,7 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
         }
         // Restore the masks to before allocations were marked as free.
         memcpy(masks, mask_copies, sizeof(u64) * mask_count);
-        return ALLOCATOR_RESULT_UPLOAD_FULL; // Too many allocations waiting to draw
+        return GPU_ALLOCATOR_RESULT_UPLOAD_FULL; // Too many allocations waiting to draw
     }
 
     free_block_found: // goto label
@@ -3092,7 +3092,7 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
     simd_update_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_UPLOAD_BIT, 0x0, ALLOCATION_STATE_UPLOADED_BIT, ALLOCATION_STATE_TO_UPLOAD_BIT);
 
     alloc->to_upload_count = Max_u32;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name, u32 *key) {
@@ -3114,13 +3114,13 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
             };
             adjust_allocation_weights(&w_args);
             *key = i;
-            return ALLOCATOR_RESULT_SUCCESS;
+            return GPU_ALLOCATOR_RESULT_SUCCESS;
         }
 
     // .allocations is not a dynamic array, so check capacity if this is a new allocation.
     assert(alloc->allocation_count < alloc->allocation_cap);
     if (alloc->allocation_count >= alloc->allocation_cap)
-        return ALLOCATOR_RESULT_ALLOCATOR_FULL;
+        return GPU_ALLOCATOR_RESULT_ALLOCATOR_FULL;
 
     // Add the new hash. It is fine to do this here even though we may early return, as the
     // allocation count is only incremented at the end of the function. Before this happens, this
@@ -3137,7 +3137,7 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     assert(image_size <= alloc->staging_queue_byte_cap && "Image too large for staging queue");
     if (image_size > alloc->stage_cap) {
         free_image(&image);
-        return ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
+        return GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
     }
 
     // VkImage info
@@ -3169,11 +3169,11 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     if ((req.alignment & (alloc->upload_bit_granularity - 1)) != 0) {
         vkDestroyImage(device, vk_image, ALLOCATION_CALLBACKS);
         free_image(&image);
-        return ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     } else if (req.size > alloc->upload_queue_byte_cap) {
         vkDestroyImage(device, vk_image, ALLOCATION_CALLBACKS);
         free_image(&image);
-        return ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
+        return GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
     }
 
     // Fill in allocation fields
@@ -3207,16 +3207,16 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     *key = alloc->allocation_count;
     alloc->allocation_indices[alloc->allocation_count] = alloc->allocation_count;
     alloc->allocation_count++;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result tex_staging_queue_begin(Gpu_Tex_Allocator *alloc) {
     // .to_stage_count is set to Max_u32 on queue submission, indicating it is safe to use again.
     if (alloc->to_stage_count != Max_u32)
-        return ALLOCATOR_RESULT_QUEUE_IN_USE;
+        return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
     alloc->to_stage_count = 0;
     alloc->staging_queue_byte_count = 0;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
@@ -3243,7 +3243,7 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
 
     // If the allocation is already uploaded or marked to be uploaded, early return.
     if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT)
-        return ALLOCATOR_RESULT_SUCCESS;
+        return GPU_ALLOCATOR_RESULT_SUCCESS;
 
     // Allocations' offsets must be aligned to their bit representation. See implementation
     // information (grep '~MAID').
@@ -3252,13 +3252,13 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
 
     if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
         states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
-        return ALLOCATOR_RESULT_QUEUE_FULL;
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
     states[idx]                     |= ALLOCATION_STATE_TO_STAGE_BIT;
     alloc->staging_queue_byte_count += bit_align_size;
     alloc->to_stage_count++;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 void tex_staging_queue_remove(Gpu_Tex_Allocator *alloc, u32 key) {
@@ -3283,7 +3283,7 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     // already cached, and we need not do anything.
     if (alloc->to_stage_count == 0) {
         alloc->to_stage_count = Max_u32;
-        return ALLOCATOR_RESULT_SUCCESS;
+        return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
 
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
@@ -3356,7 +3356,7 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
         }
         // Restore the masks to before allocations were marked as free.
         memcpy(masks, mask_copies, sizeof(u64) * mask_count);
-        return ALLOCATOR_RESULT_STAGE_FULL; // Too many allocations waiting to draw
+        return GPU_ALLOCATOR_RESULT_STAGE_FULL; // Too many allocations waiting to draw
     }
 
     free_block_found: // goto label
@@ -3419,22 +3419,22 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     make_full(alloc->stage_mask_count, alloc->stage_masks, free_block, stage_offset / g);
 
     alloc->to_stage_count = Max_u32;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result tex_upload_queue_begin(Gpu_Tex_Allocator *alloc) {
     // .to_upload_count is set to max upon successful queue submission, indicating the queue
     // is safe to use again.
     if (alloc->to_upload_count != Max_u32)
-        return ALLOCATOR_RESULT_QUEUE_IN_USE;
+        return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
     alloc->to_upload_count = 0;
     alloc->upload_queue_byte_count = 0;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
     if (alloc->to_upload_count >= alloc->to_upload_cap)
-        return ALLOCATOR_RESULT_QUEUE_FULL;
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
     // Increment the allocation's weight since it has been referenced.
     // See implementation info (grep '~MAID').
@@ -3458,7 +3458,7 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
 
     // If the allocation is already uploaded or marked to be uploaded, early return.
     if (states[idx] & ALLOCATION_STATE_UPLOADED_BIT || states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT)
-        return ALLOCATOR_RESULT_SUCCESS;
+        return GPU_ALLOCATOR_RESULT_SUCCESS;
 
     // Allocations' offsets must be aligned to their bit representation.
     // Grep '~MAID' for implementation information.
@@ -3469,13 +3469,13 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 idx) {
         // If the queue add fails, we do not want stuff marked as to draw that is not also part of a
         // queue.
         states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
-        return ALLOCATOR_RESULT_QUEUE_FULL;
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
     states[idx]                    |= ALLOCATION_STATE_TO_UPLOAD_BIT;
     alloc->upload_queue_byte_count += size;
     alloc->to_upload_count++;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 void tex_upload_queue_remove(Gpu_Tex_Allocator *alloc, u32 key) {
@@ -3497,7 +3497,7 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
     // already cached, and we need not do anything.
     if (alloc->to_upload_count == 0) {
         alloc->to_upload_count = Max_u32;
-        return ALLOCATOR_RESULT_SUCCESS;
+        return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
 
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
@@ -3570,7 +3570,7 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
                 goto free_block_found; // jump over early return
             }
         }
-        return ALLOCATOR_RESULT_STAGE_FULL; // Too many allocations waiting to draw
+        return GPU_ALLOCATOR_RESULT_STAGE_FULL; // Too many allocations waiting to draw
     }
 
     free_block_found: // goto label
@@ -3643,7 +3643,7 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
         // stick with this for now. Idk how serious a bind failure is really. In my case it should
         // never happen as all my memory is allocated once.
         recreate_images(alloc, indices_count, indices);
-        return ALLOCATOR_RESULT_BIND_IMAGE_FAIL;
+        return GPU_ALLOCATOR_RESULT_BIND_IMAGE_FAIL;
     } else {
         simd_update_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_UPLOAD_BIT, 0x0, ALLOCATION_STATE_UPLOADED_BIT, ALLOCATION_STATE_TO_UPLOAD_BIT);
     }
@@ -3830,7 +3830,7 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
     simd_update_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_UPLOAD_BIT, 0x0, ALLOCATION_STATE_UPLOADED_BIT, ALLOCATION_STATE_TO_UPLOAD_BIT);
 
     alloc->to_upload_count = Max_u32;
-    return ALLOCATOR_RESULT_SUCCESS;
+    return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
     /* End Model Texture and Vertex/Index Attribute Allocators */
 
@@ -5014,13 +5014,13 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
     // These should never fail. If they do, adjust memory layout.
     allocation_result = begin_allocation(&allocs->vertex);
-    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+    assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+    if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
         return {};
 
     allocation_result = begin_allocation(&allocs->index);
-    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+    assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+    if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
         return {};
 
     u64 vertex_allocation_size = 0;
@@ -5034,8 +5034,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             allocation_result = continue_allocation(&allocs->vertex, gltf_view->byte_length,
                                                     buf + gltf_view->byte_offset);
 
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+            assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
                 return {};
 
             views[i].offset         = vertex_allocation_size;
@@ -5048,8 +5048,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             allocation_result = continue_allocation(&allocs->index, gltf_view->byte_length,
                                                     buf + gltf_view->byte_offset);
 
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+            assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
                 return {};
 
             views[i].offset         = index_allocation_size;
@@ -5073,14 +5073,14 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
 
     // Submit index allocation
     allocation_result = submit_allocation(&allocs->index, &ret.index_allocation_key);
-    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+    assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+    if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
         return {};
 
     // Submit vertex allocation
     allocation_result = submit_allocation(&allocs->vertex, &ret.vertex_allocation_key);
-    assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-    if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+    assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+    if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
         return {};
 
     // 3. Loop primitives - set offsets
@@ -5182,8 +5182,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_base.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_base.allocation_key);
 
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+            assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
 
@@ -5205,8 +5205,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_pbr.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_pbr.allocation_key);
 
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+            assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
 
@@ -5228,8 +5228,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_norm.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_norm.allocation_key);
 
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+            assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
 
@@ -5251,8 +5251,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_occlusion.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_occlusion.allocation_key);
 
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+            assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
 
@@ -5274,8 +5274,8 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
             ret.mats[i].tex_emissive.sampler_key = add_sampler(&allocs->sampler, &sampler_info);
             allocation_result = tex_add_texture(&allocs->tex, &tmp_uri, &ret.mats[i].tex_emissive.allocation_key);
 
-            assert(allocation_result == ALLOCATOR_RESULT_SUCCESS);
-            if (allocation_result != ALLOCATOR_RESULT_SUCCESS)
+            assert(allocation_result == GPU_ALLOCATOR_RESULT_SUCCESS);
+            if (allocation_result != GPU_ALLOCATOR_RESULT_SUCCESS)
                 return {};
         }
 

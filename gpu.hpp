@@ -308,20 +308,20 @@ void pl_store_cache();
 */
 
 enum Gpu_Allocator_Result {
-    ALLOCATOR_RESULT_SUCCESS                    = 0,
-    ALLOCATOR_RESULT_QUEUE_IN_USE               = 1,
-    ALLOCATOR_RESULT_QUEUE_FULL                 = 2,
-    ALLOCATOR_RESULT_STAGE_FULL                 = 3,
-    ALLOCATOR_RESULT_UPLOAD_FULL                = 4,
-    ALLOCATOR_RESULT_ALLOCATOR_FULL             = 5,
-    ALLOCATOR_RESULT_BIND_IMAGE_FAIL            = 6,
-    ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY = 7,
-    ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE       = 8,
+    GPU_ALLOCATOR_RESULT_SUCCESS                    = 0,
+    GPU_ALLOCATOR_RESULT_QUEUE_IN_USE               = 1,
+    GPU_ALLOCATOR_RESULT_QUEUE_FULL                 = 2,
+    GPU_ALLOCATOR_RESULT_STAGE_FULL                 = 3,
+    GPU_ALLOCATOR_RESULT_UPLOAD_FULL                = 4,
+    GPU_ALLOCATOR_RESULT_ALLOCATOR_FULL             = 5,
+    GPU_ALLOCATOR_RESULT_BIND_IMAGE_FAIL            = 6,
+    GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY = 7,
+    GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE       = 8,
 };
 
 #define CHECK_GPU_ALLOCATOR_RESULT(res)          \
-    if (res != ALLOCATOR_RESULT_SUCCESS) {       \
-        assert(res == ALLOCATOR_RESULT_SUCCESS); \
+    if (res != GPU_ALLOCATOR_RESULT_SUCCESS) {       \
+        assert(res == GPU_ALLOCATOR_RESULT_SUCCESS); \
         return {};                               \
     }
 
@@ -409,10 +409,12 @@ Gpu_Allocator_Result submit_allocation   (Gpu_Allocator *alloc, u32 *key);
 
 Gpu_Allocator_Result staging_queue_begin (Gpu_Allocator *alloc);
 Gpu_Allocator_Result staging_queue_add   (Gpu_Allocator *alloc, u32 key);
+void                 staging_queue_remove(Gpu_Allocator *alloc, u32 key);
 Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc);
 
 Gpu_Allocator_Result upload_queue_begin  (Gpu_Allocator *alloc);
 Gpu_Allocator_Result upload_queue_add    (Gpu_Allocator *alloc, u32 key);
+void                 upload_queue_remove (Gpu_Allocator *alloc, u32 key);
 Gpu_Allocator_Result upload_queue_submit (Gpu_Allocator *alloc);
 
 struct Gpu_Tex_Allocation { // @Note I would like struct to be smaller. Cannot see a good shrink rn...
@@ -489,13 +491,24 @@ void                 destroy_tex_allocator(Gpu_Tex_Allocator *alloc);
 
 Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name, u32 *key);
 
-Gpu_Allocator_Result tex_staging_queue_begin (Gpu_Allocator *alloc);
-Gpu_Allocator_Result tex_staging_queue_add   (Gpu_Allocator *alloc, u32 key);
-Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Allocator *alloc);
+Gpu_Allocator_Result tex_staging_queue_begin (Gpu_Tex_Allocator *alloc);
+Gpu_Allocator_Result tex_staging_queue_add   (Gpu_Tex_Allocator *alloc, u32 key);
+void                 tex_staging_queue_remove(Gpu_Tex_Allocator *alloc, u32 key);
+Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc);
 
-Gpu_Allocator_Result tex_upload_queue_begin  (Gpu_Allocator *alloc);
-Gpu_Allocator_Result tex_upload_queue_add    (Gpu_Allocator *alloc, u32 key);
-Gpu_Allocator_Result tex_upload_queue_submit (Gpu_Allocator *alloc);
+Gpu_Allocator_Result tex_upload_queue_begin  (Gpu_Tex_Allocator *alloc);
+Gpu_Allocator_Result tex_upload_queue_add    (Gpu_Tex_Allocator *alloc, u32 key);
+void                 tex_upload_queue_remove (Gpu_Tex_Allocator *alloc, u32 key);
+Gpu_Allocator_Result tex_upload_queue_submit (Gpu_Tex_Allocator *alloc);
+
+typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Begin_Func)     (Gpu_Allocator*);
+typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Begin_Func) (Gpu_Tex_Allocator*);
+typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Add_Func)       (Gpu_Allocator*, u32);
+typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Add_Func)   (Gpu_Tex_Allocator*, u32);
+typedef void                 (*Gpu_Allocator_Queue_Remove_Func)    (Gpu_Allocator*, u32);
+typedef void                 (*Gpu_Tex_Allocator_Queue_Remove_Func)(Gpu_Tex_Allocator*, u32);
+typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Submit_Func)    (Gpu_Allocator*);
+typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Submit_Func)(Gpu_Tex_Allocator*);
 
 struct Sampler { // This is potentially a bad name
     VkSamplerAddressMode wrap_s;
