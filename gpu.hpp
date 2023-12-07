@@ -382,10 +382,10 @@ struct Gpu_Allocator {
     String disk_storage;
 
     // Secondary command buffers
-    VkCommandPool   graphics_cmd_pool[2];
-    VkCommandPool   transfer_cmd_pool[2];
-    VkCommandBuffer graphics_cmd[2];
-    VkCommandBuffer transfer_cmd[2];
+    VkCommandPool   graphics_cmd_pools[2];
+    VkCommandPool   transfer_cmd_pools[2];
+    VkCommandBuffer graphics_cmds[2];
+    VkCommandBuffer transfer_cmds[2];
 };
 struct Gpu_Allocator_Config {
     u32 allocation_cap;
@@ -501,10 +501,10 @@ struct Gpu_Tex_Allocator {
     String_Buffer string_buffer;
 
     // Secondary command buffers
-    VkCommandPool   graphics_cmd_pool;
-    VkCommandPool   transfer_cmd_pool;
-    VkCommandBuffer graphics_cmd;
-    VkCommandBuffer transfer_cmd;
+    VkCommandPool   graphics_cmd_pools[2];
+    VkCommandPool   transfer_cmd_pools[2];
+    VkCommandBuffer graphics_cmds[2];
+    VkCommandBuffer transfer_cmds[2];
 };
 struct Gpu_Tex_Allocator_Config {
     u32 allocation_cap;

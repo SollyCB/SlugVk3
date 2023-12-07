@@ -2255,13 +2255,15 @@ Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocato
     cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT; // buffers will be recorded right before drawing
     cmd_pool_info.queueFamilyIndex = gpu->graphics_queue_index;
 
-    auto check = vkCreateCommandPool(device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.graphics_cmd_pool);
+    u32 frame_index = g_frame_index;
+
+    auto check = vkCreateCommandPool(device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.graphics_cmd_pools[frame_index]);
     DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
 
     if (gpu->transfer_queue_index != gpu->graphics_queue_index) {
         cmd_pool_info.queueFamilyIndex = gpu->transfer_queue_index;
 
-        auto check = vkCreateCommandPool(device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.transfer_cmd_pool);
+        auto check = vkCreateCommandPool(device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.transfer_cmd_pools[frame_index]);
         DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
     }
 
@@ -2299,9 +2301,9 @@ void destroy_allocator(Gpu_Allocator *alloc) {
     Gpu *gpu        = get_gpu_instance();
     VkDevice device = gpu->device;
 
-    vkDestroyCommandPool(device, alloc->graphics_cmd_pool, ALLOCATION_CALLBACKS);
+    vkDestroyCommandPool(device, alloc->graphics_cmd_pools[g_frame_index], ALLOCATION_CALLBACKS);
     if (gpu->transfer_queue_index != gpu->graphics_queue_index)
-        vkDestroyCommandPool(device, alloc->transfer_cmd_pool, ALLOCATION_CALLBACKS);
+        vkDestroyCommandPool(device, alloc->transfer_cmd_pools[g_frame_index], ALLOCATION_CALLBACKS);
 
     free_h((void*)alloc->disk_storage.str);
     free_h(alloc->allocations);
@@ -2386,13 +2388,17 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT; // buffers will be recorded right before drawing
     cmd_pool_info.queueFamilyIndex = gpu->graphics_queue_index;
 
-    auto check = vkCreateCommandPool(device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.graphics_cmd_pool);
+    u32 frame_index = g_frame_index;
+
+    auto check =
+        vkCreateCommandPool(device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.graphics_cmd_pools[frame_index]);
     DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
 
     if (gpu->transfer_queue_index != gpu->graphics_queue_index) {
         cmd_pool_info.queueFamilyIndex = gpu->transfer_queue_index;
 
-        auto check = vkCreateCommandPool(device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.transfer_cmd_pool);
+        auto check =
+            vkCreateCommandPool(device, &cmd_pool_info, ALLOCATION_CALLBACKS, &ret.transfer_cmd_pools[frame_index]);
         DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
     }
 
@@ -2435,9 +2441,13 @@ void destroy_tex_allocator(Gpu_Tex_Allocator *alloc) {
     for(u32 i = 0; i < alloc->allocation_count; ++i)
         vkDestroyImage(device, alloc->allocations[i].image, ALLOCATION_CALLBACKS);
 
-    vkDestroyCommandPool(device, alloc->graphics_cmd_pool, ALLOCATION_CALLBACKS);
-    if (gpu->transfer_queue_index != gpu->graphics_queue_index)
-        vkDestroyCommandPool(device, alloc->transfer_cmd_pool, ALLOCATION_CALLBACKS);
+    vkDestroyCommandPool(device, alloc->graphics_cmd_pools[0], ALLOCATION_CALLBACKS);
+    vkDestroyCommandPool(device, alloc->graphics_cmd_pools[1], ALLOCATION_CALLBACKS);
+
+    if (gpu->transfer_queue_index != gpu->graphics_queue_index) {
+        vkDestroyCommandPool(device, alloc->transfer_cmd_pools[0], ALLOCATION_CALLBACKS);
+        vkDestroyCommandPool(device, alloc->transfer_cmd_pools[1], ALLOCATION_CALLBACKS);
+    }
 
     destroy_string_buffer(&alloc->string_buffer);
 
@@ -3005,13 +3015,15 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
     copy_info.regionCount       = indices_count;
     copy_info.pRegions          = regions;
 
+    u32 frame_index = g_frame_index;
+
     // Allocate graphics command buffers
     VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cmd_alloc_info.commandPool                 = alloc->graphics_cmd_pool;
+    cmd_alloc_info.commandPool                 = alloc->graphics_cmd_pools[frame_index];
     cmd_alloc_info.level                       = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
     cmd_alloc_info.commandBufferCount          = 1;
 
-    auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmd);
+    auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmds[frame_index]);
     DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
 
     VkCommandBufferInheritanceInfo inheritance = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
@@ -3020,7 +3032,7 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
     cmd_begin_info.pInheritanceInfo            = &inheritance;
 
     // Local copies
-    VkCommandBuffer graphics_cmd = alloc->graphics_cmd;
+    VkCommandBuffer graphics_cmd = alloc->graphics_cmds[frame_index];
     u32 graphics_queue_index     = gpu->graphics_queue_index;
     u32 transfer_queue_index     = gpu->transfer_queue_index;
 
@@ -3045,13 +3057,13 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
 
         vkEndCommandBuffer(graphics_cmd);
     } else {
-        cmd_alloc_info.commandPool = alloc->transfer_cmd_pool;
+        cmd_alloc_info.commandPool = alloc->transfer_cmd_pools[frame_index];
 
         // Allocate transfer command buffers
-        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
+        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmds[frame_index]);
         DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
 
-        VkCommandBuffer transfer_cmd = alloc->transfer_cmd;
+        VkCommandBuffer transfer_cmd = alloc->transfer_cmds[frame_index];
         vkBeginCommandBuffer(transfer_cmd, &cmd_begin_info);
 
         vkCmdCopyBuffer2(transfer_cmd, &copy_info);
@@ -3682,13 +3694,17 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
     // the allocator.
     //
 
+    u32 frame_index = g_frame_index;
+
     // Allocate graphics command buffers
+    vkResetCommandPool(device, alloc->transfer_cmd_pools[frame_index], 0x0);
+
     VkCommandBufferAllocateInfo cmd_alloc_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cmd_alloc_info.commandPool                 = alloc->graphics_cmd_pool;
+    cmd_alloc_info.commandPool                 = alloc->graphics_cmd_pools[frame_index];
     cmd_alloc_info.level                       = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
     cmd_alloc_info.commandBufferCount          = 1;
 
-    auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmd);
+    auto check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->graphics_cmds[frame_index]);
     DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
 
     VkCommandBufferInheritanceInfo inheritance = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO};
@@ -3737,7 +3753,7 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
     copy_info.pRegions                 = &region;
 
     // Create local copies
-    VkCommandBuffer graphics_cmd = alloc->graphics_cmd;
+    VkCommandBuffer graphics_cmd = alloc->graphics_cmds[frame_index];
     u32 transfer_queue_index     = gpu->transfer_queue_index;
     u32 graphics_queue_index     = gpu->graphics_queue_index;
 
@@ -3783,13 +3799,16 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
 
         vkEndCommandBuffer(graphics_cmd);
     } else {
-        cmd_alloc_info.commandPool = alloc->transfer_cmd_pool;
+
+        vkResetCommandPool(device, alloc->transfer_cmd_pools[frame_index], 0x0);
+
+        cmd_alloc_info.commandPool = alloc->transfer_cmd_pools[frame_index];
 
         // Allocate transfer command buffer
-        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmd);
+        check = vkAllocateCommandBuffers(device, &cmd_alloc_info, &alloc->transfer_cmds[frame_index]);
         DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
 
-        VkCommandBuffer transfer_cmd = alloc->transfer_cmd;
+        VkCommandBuffer transfer_cmd = alloc->transfer_cmds[frame_index];
         vkBeginCommandBuffer(transfer_cmd, &begin_info);
 
         // Barrier to transition image to optimal transfer layout
@@ -3814,7 +3833,7 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
 
             // Copy image data
             copy_info.dstImage = allocation.image;
-            vkCmdCopyBufferToImage2(alloc->transfer_cmd, &copy_info);
+            vkCmdCopyBufferToImage2(transfer_cmd, &copy_info);
         }
 
         // Queue ownership release + transition image to shader read optimal layout
