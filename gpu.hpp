@@ -20,6 +20,8 @@
 #include "shader.hpp" // include g_shader_file_names global array
 #include "simd.hpp"
 
+static u32 g_frame_index = 0;
+
 struct Settings {
     VkSampleCountFlagBits sample_count           = VK_SAMPLE_COUNT_1_BIT;
     u32                   mip_levels             = 1;
@@ -380,10 +382,10 @@ struct Gpu_Allocator {
     String disk_storage;
 
     // Secondary command buffers
-    VkCommandPool   graphics_cmd_pool;
-    VkCommandPool   transfer_cmd_pool;
-    VkCommandBuffer graphics_cmd;
-    VkCommandBuffer transfer_cmd;
+    VkCommandPool   graphics_cmd_pool[2];
+    VkCommandPool   transfer_cmd_pool[2];
+    VkCommandBuffer graphics_cmd[2];
+    VkCommandBuffer transfer_cmd[2];
 };
 struct Gpu_Allocator_Config {
     u32 allocation_cap;

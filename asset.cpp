@@ -117,6 +117,34 @@ void init_assets() {
     for(u32 i = 0; i < g_model_count; ++i) {
         g_assets->models[i] = load_model(g_model_identifiers[i]);
     }
+
+    g_assets->semaphores[0] = create_semaphore();
+    g_assets->semaphores[1] = create_semaphore();
+    g_assets->fences[0]     = create_fence();
+    g_assets->fences[1]     = create_fence();
+
+    Gpu *gpu        = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pool_info.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = gpu->transfer_queue_index;
+
+    auto check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[0]);
+    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
+    auto check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[1]);
+    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
+
+    VkCommandBufferAllocateInfo cmd_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmd_info.commandPool        = g_assets->cmd_pools[0];
+    cmd_info.commandBufferCount = 1;
+
+    check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[0]);
+    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+
+    cmd_info.commandPool = g_assets->cmd_pools[1];
+    check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[1]);
+    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
 }
 void kill_assets() {
     Assets *g_assets = get_assets_instance();
@@ -126,6 +154,11 @@ void kill_assets() {
 
     free_h(g_assets->models);
     shutdown_model_allocators();
+
+    destroy_semaphore(g_assets->semaphores[0]);
+    destroy_semaphore(g_assets->semaphores[1]);
+    destroy_fence(g_assets->fences[0]);
+    destroy_fence(g_assets->fences[1]);
 }
 
 // These types are used for model loading
@@ -488,11 +521,11 @@ static u32 call_allocator_queue_functions_according_to_model_type(
 }
 
 enum Model_Upload_Phase {
-    MODEL_UPLOAD_PHASE_COMPLETE       = 0,
-    MODEL_UPLOAD_PHASE_QUEUE_STAGING  = 1,
-    MODEL_UPLOAD_PHASE_SUBMIT_STAGING = 2,
-    MODEL_UPLOAD_PHASE_QUEUE_UPLOAD   = 3,
-    MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD  = 4,
+    MODEL_UPLOAD_PHASE_QUEUE_STAGING  = 0,
+    MODEL_UPLOAD_PHASE_SUBMIT_STAGING = 1,
+    MODEL_UPLOAD_PHASE_QUEUE_UPLOAD   = 2,
+    MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD  = 3,
+    MODEL_UPLOAD_PHASE_COMPLETE       = 4,
 };
 struct Model_Upload_Result {
     u32                count;
@@ -577,6 +610,10 @@ static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Mo
             return ret;
         }
     }
+    case MODEL_UPLOAD_PHASE_COMPLETE:
+    {
+        break;
+    }
     default:
         assert(false && "Invalid Upload Phase");
     } // switch upload phase
@@ -584,4 +621,134 @@ static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Mo
     ret.count = count;
     ret.phase = MODEL_UPLOAD_PHASE_COMPLETE;
     return ret;
+}
+
+void make_staging_queues_empty(Model_Allocators *allocs) {
+    staging_queue_make_empty(&allocs->index);
+    staging_queue_make_empty(&allocs->vertex);
+    tex_staging_queue_make_empty(&allocs->tex);
+}
+
+Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Upload_Result last_result) {
+    Assets *g_assets = get_assets_instance();
+    Model_Allocators *model_allocs = &g_assets->model_allocators;
+
+    u32 tmp;
+    Model_Upload_Result res;
+
+    // Restore upload state from last call
+    res = upload_models(model_allocs, count - last_result.count, models + last_result.count, last_result.phase);
+
+    //
+    // @Note This is just some arbitrary system to show I can consider handling cases upload fail.
+    // When/If I have real use cases then I can better judge how I want to deal with failures. Right now
+    // I will just take this system of "If something got into the queue, submit it; If submission fails, retry
+    // with decreasing model count, and on each retry increase the decrement size". I know this is absolutely
+    // not the most efficient method of doing this (emptying queues and then requeueing a number of times is ofc
+    // not desirable), but it is fine for now.
+    //
+    // The idea behind this way of doing it is that the vast majority of the time, there should be very little
+    // friction to upload allocations, as queue uploads and draw completions should be effectively staggered.
+    // Therefore the expensive retries should be hit bery rarely; and if they are being hit then other areas
+    // should be adjusted first, like whatever manages scheduling. It is also intended to be able to manage
+    // varying memory sizes: so you likely have some model count that you optimally want upload at some
+    // stage in the frame, and generally this will always work, but this system should the handle the case where
+    // this model count needs to separated out across upload phases. Again, this current method is just a simple
+    // way of doing that. I am sure there is a better way, especially if you properly know the use case for the
+    // engine.
+    //
+    while(res.phase != MODEL_UPLOAD_PHASE_COMPLETE) {
+
+        switch(res.phase) {
+        case MODEL_UPLOAD_PHASE_QUEUE_STAGING: // Deliberate fall-through
+        {
+            // @Note @Test Maybe want a threshold here, as in the queue must be as large as some size in order
+            // to warrant an upload, even if just to know if we are accidentally bottlenecking due to not
+            // staggering drawing and queue uploads properly.
+            if (res.count) {
+                res = upload_models(model_allocs, count - last_result.count, models + last_result.count,
+                                    MODEL_UPLOAD_PHASE_SUBMIT_STAGING);
+            } else {
+                return res;
+            }
+        }
+        case MODEL_UPLOAD_PHASE_SUBMIT_STAGING: // Deliberate fall-through
+        {
+            tmp = 1;
+            while(true) {
+                if (((count - last_result.count) >> tmp) == 0)
+                    return res;
+
+                make_staging_queues_empty(model_allocs);
+
+                res = upload_models(model_allocs, (count - last_result) >> tmp, models + last_result.count,
+                                    MODEL_UPLOAD_PHASE_QUEUE_STAGING);
+
+                res = upload_models(model_allocs, count, models, MODEL_UPLOAD_PHASE_SUBMIT_STAGING);
+
+                if (res.phase > MODEL_UPLOAD_PHASE_SUBMIT_STAGING)
+                    break;
+
+                tmp++;
+            }
+        }
+        case MODEL_UPLOAD_PHASE_QUEUE_UPLOAD: // Deliberate fall-through
+        {
+            // @Note @Test Maybe want a threshold here, as in the queue must be as large as some size in order
+            // to warrant an upload, even if just to know if we are accidentally bottlenecking due to not
+            // staggering drawing and queue uploads properly.
+            if (res.count) {
+                res = upload_models(model_allocs, count - last_result.count, models + last_result.count,
+                                    MODEL_UPLOAD_PHASE_SUBMIT_STAGING);
+            } else {
+                return res;
+            }
+        }
+        case MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD: // Deliberate fall-through
+        {
+            tmp = 1;
+            while(true) {
+                if (((count - last_result.count) >> tmp) == 0)
+                    return res;
+
+                make_staging_queues_empty(model_allocs);
+
+                res = upload_models(model_allocs, (count - last_result) >> tmp, models + last_result.count,
+                                    MODEL_UPLOAD_PHASE_QUEUE_UPLOAD);
+
+                res = upload_models(model_allocs, count, models, MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD);
+
+                if (res.phase > MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD)
+                    break;
+
+                tmp++;
+            }
+        }
+        case MODEL_UPLOAD_PHASE_COMPLETE: // Deliberate fall-through
+        {
+            // Continue to the rest of the function
+        }
+        }
+    }
+
+    Gpu *gpu = get_gpu_instance();
+    if (gpu->memory.flags & GPU_MEMORY_UMA_BIT == 0) {
+        VkCommandBufferBeginInfo cmd_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        VkCommandBuffer cmd = g_assets->cmd_buffers[g_frame_index];
+        vkBeginCommandBuffer(cmd, &cmd_begin_info);
+
+        VkCommandBuffer secondary_cmds[] = {
+            allocs->index.transfer_cmds[g_frame_index],
+            allocs->vertex.transfer_cmds[g_frame_index],
+            allocs->tex.transfer_cmds[g_frame_index],
+        };
+
+        vkCmdExecuteCommands(cmd, 3, secondary_cmds);
+
+        vkEndCommandBuffer(cmd);
+    }
+
+    return res;
 }

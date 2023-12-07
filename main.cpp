@@ -45,7 +45,6 @@ int main() {
     present_info.pImageIndices    = &present_image_index;
     present_info.pResults         = &present_result;
 
-    u32 frame_index = 0;
     while(!glfwWindowShouldClose(glfw->window)) {
         vkAcquireNextImageKHR(gpu->device, window->swapchain, 10e9, NULL, acquire_image_fence, &present_image_index);
 
@@ -56,7 +55,7 @@ int main() {
         vkQueuePresentKHR(gpu->graphics_queue, &present_info);
 
         zero_temp(); // Empty temp allocator at the end of the frame
-        frame_index = (frame_index + 1) & 1;
+        g_frame_index = (frame_index + 1) & 1;
     }
 
     destroy_fence(acquire_image_fence);

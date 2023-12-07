@@ -20,6 +20,12 @@ struct Assets {
     Model *models;
 
     // fonts, etc.
+
+    // Gpu transfer resources
+    VkCommandPool   cmd_pools  [2];
+    VkCommandBuffer cmd_buffers[2];
+    VkSemaphore     semaphores [2];
+    VkFence         fences     [2];
 };
 
 Assets* get_assets_instance();
