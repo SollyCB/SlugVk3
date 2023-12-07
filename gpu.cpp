@@ -4511,14 +4511,14 @@ void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipeline
     for(u32 i = 0; i < count; ++i) {
         create_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         create_infos[i].flags             = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        create_infos[i].stageCount        = configs[i].layout.stage_count;
-        create_infos[i].pStages           = configs[i].layout.stages;
+        create_infos[i].stageCount        = configs[i].stage_count;
+        create_infos[i].pStages           = configs[i].stages;
         create_infos[i].pViewportState    = &viewport_state;
         create_infos[i].pMultisampleState = &multisample_state;
         create_infos[i].pDynamicState     = &dyn_state;
 
         create_infos[i].renderPass = configs[i].renderpass;
-        create_infos[i].layout     = configs[i].layout.pl_layout;
+        create_infos[i].layout     = configs[i].pl_layout;
         create_infos[i].subpass    = configs[i].subpass;
 
         pl_get_vertex_input_and_assembly(&configs[i].primitive_info, &vertex_input_states[i],

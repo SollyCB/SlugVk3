@@ -707,7 +707,7 @@ struct Pl_Layout {
     u64                             *set_layout_sizes; // Save from api calls
     VkDescriptorSetLayout           *set_layouts;
     VkPipelineShaderStageCreateInfo *stages;
-    VkPipelineLayout pl_layout;
+    VkPipelineLayout                 pl_layout;
 };
 void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count,
                               VkPushConstantRange *push_constants, Pl_Layout *layout);
@@ -716,11 +716,13 @@ struct Pl_Config { // @Todo multisample state settings
     VkRenderPass       renderpass;
     u32                subpass;
 
-    Pl_Layout          layout; // 40 bytes
-
     Pl_Config_Flags    flags;
     Pl_Blend_Setting   blend_setting; // This could probably just be an on or off flag for now.
     Pl_Primitive_Info  primitive_info;
+
+    u32                              stage_count;
+    VkPipelineShaderStageCreateInfo *stages;
+    VkPipelineLayout                 pl_layout;
 };
 void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipelines);
 
