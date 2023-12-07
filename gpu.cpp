@@ -4227,6 +4227,97 @@ static VkPipelineShaderStageCreateInfo* pl_get_shader_stages(u32 count, Shader_I
 
     return ret;
 }
+
+void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count,
+                              VkPushConstantRange *push_constants, Pl_Layout *layout)
+{
+    // @Speed Fetching gpu on every call might be bad, might want to pass it in as an argument. Idk what the
+    // call site for this function will look like yet.
+    Gpu *gpu        =  get_gpu_instance();
+    VkDevice device =  gpu->device;
+
+    Shader_Memory         *shader_info      = &gpu->shader_memory;
+    VkDescriptorSetLayout *set_layouts      = shader_info->layouts;
+    u64                   *set_layout_sizes = shader_info->layout_sizes;
+    Shader                *shaders          = shader_info->shaders;
+
+    *layout = {};
+
+    layout->stage_count = count;
+    layout->stages =
+        (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
+
+    // Count layouts
+    for(u32 i = 0; i < count; ++i)
+        layout->set_count += shaders[i].layout_count;
+
+    layout->set_layout_sizes =                   (u64*)malloc_t(sizeof(u64) * layout->set_count, 8);
+    layout->set_layouts      = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * layout->set_count, 8);
+
+    //
+    // @Note I am pretty sure that the order of the set layouts in the pipeline layout does not need to be the
+    // same as their set numbers, that is only for bind order.
+    //
+
+    #if DEBUG
+    bool zero_index = false;
+    u32 last_set_index = 0;
+    #endif
+
+    u32 tmp_set_count = 0;
+    Shader shader;
+    const char *shader_entry_point = shader_info->entry_point;
+    for(u32 i = 0; i < count; ++i) {
+        shader = shaders[shader_indices[i]];
+
+        //
+        // @Note Shaders must be submitted to this function with increasing seqeuential set order. This means
+        // that they do not need to be sorted in order to be bound, but instead can just be memcpyd into the
+        // 'to bind' descriptor set array. This is perfectly reasonable: it would be very error prone to allow
+        // programming shaders without strict rules on set sequencing.
+        //
+        #if DEBUG
+        for(u32 j = 0; j < shader.layout_count; ++j) {
+            if (zero_index == false) {
+                assert(shader.layout_indices[j] == 0);
+                zero_index = true;
+            }
+
+            assert(shader.layout_indices[j] == last_set_index     ||
+                   shader.layout_indices[j] == last_set_index + 1 &&
+                  "Shaders MUST appear with sequential set layout indices starting from 0");
+
+           last_set_index = shader.layout_indices[j];
+        }
+        #endif
+
+        layout->stages[i]        = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        layout->stages[i].stage  = shader.stage;
+        layout->stages[i].module = shader.module;
+        layout->stages[i].pName  = shader_entry_point;
+
+        memcpy(layout->set_layouts + tmp_set_count, set_layouts + shader.layout_index,
+               sizeof(VkDescriptorSetLayout) * shader.layout_count);
+        memcpy(layout->set_layout_sizes + tmp_set_count, set_layout_sizes + shader.layout_index,
+               sizeof(u64) * shader.layout_count);
+
+        tmp_set_count += shader.layout_count;
+    }
+
+    VkPipelineLayoutCreateInfo layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_info.setLayoutCount         = layout->set_count;
+    layout_info.pSetLayouts            = layout->set_layouts;
+    layout_info.pushConstantRangeCount = push_constant_count;
+    layout_info.pPushConstantRanges    = push_constants;
+
+    auto check = vkCreatePipelineLayout(device, &layout_info, ALLOCATION_CALLBACKS, &layout->pl_layout);
+    DEBUG_OBJ_CREATION(vkCreatePipelineLayout, check);
+
+    if (check != VK_SUCCESS) {
+        *layout = {};
+        return;
+    }
+}
 static void pl_get_vertex_input_and_assembly(Pl_Primitive_Info                      *info,
                                              VkPipelineVertexInputStateCreateInfo   *ret_input_info,
                                              VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info)
@@ -4420,14 +4511,14 @@ void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipeline
     for(u32 i = 0; i < count; ++i) {
         create_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         create_infos[i].flags             = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        create_infos[i].stageCount        = configs[i].shader_count;
-        create_infos[i].pStages           = pl_get_shader_stages(configs[i].shader_count, configs[i].shader_ids);
+        create_infos[i].stageCount        = configs[i].layout.stage_count;
+        create_infos[i].pStages           = configs[i].layout.stages;
         create_infos[i].pViewportState    = &viewport_state;
         create_infos[i].pMultisampleState = &multisample_state;
         create_infos[i].pDynamicState     = &dyn_state;
 
         create_infos[i].renderPass = configs[i].renderpass;
-        create_infos[i].layout     = configs[i].layout;
+        create_infos[i].layout     = configs[i].layout.pl_layout;
         create_infos[i].subpass    = configs[i].subpass;
 
         pl_get_vertex_input_and_assembly(&configs[i].primitive_info, &vertex_input_states[i],
@@ -4617,76 +4708,6 @@ void DestroyDebugUtilsMessengerEXT(
 //
 
 #if 0
-void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count, VkPushConstantRange *push_constants, Pl_Layout *layout) {
-    Gpu *gpu                   =  get_gpu_instance();
-    VkDevice device            =  gpu->device;
-    Shader_Memory *shader_info = &gpu->shader_memory;
-
-    // @Note Assumes that the number of descriptor sets that will be bound is less than DESCRIPTOR_SET_COUNT.
-    VkDescriptorSetLayout *set_layouts = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * DESCRIPTOR_SET_COUNT, 8);
-
-    layout->stages      = (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
-    layout->set_count   = 0;
-    layout->stage_count = 0;
-
-    //
-    // @Note I am pretty sure that the order of the set layouts in the pipeline layout does not need to be the
-    // same as their set numbers, that is only for bind order.
-    //
-
-    #if DEBUG
-    bool zero_index = false;
-    u32 last_set_index = 0;
-    #endif
-
-    Shader shader;
-    for(u32 i = 0; i < count; ++i) {
-        shader = shader_info->shaders[shader_indices[i]];
-
-        //
-        // @Note Shaders must be submitted to this function with increasing seqeuential set order. This means
-        // that they do not need to be sorted in order to be bound, but instead can just be memcpyd into the
-        // 'to bind' descriptor set array. This is perfectly reasonable: it would be very error prone to allow
-        // programming shaders without strict rules on set sequencing.
-        //
-        #if DEBUG
-        for(u32 j = 0; j < shader.layout_count; ++j) {
-            if (zero_index == false) {
-                assert(shader.layout_indices[j] == 0);
-                zero_index = true;
-            }
-
-            assert(shader.layout_indices[j] == last_set_index     ||
-                   shader.layout_indices[j] == last_set_index + 1 &&
-                  "Shaders MUST appear with sequential set layout indices starting from 0");
-
-           last_set_index = shader.layout_indices[j];
-        }
-        #endif
-
-        layout->stages[i]        = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-        layout->stages[i].stage  = shader.stage;
-        layout->stages[i].module = shader.module;
-        layout->stages[i].pName  = shader_info->entry_point;
-
-        memcpy(set_layouts  + layout->set_count, shader_info->layouts + shader.layout_index, sizeof(VkDescriptorSetLayout) * shader.layout_count);
-        layout->set_count   += shader.layout_count;
-    }
-
-    VkPipelineLayoutCreateInfo layout_info = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount         = layout->set_count;
-    layout_info.pSetLayouts            = set_layouts;
-    layout_info.pushConstantRangeCount = push_constant_count;
-    layout_info.pPushConstantRanges    = push_constants;
-
-    auto check = vkCreatePipelineLayout(device, &layout_info, ALLOCATION_CALLBACKS, &layout->pl_layout);
-    DEBUG_OBJ_CREATION(vkCreatePipelineLayout, check);
-
-    if (check != VK_SUCCESS) {
-        *layout = {};
-        return;
-    }
-}
 // Pipeline creation minor helpers
 inline static u32 pl_count_primitives(Static_Model *model) {
     u32 primitive_count = 0;
