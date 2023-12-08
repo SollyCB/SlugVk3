@@ -1,6 +1,7 @@
 #include "asset.hpp"
 #include "gltf.hpp"
 #include "file.hpp"
+#include "vulkan_errors.hpp"
 
 static Assets s_Assets;
 Assets* get_assets_instance() { return &s_Assets; }
@@ -120,8 +121,8 @@ void init_assets() {
 
     g_assets->semaphores[0] = create_semaphore();
     g_assets->semaphores[1] = create_semaphore();
-    g_assets->fences[0]     = create_fence();
-    g_assets->fences[1]     = create_fence();
+    g_assets->fences[0]     = create_fence(false);
+    g_assets->fences[1]     = create_fence(false);
 
     Gpu *gpu        = get_gpu_instance();
     VkDevice device = gpu->device;
@@ -132,7 +133,7 @@ void init_assets() {
 
     auto check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[0]);
     DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
-    auto check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[1]);
+    check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[1]);
     DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
 
     VkCommandBufferAllocateInfo cmd_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -526,18 +527,19 @@ enum Model_Upload_Phase {
     MODEL_UPLOAD_PHASE_QUEUE_UPLOAD   = 2,
     MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD  = 3,
     MODEL_UPLOAD_PHASE_COMPLETE       = 4,
+    MODEL_UPLOAD_PHASE_INVALID        = 5,
 };
 struct Model_Upload_Result {
     u32                count;
     Model_Upload_Phase phase;
 };
 
-static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Model *models,
-                                         Model_Upload_Phase phase)
+static Model_Upload_Result handle_model_uploads(Model_Allocators *allocs, u32 count, Model *models,
+                                                Model_Upload_Phase start_phase, Model_Upload_Phase end_phase)
 {
     Model_Upload_Result  ret = {};
 
-    switch(phase) {
+    switch(start_phase) {
     case MODEL_UPLOAD_PHASE_QUEUE_STAGING: // Deliberate fall-through
     {
         ret.count = 0;
@@ -559,7 +561,7 @@ static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Mo
                                    staging_queue_remove,
                                    tex_staging_queue_remove);
 
-        if (ret.count != count) {
+        if (ret.count != count || end_phase == MODEL_UPLOAD_PHASE_QUEUE_STAGING) {
             return ret;
         }
     }
@@ -571,6 +573,10 @@ static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Mo
             staging_queue_submit(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
             tex_staging_queue_submit(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
         {
+            return {0, MODEL_UPLOAD_PHASE_SUBMIT_STAGING};
+        }
+
+        if (end_phase == MODEL_UPLOAD_PHASE_SUBMIT_STAGING) {
             return ret;
         }
     }
@@ -595,7 +601,7 @@ static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Mo
                                    upload_queue_remove,
                                    tex_upload_queue_remove);
 
-        if (ret.count != count) {
+        if (ret.count != count || end_phase == MODEL_UPLOAD_PHASE_QUEUE_UPLOAD) {
             return ret;
         }
     }
@@ -609,6 +615,9 @@ static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Mo
         {
             return ret;
         }
+        if (end_phase == MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD) {
+            return ret;
+        }
     }
     case MODEL_UPLOAD_PHASE_COMPLETE:
     {
@@ -616,6 +625,7 @@ static Model_Upload_Result upload_models(Model_Allocators *allocs, u32 count, Mo
     }
     default:
         assert(false && "Invalid Upload Phase");
+        return {};
     } // switch upload phase
 
     ret.count = count;
@@ -629,126 +639,88 @@ void make_staging_queues_empty(Model_Allocators *allocs) {
     tex_staging_queue_make_empty(&allocs->tex);
 }
 
-Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Upload_Result last_result) {
+struct Model_Draw_Info {
+    u32 pl_count;
+    VkPipeline *pipelines;
+};
+
+// @Speed Currently this function has the issue that it loops the models a number of times, but this is something
+// that I plan to separate into jobs. - Sol 7th Dec 2023
+Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Upload_Phase start_phase,
+                                           Model_Upload_Phase end_phase, Model_Draw_Info *ret_draw_info)
+{
     Assets *g_assets = get_assets_instance();
     Model_Allocators *model_allocs = &g_assets->model_allocators;
 
-    u32 tmp;
-    Model_Upload_Result res;
+    // Communicate with allocators
+    Model_Upload_Result res = handle_model_uploads(model_allocs, count, models, start_phase, end_phase);
 
-    // Restore upload state from last call
-    res = upload_models(model_allocs, count - last_result.count, models + last_result.count, last_result.phase);
+    if (res.phase != MODEL_UPLOAD_PHASE_COMPLETE)
+        return res;
 
-    //
-    // @Note This is just some arbitrary system to show I can consider handling cases upload fail.
-    // When/If I have real use cases then I can better judge how I want to deal with failures. Right now
-    // I will just take this system of "If something got into the queue, submit it; If submission fails, retry
-    // with decreasing model count, and on each retry increase the decrement size". I know this is absolutely
-    // not the most efficient method of doing this (emptying queues and then requeueing a number of times is ofc
-    // not desirable), but it is fine for now.
-    //
-    // The idea behind this way of doing it is that the vast majority of the time, there should be very little
-    // friction to upload allocations, as queue uploads and draw completions should be effectively staggered.
-    // Therefore the expensive retries should be hit bery rarely; and if they are being hit then other areas
-    // should be adjusted first, like whatever manages scheduling. It is also intended to be able to manage
-    // varying memory sizes: so you likely have some model count that you optimally want upload at some
-    // stage in the frame, and generally this will always work, but this system should the handle the case where
-    // this model count needs to separated out across upload phases. Again, this current method is just a simple
-    // way of doing that. I am sure there is a better way, especially if you properly know the use case for the
-    // engine.
-    //
-    while(res.phase != MODEL_UPLOAD_PHASE_COMPLETE) {
-
-        switch(res.phase) {
-        case MODEL_UPLOAD_PHASE_QUEUE_STAGING: // Deliberate fall-through
-        {
-            // @Note @Test Maybe want a threshold here, as in the queue must be as large as some size in order
-            // to warrant an upload, even if just to know if we are accidentally bottlenecking due to not
-            // staggering drawing and queue uploads properly.
-            if (res.count) {
-                res = upload_models(model_allocs, count - last_result.count, models + last_result.count,
-                                    MODEL_UPLOAD_PHASE_SUBMIT_STAGING);
-            } else {
-                return res;
-            }
-        }
-        case MODEL_UPLOAD_PHASE_SUBMIT_STAGING: // Deliberate fall-through
-        {
-            tmp = 1;
-            while(true) {
-                if (((count - last_result.count) >> tmp) == 0)
-                    return res;
-
-                make_staging_queues_empty(model_allocs);
-
-                res = upload_models(model_allocs, (count - last_result) >> tmp, models + last_result.count,
-                                    MODEL_UPLOAD_PHASE_QUEUE_STAGING);
-
-                res = upload_models(model_allocs, count, models, MODEL_UPLOAD_PHASE_SUBMIT_STAGING);
-
-                if (res.phase > MODEL_UPLOAD_PHASE_SUBMIT_STAGING)
-                    break;
-
-                tmp++;
-            }
-        }
-        case MODEL_UPLOAD_PHASE_QUEUE_UPLOAD: // Deliberate fall-through
-        {
-            // @Note @Test Maybe want a threshold here, as in the queue must be as large as some size in order
-            // to warrant an upload, even if just to know if we are accidentally bottlenecking due to not
-            // staggering drawing and queue uploads properly.
-            if (res.count) {
-                res = upload_models(model_allocs, count - last_result.count, models + last_result.count,
-                                    MODEL_UPLOAD_PHASE_SUBMIT_STAGING);
-            } else {
-                return res;
-            }
-        }
-        case MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD: // Deliberate fall-through
-        {
-            tmp = 1;
-            while(true) {
-                if (((count - last_result.count) >> tmp) == 0)
-                    return res;
-
-                make_staging_queues_empty(model_allocs);
-
-                res = upload_models(model_allocs, (count - last_result) >> tmp, models + last_result.count,
-                                    MODEL_UPLOAD_PHASE_QUEUE_UPLOAD);
-
-                res = upload_models(model_allocs, count, models, MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD);
-
-                if (res.phase > MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD)
-                    break;
-
-                tmp++;
-            }
-        }
-        case MODEL_UPLOAD_PHASE_COMPLETE: // Deliberate fall-through
-        {
-            // Continue to the rest of the function
-        }
-        }
-    }
-
+    // Upload data before creating pipelines if memory arch is not unified
     Gpu *gpu = get_gpu_instance();
-    if (gpu->memory.flags & GPU_MEMORY_UMA_BIT == 0) {
+
+    // OMFG! C++ operator preference is crazy bad with bitwise...
+    if ((gpu->memory.flags & GPU_MEMORY_UMA_BIT) == 0) {
         VkCommandBufferBeginInfo cmd_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        cmd_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
         VkCommandBuffer cmd = g_assets->cmd_buffers[g_frame_index];
         vkBeginCommandBuffer(cmd, &cmd_begin_info);
 
+        u32 frame_index = g_frame_index;
+
         VkCommandBuffer secondary_cmds[] = {
-            allocs->index.transfer_cmds[g_frame_index],
-            allocs->vertex.transfer_cmds[g_frame_index],
-            allocs->tex.transfer_cmds[g_frame_index],
+            model_allocs->index.transfer_cmds [frame_index],
+            model_allocs->vertex.transfer_cmds[frame_index],
+            model_allocs->tex.transfer_cmds   [frame_index],
         };
 
         vkCmdExecuteCommands(cmd, 3, secondary_cmds);
 
         vkEndCommandBuffer(cmd);
+
+        VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit_info.commandBufferCount   = 1;
+        submit_info.pCommandBuffers      = &cmd;
+        submit_info.signalSemaphoreCount = 1;
+        submit_info.pSignalSemaphores    = &g_assets->semaphores[frame_index];
+
+        auto check = vkQueueSubmit(gpu->transfer_queue, 1, &submit_info, g_assets->fences[frame_index]);
+        DEBUG_OBJ_CREATION(vkQueueSubmit, check);
     }
+
+    //
+    // @Multithreading
+    // The stuff that happens below can be very cleanly separated into jobs, like creating the pipeline infos and
+    // allocating the descriptors. Even the above can be (as noted by the @Speed) as stuffing the staging and upload
+    // queues does not have to happen on the same thread. So for now this looks dumb, as it is lots of loops over
+    // the same data, but it is rly just waiting for each loop to become a job (or a few jobs, as even the loops
+    // themselves can be broken up, as sections of the models array can be jobs with the descriptor buffer segmented
+    // by thread.
+    //
+
+    // @TODO Need to sync pipelines and models and descriptors. The current idea is the models arg is instead an
+    // array of structs like:
+    //
+    //     struct Model_Draw_Prep_Info {
+    //         Model     *model;
+    //         u32        count;
+    //         Pl_Config *configs;
+    //     };
+    //
+    // And then an array of Model_Draw_Info structs (the last arg) is written with the pipelines corresponding to
+    // the configs. But then I also need some way of doing the descriptors, the easiest way I can see being is
+    // to make a 'model_allocate_descriptors()' similar to 'handle_model_uploads()' which knows which descriptors
+    // that model subset requires. Then I need some way to communicate these allocation offsets back to the bind
+    // command caller.
+
+    // Create pipelines
+    for(u32 i = 0; i < count; ++i) {
+    }
+
+    // Allocate Descriptors
 
     return res;
 }

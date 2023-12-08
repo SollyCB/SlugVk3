@@ -55,7 +55,7 @@ int main() {
         vkQueuePresentKHR(gpu->graphics_queue, &present_info);
 
         zero_temp(); // Empty temp allocator at the end of the frame
-        g_frame_index = (frame_index + 1) & 1;
+        g_frame_index = (g_frame_index + 1) & 1;
     }
 
     destroy_fence(acquire_image_fence);
