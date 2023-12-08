@@ -38,6 +38,15 @@
 #include "typedef.h"
 #include "string.hpp"
 
+static String g_model_file_names[] = {
+    cstr_to_string("Cube.gltf"),
+    cstr_to_string("CesiumMan.gltf"),
+};
+static String g_model_dir_names[] = {
+    cstr_to_string("models/cube-static/"),
+    cstr_to_string("models/cesium-man/"),
+};
+
 // @Note model ids must appear in the enum in the same order that they appear in 'model_file_names'
 enum Model_Id {
     MODEL_ID_CUBE       = 0,
@@ -61,15 +70,148 @@ static Model_Identifier g_model_identifiers[] = {
     {MODEL_ID_CESIUM_MAN, MODEL_TYPE_PLAYER},
 };
 
-static String g_model_file_names[] = {
-    cstr_to_string("Cube.gltf"),
-    cstr_to_string("CesiumMan.gltf"),
-};
-static String g_model_dir_names[] = {
-    cstr_to_string("models/cube-static/"),
-    cstr_to_string("models/cesium-man/"),
-};
-
 static const u32 g_model_count = sizeof(g_model_file_names) / sizeof(g_model_file_names[0]);
+
+struct Animation_Sampler {};
+
+struct Model_Cube {
+    Model_Type type;
+
+    //
+    // On other, more complicated models, this info would be arrayed by primitives,
+    // but a cube model type only hase one primitive.
+    //
+
+    u32 tex_key_base;
+    u32 tex_key_pbr;
+    u64 sampler_key_base;
+    u64 sampler_key_pbr;
+
+    u32 index_key;
+    u32 vertex_key;
+
+    u32 count; // draw count (num indices)
+    VkIndexType index_type;
+
+    // Allocation offsets
+    u64 offset_index;
+    u64 offset_position;
+    u64 offset_normal;
+    u64 offset_tangent;
+    u64 offset_tex_coords;
+
+    // Pipeline info
+    VkPrimitiveTopology topology;
+
+    u32 stride_position;
+    u32 stride_normal;
+    u32 stride_tangent;
+    u32 stride_tex_coords;
+
+    VkFormat fmt_position;
+    VkFormat fmt_normal;
+    VkFormat fmt_tangent;
+    VkFormat fmt_tex_coords;
+};
+const u32 g_model_type_primitive_count_cube          = 1;
+const u32 g_model_type_descriptor_count_cube         = 2; // 2 textures: base + pbr
+const u32 g_model_type_descriptor_binding_count_cube = 1; // 1 array[2] of combined image samplers.
+const u32 g_model_type_descriptor_set_count_cube     = 1; // 1 set: texture set
+
+// @Unimplemented I am just using player to imagine how a more complex model would work, to see if my
+// system scales.
+struct Model_Player_Bone {};
+struct Model_Player_Skeleton {
+    Model_Player_Bone bones[16];
+};
+struct Model_Player_Run {};
+struct Model_Player_Walk {};
+struct Model_Player { // @Unimplemented
+    Model_Type type;
+
+    Model_Player_Skeleton skeleton;
+    Model_Player_Run      run;
+    Model_Player_Walk     walk;
+};
+const u32 g_model_type_descriptor_count_player  = 1; // @Todo This value is not correct, just random one for now.
+const u32 g_model_type_primitive_count_player   = 1;
+
+// @Unimplemented I am just using car to imagine how a more complex model would work, to see if my
+// system scales.
+struct Model_Mesh_Car_Glass {
+    u32 allocation_key_index;
+    u32 allocation_key_position;
+    u32 allocation_key_normal;
+    u32 allocation_key_tex_coords;
+
+    VkPrimitiveTopology topology;
+
+    u32 tex_key_base;
+    u32 tex_key_slightly_broken;
+    u32 tex_key_medium_broken;
+    u32 tex_key_very_broken;
+    u64 sampler_key_base;
+    u64 sampler_key_pbr;
+};
+struct Model_Mesh_Car_Body {
+    u32 allocation_key_index;
+    u32 allocation_key_position;
+    u32 allocation_key_normal;
+    u32 allocation_key_tex_coords;
+
+    VkPrimitiveTopology topology;
+
+    u32 tex_key_base;
+    u32 tex_key_pbr;
+    u64 sampler_key_base;
+    u64 sampler_key_pbr;
+};
+struct Model_Mesh_Car_Wheel {
+    u32 allocation_key_index;
+    u32 allocation_key_position;
+    u32 allocation_key_normal;
+    u32 allocation_key_tex_coords;
+
+    VkPrimitiveTopology topology;
+
+    u32 tex_key_base;
+    u32 tex_key_pbr;
+    u64 sampler_key_base;
+    u64 sampler_key_pbr;
+};
+union Model_Car_Mesh {
+    Model_Mesh_Car_Glass  mesh_glass;
+    Model_Mesh_Car_Body   mesh_body;
+    Model_Mesh_Car_Wheel  mesh_wheel;
+};
+struct Model_Car_Spin_Wheel {
+    u32 wheel_index;
+    Animation_Sampler animation_sampler;
+};
+struct Model_Car_Turn_Wheel {
+    u32 wheel_index;
+    Animation_Sampler animation_sampler;
+};
+struct Model_Car_Tilt_Body {
+    Animation_Sampler animation_sampler;
+};
+struct Model_Car {
+    Model_Type type;
+
+    Model_Mesh_Car_Glass  mesh_glass;
+    Model_Mesh_Car_Body   mesh_body;
+    Model_Mesh_Car_Wheel  mesh_wheel[4];
+
+    Model_Car_Spin_Wheel spin_wheel;
+    Model_Car_Turn_Wheel turn_wheel;
+    Model_Car_Tilt_Body  tilt_body;
+};
+const u32 g_model_type_descriptor_count_car  = 1; // @Unimplemented This is just a random value
+const u32 g_model_type_primitive_count_car = 1;
+
+union Model {
+    Model_Cube   cube;
+    Model_Player player;
+};
 
 #endif // include guard
