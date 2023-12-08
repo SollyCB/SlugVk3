@@ -107,7 +107,7 @@ struct Descriptor_Allocator {
     VkPhysicalDeviceDescriptorBufferPropertiesEXT info;
 };
 
-u8* descriptor_allocate_layout(Descriptor_Allocator *alloc, VkDescriptorSetLayout layout, u64 *offset);
+u8* descriptor_allocate_layout(Descriptor_Allocator *alloc, u64 size, u64 *offset);
 
 void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count,
                                      VkDescriptorDataEXT *datas, u8 *mem);
@@ -735,13 +735,11 @@ struct Pl_Config { // @Todo multisample state settings
     VkRenderPass       renderpass;
     u32                subpass;
 
+    Pl_Layout          layout; // 40 bytes
+
     Pl_Config_Flags    flags;
     Pl_Blend_Setting   blend_setting; // This could probably just be an on or off flag for now.
     Pl_Primitive_Info  primitive_info;
-
-    u32                              stage_count;
-    VkPipelineShaderStageCreateInfo *stages;
-    VkPipelineLayout                 pl_layout;
 };
 void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipelines);
 
