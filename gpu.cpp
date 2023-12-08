@@ -1098,10 +1098,8 @@ inline static Descriptor_Allocator create_descriptor_allocator(u64 size, u64 add
 
     return ret;
 }
-inline static void descriptor_allocator_reset(Descriptor_Allocator *allocator) {
-    allocator->used = 0;
-}
-inline static u8* descriptor_allocate(Descriptor_Allocator *alloc, VkDescriptorSetLayout layout, u64 *offset) {
+
+u8* descriptor_allocate_layout(Descriptor_Allocator *alloc, VkDescriptorSetLayout layout, u64 *offset) {
     u64 size;
     vkGetDescriptorSetLayoutSizeEXT(get_gpu_instance()->device, layout, &size);
 
@@ -1113,12 +1111,10 @@ inline static u8* descriptor_allocate(Descriptor_Allocator *alloc, VkDescriptorS
     assert(alloc->used <= alloc->cap && "Descriptor Allocator Overflow");
     return ret;
 }
-inline static u64 descriptor_get_binding_offset(VkDescriptorSetLayout layout, u32 binding) {
-    u64 ret;
-    vkGetDescriptorSetLayoutBindingOffsetEXT(get_gpu_instance()->device, layout, binding, &ret);
-    return ret;
-}
-inline static void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
+
+void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count,
+                                             VkDescriptorDataEXT *datas, u8 *mem)
+{
     /* From the Vulkan Spec for vkGetDescriptorEXT:
 
             "If the VkPhysicalDeviceDescriptorBufferPropertiesEXT::combinedImageSamplerDescriptorSingleArray
@@ -1166,7 +1162,8 @@ inline static void descriptor_write_combined_image_sampler(Descriptor_Allocator 
         }
     }
 }
-inline static void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
+
+void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
     VkDevice device = get_gpu_instance()->device;
 
     VkDescriptorGetInfoEXT get_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
@@ -1178,7 +1175,8 @@ inline static void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, 
         vkGetDescriptorEXT(device, &get_info, ubo_size, mem + (i * ubo_size));
     }
 }
-inline static void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
+
+void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
     VkDevice device = get_gpu_instance()->device;
 
     VkDescriptorGetInfoEXT get_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};

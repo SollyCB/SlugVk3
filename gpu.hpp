@@ -97,6 +97,34 @@ struct Gpu_Memory {
 
     Memory_Flags flags;
 };
+struct Descriptor_Allocator {
+    u64 cap;
+    u64 used;
+    u64 buffer_address;
+    u8 *mem;
+    VkBuffer buf;
+
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT info;
+};
+
+u8* descriptor_allocate_layout(Descriptor_Allocator *alloc, VkDescriptorSetLayout layout, u64 *offset);
+
+void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count,
+                                     VkDescriptorDataEXT *datas, u8 *mem);
+void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count,
+                                             VkDescriptorDataEXT *datas, u8 *mem);
+void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count,
+                                       VkDescriptorDataEXT *datas, u8 *mem);
+
+inline static void descriptor_allocator_reset(Descriptor_Allocator *allocator) {
+    allocator->used = 0;
+}
+inline static u64 descriptor_get_binding_offset(VkDescriptorSetLayout layout, u32 binding) {
+    u64 ret;
+    vkGetDescriptorSetLayoutBindingOffsetEXT(get_gpu_instance()->device, layout, binding, &ret);
+    return ret;
+}
+
 struct Shader {
     Shader_Id id;
     u32 layout_index;
@@ -108,15 +136,6 @@ struct Shader {
     #if DEBUG
     u32 *layout_indices;
     #endif
-};
-struct Descriptor_Allocator {
-    u64 cap;
-    u64 used;
-    u64 buffer_address;
-    u8 *mem;
-    VkBuffer buf;
-
-    VkPhysicalDeviceDescriptorBufferPropertiesEXT info;
 };
 struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with something better.
     u32 shader_cap            = 128;
