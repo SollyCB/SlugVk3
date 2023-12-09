@@ -5,14 +5,14 @@
 #include "model.hpp"
 
 struct Model_Allocators {
-    Gpu_Allocator     index;
-    Gpu_Allocator     vertex;
-    Gpu_Tex_Allocator tex;
-    Sampler_Allocator sampler;
+    Gpu_Allocator        index;
+    Gpu_Allocator        vertex;
+    Gpu_Tex_Allocator    tex;
+    Sampler_Allocator    sampler;
+    Image_View_Allocator image_view;
 };
-struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary defaults set in gpu.hpp atm.
+struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
 
-union Model;
 struct Assets {
     Model_Allocators model_allocators;
 

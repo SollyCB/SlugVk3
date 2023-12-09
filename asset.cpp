@@ -82,13 +82,15 @@ static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
         return {};
     }
 
-    Sampler_Allocator sampler = create_sampler_allocator(0);
+    Sampler_Allocator sampler       = create_sampler_allocator(0);
+    Image_View_Allocator image_view = create_image_view_allocator(256);
 
     Model_Allocators ret = {
-        .index   = index_allocator,
-        .vertex  = vertex_allocator,
-        .tex     = tex_allocator,
-        .sampler = sampler,
+        .index      = index_allocator,
+        .vertex     = vertex_allocator,
+        .tex        = tex_allocator,
+        .sampler    = sampler,
+        .image_view = image_view,
     };
 
     Model_Allocators *model_allocators = &get_assets_instance()->model_allocators;
@@ -208,7 +210,7 @@ static Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, 
     tmp_uri = cstr_to_string((const char*)uri_buf);
 
     Gpu_Allocator_Result res;
-    Sampler sampler_info = {};
+    Sampler_Info sampler_info = {};
 
     sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
     sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;

@@ -481,16 +481,18 @@ inline static Gpu_Allocation* gpu_get_allocation(Gpu_Allocator *allocator, u32 a
 //     - Sol 9 Dec 2023
 //
 //
-struct Gpu_Tex_Allocation { // 52 bytes, padded to cache line
+struct Gpu_Tex_Allocation { // 56 bytes, padded to cache line
     u64     stage_offset;
     u64     upload_offset;
     u64     size; // aligned to bit granularity (no reason to keep it as it is)
     u32     width;
     u32     height;
+
     VkImage image;
     String  file_name;
 
-    char pad[12]; // pad to cache line
+    u32  mip_levels;
+    char pad[8]; // pad to cache line
 };
 struct Gpu_Tex_Allocator {
     u32  allocation_cap;
@@ -641,16 +643,48 @@ struct Sampler_Allocator {
     u32 in_use;
     HashMap<u64, Sampler_Info> map;
 
+    VkDevice device;
     u64 *hashes;
     u8  *weights;
     u8  *flags;
 };
+
 // Set cap to zero to let the allocator decide a size
 Sampler_Allocator create_sampler_allocator (u32 cap);
 void              destroy_sampler_allocator(Sampler_Allocator *alloc);
 
 u64                      add_sampler(Sampler_Allocator *alloc, Sampler_Info *sampler_info);
 Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler);
+
+void done_with_sampler(Sampler_Allocator *alloc, u64 hash);
+
+enum Image_View_Allocator_Result {
+    IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS     = 0,
+    IMAGE_VIEW_ALLOCATOR_RESULT_ALL_IN_USE  = 1,
+    IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY = 2,
+};
+struct Image_View {
+    u64         hash;
+    VkImageView view;
+    u32         user_count;
+};
+struct Image_View_Allocator {
+    u32 cap;
+    u32 count;
+    u32 in_use;
+    HashMap<u64, Image_View> map;
+
+    VkDevice device;
+    u64 *hashes;
+    u8  *weights;
+    u8  *flags;
+};
+Image_View_Allocator create_image_view_allocator (u32 cap);
+void                 destroy_image_view_allocator(Image_View_Allocator *alloc);
+
+Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, u64 hash, VkImageView *ret_image_view);
+
+Image_View_Allocator_Result done_with_image_view(Image_View_Allocator *alloc, u64 hash);
 
 struct Uniform_Allocator {
     u64 cap;
@@ -697,7 +731,7 @@ inline static void uniform_allocator_reset_and_zero(Uniform_Allocator *allocator
 }
 
 inline static void vkGetDescriptor(VkDevice device, const VkDescriptorGetInfoEXT* pDescriptorGetInfo,
-                                       u64 dataSize, void* pDescriptor)
+                                   u64 dataSize, void* pDescriptor)
 {
     auto func = (PFN_vkGetDescriptorEXT)vkGetDeviceProcAddr(device, "vkGetDescriptorEXT");
     return func(device, pDescriptorGetInfo, dataSize, pDescriptor);

@@ -1739,6 +1739,10 @@ void adjust_sampler_weights(u32 count, u8 *weights, u8 *flags, u64 *hashes, u32 
 
     return;
 }
+inline static void adjust_image_view_weights(u32 count, u8 *weights, u8 *flags, u64 *hashes, u32 idx, u32 inc, u32 dec)
+{
+    adjust_sampler_weights(count, weights, flags, hashes, idx, inc, dec);
+}
 /*
    eject_repeat_indices(..)
    Branchless function to remove duplicate indices from an array, with specific caveats:
@@ -2111,6 +2115,33 @@ static u32 sampler_find_lowest_weight_flagged_active_not_in_use(u32 count, u8 *f
 
     __m128i b = _mm_set1_epi8((u8)SAMPLER_ALLOCATOR_ACTIVE_BIT | (u8)SAMPLER_ALLOCATOR_IN_USE_BIT);
     __m128i c = _mm_set1_epi8((u8)SAMPLER_ALLOCATOR_ACTIVE_BIT);
+
+    a = _mm_and_si128(a, b);
+    u16 mask = _mm_movemask_epi8(a);
+    while(!mask) { // static predict that lowest flagged is not immediate
+        if (offset == 0)
+            return Max_u32;
+        offset -= 16;
+
+        a    = _mm_load_si128((__m128i*)(flags + offset));
+        a    = _mm_and_si128(a, b);
+        a    = _mm_cmpeq_epi8(a, c);
+        mask = _mm_movemask_epi8(a);
+    }
+    return offset + (15 - count_leading_zeros_u16(mask));
+}
+
+enum Image_View_Allocator_Flag_Bits {
+    IMAGE_VIEW_ALLOCATOR_IN_USE_BIT = 0x01,
+};
+static u32 image_view_find_lowest_weight_flagged_not_in_use(u32 count, u8 *flags) { // 'flags' is in order of weights (high to low)
+    u32 offset = count - (count & 15);
+
+    offset   -= 16 & (Max_u32 + ((count & 15) > 0));
+    __m128i a = _mm_load_si128((__m128i*)(flags + offset));
+
+    __m128i b = _mm_set1_epi8((u8)IMAGE_VIEW_ALLOCATOR_IN_USE_BIT);
+    __m128i c = _mm_set1_epi8(0);
 
     a = _mm_and_si128(a, b);
     u16 mask = _mm_movemask_epi8(a);
@@ -3886,6 +3917,8 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
 Sampler_Allocator create_sampler_allocator(u32 cap) {
     Sampler_Allocator ret = {};
 
+    ret.device = get_gpu_instance()->device;
+
     u64 device_cap = get_gpu_instance()->info.props.limits.maxSamplerAllocationCount;
     if (cap)
         ret.cap = align(cap, 16);
@@ -3989,7 +4022,6 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
         create_info.anisotropyEnable    = (VkBool32)(anisotropy > 0);
         create_info.maxAnisotropy       = anisotropy;
 
-        VkDevice device = get_gpu_instance()->device;
         if (alloc->active == alloc->device_cap) {
 
             u32           evict_idx = sampler_find_lowest_weight_flagged_active_not_in_use(alloc->count, alloc->flags);
@@ -3997,12 +4029,12 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
 
             // Clear 'active' flag
             alloc->flags[evict_idx] &= ~(u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
-            vkDestroySampler(device, to_evict->sampler, ALLOCATION_CALLBACKS);
+            vkDestroySampler(alloc->device, to_evict->sampler, ALLOCATION_CALLBACKS);
 
             to_evict->sampler = NULL;
             alloc->active--;
         }
-        auto check = vkCreateSampler(device, &create_info, ALLOCATION_CALLBACKS, &info->sampler);
+        auto check = vkCreateSampler(alloc->device, &create_info, ALLOCATION_CALLBACKS, &info->sampler);
         DEBUG_OBJ_CREATION(vkCreateSampler, check);
 
         alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
@@ -4015,7 +4047,6 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
    *ret_sampler = info->sampler;
     return ret;
 }
-
 void done_with_sampler(Sampler_Allocator *alloc, u64 hash) {
     Sampler_Info *sampler = alloc->map.find_hash(hash);
 
@@ -4025,11 +4056,111 @@ void done_with_sampler(Sampler_Allocator *alloc, u64 hash) {
     if (sampler->user_count == 0) {
         u32 h_idx            = find_hash_idx(alloc->count, alloc->hashes, hash);
         alloc->flags[h_idx] &= ~((u8)SAMPLER_ALLOCATOR_IN_USE_BIT);
+        alloc->in_use--;
     }
 
     return;
 }
         /* End Sampler Allocation */
+
+        /* Begin Image View Allocator */
+Image_View_Allocator create_image_view_allocator(u32 cap) {
+    Image_View_Allocator ret = {};
+
+    ret.device = get_gpu_instance()->device;
+
+    ret.cap = align(cap, 16); // malloc'd size must be aligned to 16 for correct_weights() simd
+    ret.map = HashMap<u64, Image_View>::get(ret.cap);
+
+    // Align 16 for SIMD
+    u64 aligned_cap = align(ret.cap, 16);
+    u64 block_size  = align(ret.cap * 8, 16);
+    block_size     += aligned_cap * 2;
+    u64 *block      = (u64*)malloc_h(block_size, 16);
+
+    memset(block, 0, block_size);
+
+    ret.hashes  = block;
+    ret.weights = (u8*)(block + aligned_cap);
+    ret.flags   = ret.weights + aligned_cap;
+
+    return ret;
+}
+void destroy_image_view_allocator(Image_View_Allocator *alloc) {
+    free_h(alloc->hashes);
+    alloc->map.kill();
+}
+/*
+   Image View Allocator Implementation is basically identical sampler allocator: a hashmap and some weights
+*/
+Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageViewCreateInfo *image_view_info,
+                                           VkImageView *ret_view, u64 *ret_hash)
+{
+    u64 hash         = hash_bytes(image_view_info, sizeof(VkImageViewCreateInfo));
+    Image_View *ret = alloc->map.find_hash(hash);
+
+    if (!ret && alloc->count == alloc->cap) {
+
+        if (alloc->in_use == alloc->cap)
+            return IMAGE_VIEW_ALLOCATOR_RESULT_ALL_IN_USE;
+
+        u32 evict_idx  = image_view_find_lowest_weight_flagged_not_in_use(alloc->count, alloc->flags);
+        u64 evict_hash = alloc->hashes[evict_idx];
+
+        // temp use of ret
+        ret = alloc->map.find_hash(evict_hash);
+        assert(ret && "Arrgh broken hash map? Broken alloc->hashes??");
+
+        vkDestroyImageView(alloc->device, ret->view, ALLOCATION_CALLBACKS);
+
+        bool del_result = alloc->map.delete_hash(evict_hash);
+        assert(del_result && "Arrgh broken hash map? Broken alloc->hashes??");
+
+        // Overwrite the attributes of the lowest weight view which is not in use
+        u32 size_to_move = alloc->count - (evict_idx + 1);
+        memmove(alloc->hashes  + evict_idx, alloc->hashes  + evict_idx + 1, size_to_move * sizeof(u64));
+        memmove(alloc->weights + evict_idx, alloc->weights + evict_idx + 1, size_to_move);
+        memmove(alloc->flags   + evict_idx, alloc->flags   + evict_idx + 1, size_to_move);
+
+        Image_View new_view = {};
+        auto check = vkCreateImageView(alloc->device, image_view_info, ALLOCATION_CALLBACKS, &new_view.view);
+        DEBUG_OBJ_CREATION(vkCreateImageView, check);
+
+        alloc->map.insert_hash(hash, &new_view);
+        ret = alloc->map.find_hash(hash);
+
+        assert(ret && "Dude I just inserted this, why my hash map broke?");
+
+        alloc->flags  [alloc->count - 1] = IMAGE_VIEW_ALLOCATOR_IN_USE_BIT;
+        alloc->weights[alloc->count - 1] = 0;
+        alloc->hashes [alloc->count - 1] = hash;
+        alloc->in_use++;
+    }
+
+    ret->user_count++;
+   *ret_view = ret->view;
+   *ret_hash = ret->hash;
+    return IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS;
+}
+Image_View_Allocator_Result done_with_image_view(Image_View_Allocator *alloc, u64 hash) {
+    Image_View *view = alloc->map.find_hash(hash);
+
+    assert(view && "This is not a valid view hash");
+    if (!view)
+        return IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY;
+
+    view->user_count -= 1 & (int)(view->user_count > 0);
+
+    if (view->user_count == 0) {
+        u32 h_idx            = find_hash_idx(alloc->count, alloc->hashes, hash);
+        alloc->flags[h_idx] &= ~((u8)IMAGE_VIEW_ALLOCATOR_IN_USE_BIT);
+        alloc->in_use--;
+    }
+
+    return IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS;
+}
+        /* End Image View Allocator */
+
     /* Renderpass Framebuffer Pipeline */
 void rp_forward_shadow(VkImageView present_attachment, VkImageView depth_attachment, VkImageView shadow_attachment,
                        VkRenderPass *renderpass, VkFramebuffer *framebuffer)
