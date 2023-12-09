@@ -458,6 +458,11 @@ inline static void upload_queue_make_empty(Gpu_Allocator *alloc) {
     alloc->upload_queue_byte_count = 0;
 }
 
+inline static Gpu_Allocation* gpu_get_allocation(Gpu_Allocator *allocator, u32 allocation_key) {
+    u32 allocation_index = allocator->allocation_indices[allocation_key];
+    return &allocator->allocations[allocation_index];
+}
+
 //
 // @Note I would like struct to be smaller. Cannot see a good shrink rn...
 //
@@ -594,6 +599,11 @@ inline static void tex_upload_queue_make_empty(Gpu_Tex_Allocator *alloc) {
 
     alloc->to_upload_count         = 0;
     alloc->upload_queue_byte_count = 0;
+}
+
+inline static Gpu_Tex_Allocation* gpu_get_tex_allocation(Gpu_Tex_Allocator *allocator, u32 allocation_key) {
+    u32 allocation_index = allocator->allocation_indices[allocation_key];
+    return &allocator->allocations[allocation_index];
 }
 
 typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Begin_Func)     (Gpu_Allocator*);
