@@ -10,6 +10,8 @@ struct Model_Allocators {
     Gpu_Tex_Allocator    tex;
     Sampler_Allocator    sampler;
     Image_View_Allocator image_view;
+    Descriptor_Allocator descriptor_sampler;
+    Descriptor_Allocator descriptor_resource;
 };
 struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
 
@@ -33,52 +35,10 @@ Assets* get_assets_instance();
 void init_assets();
 void kill_assets();
 
-struct Model_Cube {
-    Model_Type type;
-
-    u32 tex_key_base;
-    u32 tex_key_pbr;
-    u64 sampler_key_base;
-    u64 sampler_key_pbr;
-
-    u32 index_key;
-    u32 vertex_key;
-
-    u32 count; // draw count (num indices)
-    VkIndexType index_type;
-
-    // Allocation offsets
-    u64 offset_index;
-    u64 offset_position;
-    u64 offset_normal;
-    u64 offset_tangent;
-    u64 offset_tex_coords;
-
-    // Pipeline info
-    VkPrimitiveTopology topology;
-
-    u32 stride_position;
-    u32 stride_normal;
-    u32 stride_tangent;
-    u32 stride_tex_coords;
-
-    VkFormat fmt_position;
-    VkFormat fmt_normal;
-    VkFormat fmt_tangent;
-    VkFormat fmt_tex_coords;
-};
-struct Model_Player { // @Unimplemented
-    Model_Type type;
-};
-
-union Model {
-    Model_Cube   cube;
-    Model_Player player;
-};
 Model load_model(Model_Identifier model_id);
 void  free_model(Model *model);
 
-bool prepare_to_draw_models(u32 count, Model *models); // @Unimplemented
+bool prepare_to_draw_models(u32 count, Model *models); // @Unimplemented wip
 
 #endif // include guard
 

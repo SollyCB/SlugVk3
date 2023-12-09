@@ -1037,6 +1037,89 @@ void allocate_memory() {
         gpu->memory.vertex_mem_index     = device_mem_type;
         gpu->memory.uniform_mem_index    = both_mem_type;
     }
+
+                        /*Create Descriptor Buffers*/
+
+    VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+
+    buffer_info.size  = ret.descriptor_buffer_size;
+    buffer_info.usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+
+    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.sampler_descriptor_buffer);
+    DEBUG_OBJ_CREATION(vkCreateBuffer, check);
+
+    buffer_info.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+
+    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.resource_descriptor_buffer);
+    DEBUG_OBJ_CREATION(vkCreateBuffer, check);
+
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT buf_props;
+    buf_props = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+
+    VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    props2.pNext = &buf_props;
+
+    vkGetPhysicalDeviceProperties2(gpu->phys_device, &props2);
+
+    VkBuffer       sampler_descriptor_buffer;
+    VkBuffer       resource_descriptor_buffer;
+    VkDeviceMemory descriptor_buffer_memory;
+
+    VkBufferDeviceAddressInfo address_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    address_info.buffer = sampler_descriptor_buffer;
+
+    VkDeviceAddress sampler_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    address_info.buffer = resource_descriptor_buffer;
+    VkDeviceAddress resource_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    assert(sampler_buffer_address  + DESCRIPTOR_BUFFER_SIZE < buf_props.maxSamplerDescriptorBufferRange);
+    assert(resource_buffer_address + DESCRIPTOR_BUFFER_SIZE < buf_props.maxResourceDescriptorBufferRange);
+
+    if (sampler_buffer_address  + DESCRIPTOR_BUFFER_SIZE > buf_props.maxSamplerDescriptorBufferRange ||
+        resource_buffer_address + DESCRIPTOR_BUFFER_SIZE > buf_props.maxResourceDescriptorBufferRange)
+    {
+        println("Requested descriptor buffer size + buffer device address would overflow max buffer range");
+        return;
+    }
+
+    VkMemoryRequirements mem_req;
+    vkGetBufferMemoryRequirements(device, sampler_descriptor_buffer, &mem_req);
+
+    u64 sampler_size = mem_req.size;
+
+    vkGetBufferMemoryRequirements(device, resource_descriptor_buffer, &mem_req);
+
+    sampler_size = align(sampler_size, mem_req.alignment);
+
+    //
+    // @Todo Memory Priority necessary here? Idk since descriptor mem is supposed to be its own special thing...
+    //
+    VkMemoryAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc_info.allocationSize  = sampler_size + mem_req.size;
+    alloc_info.memoryTypeIndex = gpu->memory.uniform_mem_index; // This is device local + host visible memory
+
+    check = vkAllocateMemory(device, &alloc_info, ALLOCATION_CALLBACKS, &descriptor_buffer_memory);
+    DEBUG_OBJ_CREATION(vkAllocateMemory, check);
+
+    check = vkBindBufferMemory(device, sampler_descriptor_buffer, descriptor_buffer_memory, 0);
+    DEBUG_OBJ_CREATION(vkBindBufferMemory, check);
+
+    check = vkBindBufferMemory(device, resource_descriptor_buffer, descriptor_buffer_memory, sampler_size);
+    DEBUG_OBJ_CREATION(vkBindBufferMemory, check);
+
+    u8 *sampler_ptr;
+
+    void *tmp = (void*)sampler_ptr; // Such a dumb work around. This or cast in create_allocator call...
+    vkMapMemory(device, descriptor_buffer_memory, 0, VK_WHOLE_SIZE, 0x0, &tmp);
+
+    u8 *resource_ptr = sampler_ptr + sampler_size;
+
+    gpu->memory.sampler_descriptor_buffer  = sampler_descriptor_buffer;
+    gpu->memory.resource_descriptor_buffer = resource_descriptor_buffer;
+    gpu->memory.descriptor_buffer_memory   = descriptor_buffer_memory;
+    gpu->memory.sampler_descriptor_ptr     = sampler_ptr;
+    gpu->memory.resource_descriptor_ptr    = resource_ptr;
 }
 void free_memory() {
     Gpu *gpu = get_gpu_instance();
@@ -1084,17 +1167,33 @@ void free_memory() {
         vkDestroyBuffer(device, gpu->memory.uniform_bufs[i], ALLOCATION_CALLBACKS);
         vkFreeMemory(device, gpu->memory.uniform_mem[i], ALLOCATION_CALLBACKS);
     }
+
+    // Descriptor
+    vkDestroyBuffer(device, gpu->memory.sampler_descriptor_buffer, ALLOCATION_CALLBACKS);
+    vkDestroyBuffer(device, gpu->memory.resource_descriptor_buffer, ALLOCATION_CALLBACKS);
+    vkFreeMemory(device, gpu->memory.descriptor_buffer_memory, ALLOCATION_CALLBACKS);
 }
 
 // `Shaders + Descriptors
-inline static Descriptor_Allocator create_descriptor_allocator(u64 size, u64 address, u8 *mem, VkBuffer buf) {
-    Gpu_Memory *gpu_mem = &get_gpu_instance()->memory;
+Descriptor_Allocator get_descriptor_allocator(u64 size, u8 *mem, VkBuffer buf) {
+    Gpu *gpu = get_gpu_instance();
 
     Descriptor_Allocator ret;
     ret.cap  = size;
     ret.used = 0;
     ret.mem  = mem;
     ret.buf  = buf;
+    ret.buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT buf_props;
+    buf_props = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+
+    VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    props2.pNext = &buf_props;
+
+    vkGetPhysicalDeviceProperties2(gpu->phys_device, &props2);
+
+    ret.info = buf_props;
 
     return ret;
 }
@@ -1332,84 +1431,6 @@ static void gpu_init_shaders() {
         if (ret.shader_count > ret.shader_cap)
             return;
     }
-
-    /* Create Descriptor Buffer */
-
-    VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-
-    buffer_info.size = ret.descriptor_buffer_size;
-    buffer_info.usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
-    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.sampler_descriptor_buffer);
-    DEBUG_OBJ_CREATION(vkCreateBuffer, check);
-
-    buffer_info.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
-    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.resource_descriptor_buffer);
-    DEBUG_OBJ_CREATION(vkCreateBuffer, check);
-
-
-    VkPhysicalDeviceDescriptorBufferPropertiesEXT buf_props;
-    buf_props = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
-
-    VkPhysicalDeviceProperties2 props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    props2.pNext = &buf_props;
-
-    vkGetPhysicalDeviceProperties2(gpu->phys_device, &props2);
-
-    ret.sampler_descriptor_allocator.info = buf_props;
-    ret.resource_descriptor_allocator.info = buf_props;
-
-    VkBufferDeviceAddressInfo address_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-    address_info.buffer = ret.sampler_descriptor_buffer;
-
-    VkDeviceAddress sampler_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
-
-    address_info.buffer = ret.resource_descriptor_buffer;
-    VkDeviceAddress resource_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
-
-    assert(sampler_buffer_address  + ret.descriptor_buffer_size < buf_props.maxSamplerDescriptorBufferRange);
-    assert(resource_buffer_address + ret.descriptor_buffer_size < buf_props.maxResourceDescriptorBufferRange);
-
-    if (sampler_buffer_address  + ret.descriptor_buffer_size > buf_props.maxSamplerDescriptorBufferRange ||
-        resource_buffer_address + ret.descriptor_buffer_size > buf_props.maxResourceDescriptorBufferRange)
-    {
-        println("Requested descriptor buffer size + buffer device address would overflow max buffer range");
-        return;
-    }
-
-    VkMemoryRequirements mem_req;
-    vkGetBufferMemoryRequirements(device, ret.sampler_descriptor_buffer, &mem_req);
-
-    u64 sampler_size = mem_req.size;
-
-    vkGetBufferMemoryRequirements(device, ret.resource_descriptor_buffer, &mem_req);
-
-    sampler_size = align(sampler_size, mem_req.alignment);
-
-    //
-    // @Todo Memory Priority necessary here? Idk since descriptor mem is supposed to be its own special thing...
-    //
-    VkMemoryAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    alloc_info.allocationSize  = sampler_size + mem_req.size;
-    alloc_info.memoryTypeIndex = gpu->memory.uniform_mem_index; // This is device local + host visible memory
-
-    check = vkAllocateMemory(device, &alloc_info, ALLOCATION_CALLBACKS, &ret.descriptor_buffer_memory);
-    DEBUG_OBJ_CREATION(vkAllocateMemory, check);
-
-    check = vkBindBufferMemory(device, ret.sampler_descriptor_buffer, ret.descriptor_buffer_memory, 0);
-    DEBUG_OBJ_CREATION(vkBindBufferMemory, check);
-
-    check = vkBindBufferMemory(device, ret.resource_descriptor_buffer, ret.descriptor_buffer_memory, sampler_size);
-    DEBUG_OBJ_CREATION(vkBindBufferMemory, check);
-
-    u8 *sampler_ptr;
-
-    void *tmp = (void*)sampler_ptr; // Such a dumb work around. This or cast in create_allocator call...
-    vkMapMemory(device, ret.descriptor_buffer_memory, 0, VK_WHOLE_SIZE, 0x0, &tmp);
-
-    u8 *resource_ptr = sampler_ptr + sampler_size;
-
-    ret.sampler_descriptor_allocator  = create_descriptor_allocator(ret.descriptor_buffer_size, sampler_buffer_address, sampler_ptr, ret.sampler_descriptor_buffer);
-    ret.resource_descriptor_allocator = create_descriptor_allocator(ret.descriptor_buffer_size, resource_buffer_address, resource_ptr, ret.resource_descriptor_buffer);
 
     gpu->shader_memory = ret;
 

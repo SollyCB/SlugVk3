@@ -48,9 +48,11 @@ static constexpr u64 INDEX_STAGE_SIZE        = 1048576;
 static constexpr u64 TEXTURE_STAGE_SIZE      = 1048576 * 8;
 static constexpr u64 UNIFORM_BUFFER_SIZE     = 1048576;
 
-static constexpr float VERTEX_DEVICE_SIZE    = 1048576;
-static constexpr float INDEX_DEVICE_SIZE     = 1048576;
-static constexpr float TEXTURE_DEVICE_SIZE   = 1048576 * 8;
+static constexpr u64 VERTEX_DEVICE_SIZE    = 1048576;
+static constexpr u64 INDEX_DEVICE_SIZE     = 1048576;
+static constexpr u64 TEXTURE_DEVICE_SIZE   = 1048576 * 8;
+
+static constexpr u64 DESCRIPTOR_BUFFER_SIZE = 1048576;
 
 enum Memory_Flag_Bits {
     GPU_MEMORY_UMA_BIT               = 0x01,
@@ -96,17 +98,14 @@ struct Gpu_Memory {
     void *texture_ptrs                  [TEXTURE_STAGE_COUNT];
     void *uniform_ptrs                  [UNIFORM_BUFFER_COUNT];
 
+    VkBuffer       sampler_descriptor_buffer;
+    VkBuffer       resource_descriptor_buffer;
+    VkDeviceMemory descriptor_buffer_memory;
+
+    u8 *sampler_descriptor_ptr;
+    u8 *resource_descriptor_ptr;
+
     Memory_Flags flags;
-};
-
-struct Descriptor_Allocator {
-    u64 cap;
-    u64 used;
-    u64 buffer_address;
-    u8 *mem;
-    VkBuffer buf;
-
-    VkPhysicalDeviceDescriptorBufferPropertiesEXT info;
 };
 
 struct Shader {
@@ -132,14 +131,6 @@ struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with some
     Shader                *shaders;
     VkDescriptorSetLayout *layouts;
     u64                   *layout_sizes;
-
-    u64            descriptor_buffer_size = 1048576;
-    VkBuffer       sampler_descriptor_buffer;
-    VkBuffer       resource_descriptor_buffer;
-    VkDeviceMemory descriptor_buffer_memory;
-
-    Descriptor_Allocator sampler_descriptor_allocator;
-    Descriptor_Allocator resource_descriptor_allocator;
 
     const char *entry_point = "main";
 
@@ -743,14 +734,23 @@ inline static void vkGetDescriptorSetLayoutBindingOffset(VkDevice device, VkDesc
     return func(device, layout, binding, offset);
 }
 
-u8* descriptor_allocate_layout(Descriptor_Allocator *alloc, u64 size, u64 *offset);
+struct Descriptor_Allocator {
+    u64 cap;
+    u64 used;
+    u64 buffer_address;
+    u8 *mem;
+    VkBuffer buf;
 
-void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count,
-                                     VkDescriptorDataEXT *datas, u8 *mem);
-void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count,
-                                             VkDescriptorDataEXT *datas, u8 *mem);
-void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count,
-                                       VkDescriptorDataEXT *datas, u8 *mem);
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT info;
+};
+
+// Does not need to be freed
+Descriptor_Allocator get_descriptor_allocator(u64 size, u8 *mem, VkBuffer buf);
+
+u8*  descriptor_allocate_layout             (Descriptor_Allocator *alloc, u64 size, u64 *offset);
+void descriptor_write_uniform_buffer        (Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem);
+void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem);
+void descriptor_write_input_attachment      (Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem);
 
 inline static void descriptor_allocator_reset(Descriptor_Allocator *allocator) {
     allocator->used = 0;

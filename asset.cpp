@@ -85,12 +85,18 @@ static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
     Sampler_Allocator sampler       = create_sampler_allocator(0);
     Image_View_Allocator image_view = create_image_view_allocator(256);
 
+    Descriptor_Allocator descriptor_sampler = get_descriptor_allocator(DESCRIPTOR_BUFFER_SIZE, gpu->memory.sampler_descriptor_ptr, gpu->memory.sampler_descriptor_buffer);
+
+    Descriptor_Allocator descriptor_resource = get_descriptor_allocator(DESCRIPTOR_BUFFER_SIZE, gpu->memory.resource_descriptor_ptr, gpu->memory.resource_descriptor_buffer);
+
     Model_Allocators ret = {
-        .index      = index_allocator,
-        .vertex     = vertex_allocator,
-        .tex        = tex_allocator,
-        .sampler    = sampler,
-        .image_view = image_view,
+        .index               = index_allocator,
+        .vertex              = vertex_allocator,
+        .tex                 = tex_allocator,
+        .sampler             = sampler,
+        .image_view          = image_view,
+        .descriptor_sampler  = descriptor_sampler,
+        .descriptor_resource = descriptor_resource,
     };
 
     Model_Allocators *model_allocators = &get_assets_instance()->model_allocators;
@@ -641,15 +647,143 @@ void make_staging_queues_empty(Model_Allocators *allocs) {
     tex_staging_queue_make_empty(&allocs->tex);
 }
 
+enum Renderpass_Type {
+    RENDERPASS_TYPE_FORWARD_SINGLE_PASS = 0,
+    RENDERPASS_TYPE_FORWARD_WITH_SHADOW = 1,
+};
+struct Model_Draw_Prep_Info {
+    Renderpass_Type  rp_type;
+    Pl_Config       *pl_configs; // The size of this array is inferred by the model type's draw_info fill function
+};
+
 struct Model_Draw_Info {
-    u32 pl_count;
+    // The length of these arrays is inferred by the model type's corresponding draw function
+    u64        *descriptor_offsets;
     VkPipeline *pipelines;
 };
 
+enum Model_Draw_Info_Fill_Result {
+    MODEL_DRAW_INFO_FILL_RESULT_SUCCESS               = 0,
+    MODEL_DRAW_INFO_FILL_RESULT_NO_AVAILABLE_SAMPLERS = 1,
+};
+
+// Return the number of configs used.
+Model_Draw_Info_Fill_Result model_fill_draw_info_cube(
+        Model_Allocators     *model_allocators,
+        Model                *model,
+        Model_Draw_Prep_Info *draw_prep_info,
+        Model_Draw_Info      *ret_draw_info,
+        u32                  *ret_pl_configs_used)
+{
+    //
+    // Cube model type requires one pipeline (uses one primitive), and two combined image sampler descriptors:
+    // one for a base texture, one for a pbr texture.
+    //
+
+    u32 primitive_count          = 1;
+    u32 descriptor_count         = 2;
+    u32 descriptor_binding_count = 1;
+    u32 descriptor_set_count     = 1; // one descriptor set, an array[2] of combined image samplers
+
+    assert(g_model_type_primitive_count_cube  == primitive_count                  &&
+          "The number of primitives used by a cube model type changed");
+    assert(g_model_type_descriptor_count_cube == descriptor_binding_count         &&
+          "The number of descriptors used by a cube model type changed");
+    assert(g_model_type_descriptor_binding_count_cube == descriptor_binding_count &&
+          "The number of descriptor bindings used by a cube model type changed");
+    assert(g_model_type_descriptor_set_count_cube == descriptor_set_count         &&
+          "The number of descriptor sets used by a cube model type changed");
+
+    VkDevice device = get_gpu_instance()->device;
+
+    //
+    // @Multithreading pipeline creations and descriptor allocations can easily become jobs.
+    //
+    switch(draw_prep_info->rp_type) {
+    case RENDERPASS_TYPE_FORWARD_SINGLE_PASS:
+    {
+        ret_draw_info->descriptor_offsets =        (u64*)malloc_t(sizeof(u64)        * descriptor_binding_count, 8);
+        ret_draw_info->pipelines          = (VkPipeline*)malloc_t(sizeof(VkPipeline) * primitive_count,          8);
+
+        pl_create_pipelines(primitive_count, draw_prep_info->pl_configs, ret_draw_info->pipelines);
+
+        // Allocate one descriptor set for base and pbr textures
+        u8 *descriptor_mem  = descriptor_allocate_layout(sampler_descriptor_allocator,
+                                                         draw_prep_info->pl_configs[0].layout.set_layout_sizes[0],
+                                                         ret_draw_info->descriptor_offsets);
+
+        Sampler_Allocator_Result sampler_allocator_results[2];
+        VkDescriptorImageInfo    descriptor_info_base_tex = {};
+        VkDescriptorImageInfo    descriptor_info_pbr_tex  = {};
+
+        sampler_allocator_results[0] =
+            get_sampler(&model_allocators->sampler, model->cube.sampler_key_base, &descriptor_info_base_tex.sampler);
+        sampler_allocator_results[1] =
+            get_sampler(&model_allocators->sampler, model->cube.sampler_key_base, &descriptor_info_pbr_tex.sampler);
+
+        if (sampler_allocator_results[0] == SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE ||
+            sampler_allocator_results[1] == SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE)
+        {
+            return MODEL_DRAW_INFO_FILL_RESULT_NO_AVAILABLE_SAMPLERS;
+        }
+
+        //
+        // @Note @Todo Implement some sort of caching thing for these image views maybe. I dont know how much of a
+        // waste it is to recreate a lot of the same image views every frame.
+        //
+        // @Todo Mipmapping. I will do this when I start using ktx files instead of just pngs.
+        //
+
+        Gpu_Tex_Allocation *tex_allocation =
+            gpu_get_tex_allocation(&model_allocators->tex, model->cube.tex_key_base);
+
+        VkImageViewCreateInfo view_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        view_info.image            = tex_allocation->image;
+        view_info.viewType         = VK_IMAGE_VIEW_TYPE_2D;
+        view_info.format           = VK_FORMAT_R8G8B8A8_SRGB;
+        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, tex_allocation->mip_levels, 0, 1};
+
+        VkImageView view;
+        u64 view_hash;
+        Image_View_Allocator_Result view_result = get_image_view(&model_allocator->image_view, &view_info,
+                                                                 &view, &hash);
+
+        // Write array[2] texture descriptors
+
+        *ret_pl_configs_used = primitive_count; // one subpass, so only primitive_count configs used
+        return MODEL_DRAW_INFO_FILL_RESULT_SUCCESS;
+    }
+    case RENDERPASS_TYPE_FORWARD_WITH_SHADOW:
+    {
+        // The number of descriptors required does not change, as textures are not required for a shadow pass,
+        // and cubes are static (no animations).
+        ret_draw_info->descriptor_offsets =         (u64*)malloc_t(sizeof(u64)        * descriptor_count,    8);
+        ret_draw_info->pipelines          = (VkPipeline*)malloc_t(sizeof(VkPipeline) * primitive_count * 2, 8);
+
+        pl_create_pipelines(primitive_count * 2, draw_prep_info->pl_configs, ret_draw_info->pipelines);
+
+        *ret_pl_configs_used = primitive_count * 2; // two subpasses, so an extra config used
+        return MODEL_DRAW_INFO_FILL_RESULT_SUCCESS;
+    }
+    default:
+        assert(false && "Invalid Renderpass Type");
+        return MODEL_DRAW_INFO_FILL_RESULT_SUCCESS;
+    }
+}
+
+void handle_model_pipelines(u32 count, Model *models, Model_Draw_Prep_Info *pl_configs,
+                            Model_Draw_Info *ret_draw_info)
+{
+    for(u32 i = 0; i < count; ++i) {
+
+    }
+}
+
 // @Speed Currently this function has the issue that it loops the models a number of times, but this is something
 // that I plan to separate into jobs. - Sol 7th Dec 2023
-Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Upload_Phase start_phase,
-                                           Model_Upload_Phase end_phase, Model_Draw_Info *ret_draw_info)
+Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Draw_Prep_Info *draw_prep_infos,
+                                           Model_Upload_Phase start_phase, Model_Upload_Phase end_phase,
+                                           Model_Draw_Info *ret_draw_info)
 {
     Assets *g_assets = get_assets_instance();
     Model_Allocators *model_allocs = &g_assets->model_allocators;
@@ -718,11 +852,7 @@ Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Uploa
     // that model subset requires. Then I need some way to communicate these allocation offsets back to the bind
     // command caller.
 
-    // Create pipelines
-    for(u32 i = 0; i < count; ++i) {
-    }
 
-    // Allocate Descriptors
-
+    // Record secondary command buffers with appropriate bind commands.
     return res;
 }
