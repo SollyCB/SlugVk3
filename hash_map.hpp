@@ -1,5 +1,11 @@
 #pragma once
 
+/*
+   This code is ancient history to me (I say that as if isnt like 5 months old. I need to go through and update it
+   to my newer coding style. There is a lot about this file that is pretty wank. Everything is functioning, but
+   it is not very aesthetic.
+*/
+
 #include <immintrin.h>
 
 #include "builtin_wrappers.h"
@@ -11,9 +17,9 @@
 #include "test/test.hpp"
 #endif
 
-const u8 EMPTY = 0b1111'1111;
-const u8 DEL   = 0b1000'0000;
-const u8 GROUP_WIDTH = 16;
+const u8 HASH_MAP_EMPTY       = 0b1111'1111;
+const u8 HASH_MAP_DEL         = 0b1000'0000;
+const u8 HASH_MAP_GROUP_WIDTH = 16;
 
 template <typename T>
 inline uint64_t calculate_hash(const T &value, size_t seed = 0) {
@@ -43,7 +49,7 @@ inline void checked_mul(size_t &res, size_t mul) {
 }
 
 inline void make_group_empty(uint8_t *bytes) {
-    __m128i ctrl = _mm_set1_epi8(EMPTY);
+    __m128i ctrl = _mm_set1_epi8(HASH_MAP_EMPTY);
     _mm_store_si128(reinterpret_cast<__m128i *>(bytes), ctrl);
 }
 
@@ -57,11 +63,11 @@ struct Group {
     }
     static inline Group get_empty() {
         Group ret;
-        ret.ctrl = _mm_set1_epi8(EMPTY);
+        ret.ctrl = _mm_set1_epi8(HASH_MAP_EMPTY);
         return ret;
     }
     inline u16 is_empty() {
-        __m128i empty = _mm_set1_epi8(EMPTY);
+        __m128i empty = _mm_set1_epi8(HASH_MAP_EMPTY);
         __m128i res = _mm_cmpeq_epi8(ctrl, empty);
         u16 mask = _mm_movemask_epi8(res);
         return mask;
@@ -106,7 +112,7 @@ struct HashMap {
 			KeyValue *kv;
 			while(current_pos < map->cap) {
 
-				pos_in_group = current_pos & (GROUP_WIDTH - 1);
+				pos_in_group = current_pos & (HASH_MAP_GROUP_WIDTH - 1);
 				group_index = current_pos - pos_in_group;
 
 				gr = *(Group*)(map->data + group_index);
@@ -122,7 +128,7 @@ struct HashMap {
 					return kv;
 				}
 
-				current_pos += GROUP_WIDTH - pos_in_group;
+				current_pos += HASH_MAP_GROUP_WIDTH - pos_in_group;
 			}
 			return NULL;
         }
@@ -142,10 +148,10 @@ struct HashMap {
         return ret;
     }
     void init(u64 initial_cap) {
-        cap        = align(initial_cap, GROUP_WIDTH);
+        cap        = align(initial_cap, HASH_MAP_GROUP_WIDTH);
         slots_left = ((cap + 1) / 8) * 7;
-        data       = malloc_h(cap * sizeof(KeyValue) + cap, GROUP_WIDTH);
-        for(u64 i = 0; i < cap; i += GROUP_WIDTH) {
+        data       = malloc_h(cap * sizeof(KeyValue) + cap, HASH_MAP_GROUP_WIDTH);
+        for(u64 i = 0; i < cap; i += HASH_MAP_GROUP_WIDTH) {
             make_group_empty(data + i);
         }
     }
@@ -156,10 +162,10 @@ struct HashMap {
             u64 old_cap = cap;
 
             checked_mul(cap, 2);
-            data = malloc_h(cap + cap * sizeof(KeyValue), GROUP_WIDTH);
+            data = malloc_h(cap + cap * sizeof(KeyValue), HASH_MAP_GROUP_WIDTH);
             slots_left = ((cap + 1) / 8) * 7;
 
-            for(u64 i = 0; i < cap; i += GROUP_WIDTH) {
+            for(u64 i = 0; i < cap; i += HASH_MAP_GROUP_WIDTH) {
                 make_group_empty(data + i);
             }
 
@@ -168,7 +174,7 @@ struct HashMap {
             KeyValue *kv;
             u16 mask;
             u32 tz;
-            for(u64 group_index = 0; group_index < old_cap; group_index += GROUP_WIDTH) {
+            for(u64 group_index = 0; group_index < old_cap; group_index += HASH_MAP_GROUP_WIDTH) {
                 gr = Group::get_from_index(group_index, old_data);
 
                 mask = gr.is_full();
@@ -194,7 +200,7 @@ struct HashMap {
         u8 top7 = hash >> 57;
 
         u64 exact_index = (hash & (cap - 1));
-        u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
+        u64 group_index = exact_index - (exact_index & (HASH_MAP_GROUP_WIDTH - 1));
 
         KeyValue *kv;
         Group gr;
@@ -207,7 +213,7 @@ struct HashMap {
             mask = gr.is_empty();
 
             if (!mask) {
-                inc += GROUP_WIDTH;
+                inc += HASH_MAP_GROUP_WIDTH;
                 group_index += inc;
                 group_index &= cap - 1;
                 continue;
@@ -236,10 +242,10 @@ struct HashMap {
             u64 old_cap = cap;
 
             checked_mul(cap, 2);
-            data = malloc_h(cap + cap * sizeof(KeyValue), GROUP_WIDTH);
+            data = malloc_h(cap + cap * sizeof(KeyValue), HASH_MAP_GROUP_WIDTH);
             slots_left = ((cap + 1) / 8) * 7;
 
-            for(u64 i = 0; i < cap; i += GROUP_WIDTH) {
+            for(u64 i = 0; i < cap; i += HASH_MAP_GROUP_WIDTH) {
                 make_group_empty(data + i);
             }
 
@@ -248,7 +254,7 @@ struct HashMap {
             Group gr;
             u16 mask;
             u32 tz;
-            for(u64 group_index = 0; group_index < old_cap; group_index += GROUP_WIDTH) {
+            for(u64 group_index = 0; group_index < old_cap; group_index += HASH_MAP_GROUP_WIDTH) {
                 gr = *(Group*)(old_data + group_index);
 
                 mask = gr.is_full();
@@ -273,7 +279,7 @@ struct HashMap {
         u8 top7 = hash >> 57;
 
         u64 exact_index = (hash & (cap - 1));
-        u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
+        u64 group_index = exact_index - (exact_index & (HASH_MAP_GROUP_WIDTH - 1));
 
         KeyValue *kv;
         Group gr;
@@ -286,7 +292,7 @@ struct HashMap {
             mask = gr.is_empty();
 
             if (!mask) {
-                inc += GROUP_WIDTH;
+                inc += HASH_MAP_GROUP_WIDTH;
                 group_index += inc;
                 group_index &= cap - 1;
                 continue;
@@ -315,10 +321,10 @@ struct HashMap {
             u64 old_cap = cap;
 
             checked_mul(cap, 2);
-            data = malloc_h(cap + cap * sizeof(KeyValue), GROUP_WIDTH);
+            data = malloc_h(cap + cap * sizeof(KeyValue), HASH_MAP_GROUP_WIDTH);
             slots_left = ((cap + 1) / 8) * 7;
 
-            for(u64 i = 0; i < cap; i += GROUP_WIDTH) {
+            for(u64 i = 0; i < cap; i += HASH_MAP_GROUP_WIDTH) {
                 make_group_empty(data + i);
             }
 
@@ -326,7 +332,7 @@ struct HashMap {
             Group gr;
             u16 mask;
             u32 tz;
-            for(u64 group_index = 0; group_index < old_cap; group_index += GROUP_WIDTH) {
+            for(u64 group_index = 0; group_index < old_cap; group_index += HASH_MAP_GROUP_WIDTH) {
                 gr = *(Group*)(old_data + group_index);
 
                 mask = gr.is_full();
@@ -352,7 +358,7 @@ struct HashMap {
         u8 top7 = hash >> 57;
 
         u64 exact_index = (hash & (cap - 1));
-        u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
+        u64 group_index = exact_index - (exact_index & (HASH_MAP_GROUP_WIDTH - 1));
 
         KeyValue *kv;
         Group gr;
@@ -365,7 +371,7 @@ struct HashMap {
             mask = gr.is_empty();
 
             if (!mask) {
-                inc += GROUP_WIDTH;
+                inc += HASH_MAP_GROUP_WIDTH;
                 group_index += inc;
                 group_index &= cap - 1;
                 continue;
@@ -390,7 +396,7 @@ struct HashMap {
         u64 hash = hash_bytes((void*)&key, sizeof(key));
         u8 top7 = hash >> 57;
         u64 exact_index = hash & (cap - 1);
-        u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
+        u64 group_index = exact_index - (exact_index & (HASH_MAP_GROUP_WIDTH - 1));
 
         KeyValue *kv;
         Group gr;
@@ -415,7 +421,7 @@ struct HashMap {
                 }
             }
 
-            inc += GROUP_WIDTH;
+            inc += HASH_MAP_GROUP_WIDTH;
             group_index += inc;
             group_index &= cap - 1;
         }
@@ -428,7 +434,7 @@ struct HashMap {
         u64 hash = hash_bytes((void*)key, sizeof(*key));
         u8 top7 = hash >> 57;
         u64 exact_index = hash & (cap - 1);
-        u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
+        u64 group_index = exact_index - (exact_index & (HASH_MAP_GROUP_WIDTH - 1));
 
         KeyValue *kv;
         Group gr;
@@ -453,7 +459,7 @@ struct HashMap {
                 }
             }
 
-            inc += GROUP_WIDTH;
+            inc += HASH_MAP_GROUP_WIDTH;
             group_index += inc;
             group_index &= cap - 1;
         }
@@ -462,7 +468,7 @@ struct HashMap {
     V* find_hash(u64 hash) {
         u8 top7 = hash >> 57;
         u64 exact_index = hash & (cap - 1);
-        u64 group_index = exact_index - (exact_index & (GROUP_WIDTH - 1));
+        u64 group_index = exact_index - (exact_index & (HASH_MAP_GROUP_WIDTH - 1));
 
         KeyValue *kv;
         Group gr;
@@ -487,11 +493,49 @@ struct HashMap {
                 }
             }
 
-            inc += GROUP_WIDTH;
+            inc += HASH_MAP_GROUP_WIDTH;
             group_index += inc;
             group_index &= cap - 1;
         }
         return NULL;
+    }
+
+    bool delete_hash(u64 hash) {
+        u8 top7 = hash >> 57;
+        u64 exact_index = hash & (cap - 1);
+        u64 group_index = exact_index - (exact_index & (HASH_MAP_GROUP_WIDTH - 1));
+
+        KeyValue *kv;
+        Group gr;
+        u16 mask;
+        u32 tz;
+        u64 inc = 0;
+        while(inc < cap) {
+            gr = Group::get_from_index(group_index, data);
+            mask = gr.match_byte(top7);
+
+            if (mask) {
+                // Ik the while catches an empty mask, but I want to skip the pointer arithmetic
+                kv = (KeyValue*)(data + cap);
+                while(mask) {
+                    tz = count_trailing_zeros_u16(mask);
+                    exact_index = group_index + tz;
+
+                    if (kv[exact_index].key == hash) {
+                        data[exact_index] = HASH_MAP_EMPTY;
+                        slots_left++;
+                        return true;
+                    }
+
+                    mask ^= 1 << tz;
+                }
+            }
+
+            inc += HASH_MAP_GROUP_WIDTH;
+            group_index += inc;
+            group_index &= cap - 1;
+        }
+        return false;
     }
 
     void kill() {
