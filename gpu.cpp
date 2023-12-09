@@ -1562,22 +1562,25 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
         pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
     }
 
-    Gpu_Tex_Allocation allocation = args->allocations[idx];
-    u8  state  = args->states[idx];
+    Gpu_Tex_Allocation *allocations = args->allocations;
+    Gpu_Tex_Allocation allocation   = allocations[idx];
     u8 *states = args->states;
+    u8  state  = states[idx];
 
     // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
     // would not need to be memcpyd, just swapped with pos.
-    memmove(weights + pos + 1, weights + pos, idx - pos);
-    memmove(states  + pos + 1, states  + pos, idx - pos);
+    memmove(weights      + pos + 1, weights + pos, idx - pos);
+    memmove(states       + pos + 1, states  + pos, idx - pos);
+    memmove(allocations  + pos + 1, states  + pos, idx - pos);
 
-    weights[pos] = w;
-    states[pos]  = state;
-    args->allocations[pos] = allocation;
+    weights    [pos] = w;
+    states     [pos] = state;
+    allocations[pos] = allocation;
 
     b = _mm_set1_epi32(pos - 1);
     c = _mm_set1_epi32(idx);
     inc = 0;
+
     u32 *indices = args->indices;
     while(inc < count) {
         a = _mm_load_si128((__m128i*)(indices + inc));
@@ -1638,7 +1641,8 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
         pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
     }
 
-    Gpu_Allocation allocation = args->allocations[idx];
+    Gpu_Allocation *allocations = args->allocations;
+    Gpu_Allocation  allocation  = allocations[idx];
     u8  state  = args->states[idx];
     u8 *states = args->states;
 
@@ -1646,10 +1650,11 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     // would not need to be memcpyd, just swapped with pos.
     memmove(weights + pos + 1, weights + pos, idx - pos);
     memmove(states  + pos + 1, states  + pos, idx - pos);
+    memmove(allocations  + pos + 1, states  + pos, idx - pos);
 
-    weights[pos] = w;
-    states[pos]  = state;
-    args->allocations[pos] = allocation;
+    weights    [pos] = w;
+    states     [pos] = state;
+    allocations[pos] = allocation;
 
     b = _mm_set1_epi32(pos - 1);
     c = _mm_set1_epi32(idx);

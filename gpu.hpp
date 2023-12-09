@@ -455,14 +455,34 @@ inline static void upload_queue_make_empty(Gpu_Allocator *alloc) {
     alloc->upload_queue_byte_count = 0;
 }
 
-struct Gpu_Tex_Allocation { // @Note I would like struct to be smaller. Cannot see a good shrink rn...
-    u64 stage_offset;
-    u64 upload_offset;
-    u64 size; // aligned to bit granularity (no reason to keep it as it is)
-    u32 width;
-    u32 height;
+//
+// @Note I would like struct to be smaller. Cannot see a good shrink rn...
+//
+// UPDATE: @Todo Switch the tex allocator to not shuffle allocations according to weight, instead just search for the
+// smallest weight and use its index to look up the texture allocation from the unchanging array,
+// because this struct is just way too big to justify the shuffle caching method I am using... - Sol 9 Dec 2023
+//
+// UPDATE: Nvm, I have decided to stick with the shuffle system: although it absolutely is expensive to do the
+// allocation shuffle every time we add to the queue, this can be just be a job and another thread can take this
+// relatively expensive work. I am happy with this, because it means that submission will be as fast as possible.
+// This explanation makes sense because the work of queueing can just slow down one worker thread, at a time when
+// this is not an issue: there will be lots of allocations from lots of models that will want to be queued, which
+// will create lots of consistent, on going work. However submission is one big job of taking all these allocations
+// and sticking them in at the end, so stretching this work out over the staging period is something I think I am
+// ok with. It is untested, but it works with my mental model, so I will keep it for now.
+//     - Sol 9 Dec 2023
+//
+//
+struct Gpu_Tex_Allocation { // 52 bytes, padded to cache line
+    u64     stage_offset;
+    u64     upload_offset;
+    u64     size; // aligned to bit granularity (no reason to keep it as it is)
+    u32     width;
+    u32     height;
     VkImage image;
     String  file_name;
+
+    char pad[12]; // pad to cache line
 };
 struct Gpu_Tex_Allocator {
     u32  allocation_cap;
