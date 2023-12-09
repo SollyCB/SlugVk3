@@ -107,24 +107,6 @@ struct Descriptor_Allocator {
     VkPhysicalDeviceDescriptorBufferPropertiesEXT info;
 };
 
-u8* descriptor_allocate_layout(Descriptor_Allocator *alloc, u64 size, u64 *offset);
-
-void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count,
-                                     VkDescriptorDataEXT *datas, u8 *mem);
-void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count,
-                                             VkDescriptorDataEXT *datas, u8 *mem);
-void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count,
-                                       VkDescriptorDataEXT *datas, u8 *mem);
-
-inline static void descriptor_allocator_reset(Descriptor_Allocator *allocator) {
-    allocator->used = 0;
-}
-inline static u64 descriptor_get_binding_offset(VkDescriptorSetLayout layout, u32 binding) {
-    u64 ret;
-    vkGetDescriptorSetLayoutBindingOffsetEXT(get_gpu_instance()->device, layout, binding, &ret);
-    return ret;
-}
-
 struct Shader {
     Shader_Id id;
     u32 layout_index;
@@ -680,6 +662,38 @@ inline static void uniform_allocator_reset_and_zero(Uniform_Allocator *allocator
     memset(allocator->mem, 0, allocator->used);
     allocator->used = 0;
 }
+
+inline static void vkGetDescriptor(VkDevice device, const VkDescriptorGetInfoEXT* pDescriptorGetInfo,
+                                       u64 dataSize, void* pDescriptor)
+{
+    auto func = (PFN_vkGetDescriptorEXT)vkGetDeviceProcAddr(device, "vkGetDescriptorEXT");
+    return func(device, pDescriptorGetInfo, dataSize, pDescriptor);
+}
+inline static void vkGetDescriptorSetLayoutBindingOffset(VkDevice device, VkDescriptorSetLayout layout,
+                                                       u32 binding, u64 *offset)
+{
+    auto func = (PFN_vkGetDescriptorSetLayoutBindingOffsetEXT)vkGetDeviceProcAddr(device, "vkGetDescriptorSetLayoutBindingOffsetEXT");
+    return func(device, layout, binding, offset);
+}
+
+u8* descriptor_allocate_layout(Descriptor_Allocator *alloc, u64 size, u64 *offset);
+
+void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count,
+                                     VkDescriptorDataEXT *datas, u8 *mem);
+void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count,
+                                             VkDescriptorDataEXT *datas, u8 *mem);
+void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count,
+                                       VkDescriptorDataEXT *datas, u8 *mem);
+
+inline static void descriptor_allocator_reset(Descriptor_Allocator *allocator) {
+    allocator->used = 0;
+}
+inline static u64 descriptor_get_binding_offset(VkDescriptorSetLayout layout, u32 binding) {
+    u64 ret;
+    vkGetDescriptorSetLayoutBindingOffsetEXT(get_gpu_instance()->device, layout, binding, &ret);
+    return ret;
+}
+
     /* Allocation End */
 
     /* Renderpass Framebuffer Pipeline */

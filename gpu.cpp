@@ -1148,12 +1148,12 @@ void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 co
 
         // These branches will always be predicted.
         if (alloc->info.combinedImageSamplerDescriptorSingleArray) {
-            vkGetDescriptorEXT(device, &get_info, combined_size, mem + (i * combined_size));
+            vkGetDescriptor(device, &get_info, combined_size, mem + (i * combined_size));
         } else {
             //
             // This is awkward, but I guess it is the only way...
             //
-            vkGetDescriptorEXT(device, &get_info, combined_size, tmp);
+            vkGetDescriptor(device, &get_info, combined_size, tmp);
             memcpy(mem + (i * image_size), tmp, image_size);
             memcpy(mem + sampler_offset + (i * sampler_size), tmp + image_size, sampler_size);
         }
@@ -1169,7 +1169,7 @@ void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count, VkD
     u64 ubo_size = alloc->info.uniformBufferDescriptorSize;
     for(u32 i = 0; i < count; ++i) {
         get_info.data = datas[i];
-        vkGetDescriptorEXT(device, &get_info, ubo_size, mem + (i * ubo_size));
+        vkGetDescriptor(device, &get_info, ubo_size, mem + (i * ubo_size));
     }
 }
 
@@ -1182,7 +1182,7 @@ void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count, V
     u64 ia_size = alloc->info.inputAttachmentDescriptorSize;
     for(u32 i = 0; i < count; ++i) {
         get_info.data = datas[i];
-        vkGetDescriptorEXT(device, &get_info, ia_size, mem + (i * ia_size));
+        vkGetDescriptor(device, &get_info, ia_size, mem + (i * ia_size));
     }
 }
 
