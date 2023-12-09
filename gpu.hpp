@@ -57,6 +57,7 @@ enum Memory_Flag_Bits {
     GPU_MEMORY_DISCRETE_TRANSFER_BIT = 0x02,
 };
 typedef u8 Memory_Flags;
+
 struct Gpu_Memory {
 
     u32 attachment_mem_index;
@@ -97,6 +98,7 @@ struct Gpu_Memory {
 
     Memory_Flags flags;
 };
+
 struct Descriptor_Allocator {
     u64 cap;
     u64 used;
@@ -119,6 +121,7 @@ struct Shader {
     u32 *layout_indices;
     #endif
 };
+
 struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with something better.
     u32 shader_cap            = 128;
     u32 descriptor_set_cap    = 128; // @Note Idk how low this is.
@@ -323,10 +326,10 @@ enum Gpu_Allocator_Result {
     GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE       = 8,
 };
 
-#define CHECK_GPU_ALLOCATOR_RESULT(res)          \
+#define CHECK_GPU_ALLOCATOR_RESULT(res)              \
     if (res != GPU_ALLOCATOR_RESULT_SUCCESS) {       \
         assert(res == GPU_ALLOCATOR_RESULT_SUCCESS); \
-        return {};                               \
+        return {};                                   \
     }
 
 enum Gpu_Allocation_State_Flag_Bits {
@@ -602,7 +605,7 @@ typedef void                 (*Gpu_Tex_Allocator_Queue_Remove_Func)(Gpu_Tex_Allo
 typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Submit_Func)    (Gpu_Allocator*);
 typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Submit_Func)(Gpu_Tex_Allocator*);
 
-struct Sampler { // This is potentially a bad name
+struct Sampler_Info {
     VkSamplerAddressMode wrap_s;
     VkSamplerAddressMode wrap_t;
     VkSamplerMipmapMode  mipmap_mode;
@@ -611,7 +614,7 @@ struct Sampler { // This is potentially a bad name
     VkFilter min_filter;
 
     VkSampler sampler;
-    u32 user_count;
+    u32       user_count;
 };
 enum Sampler_Allocator_Result {
     SAMPLER_ALLOCATOR_RESULT_CACHED      = 0,
@@ -626,7 +629,7 @@ struct Sampler_Allocator {
     u32 count;
     u32 active;
     u32 in_use;
-    HashMap<u64, Sampler> map;
+    HashMap<u64, Sampler_Info> map;
 
     u64 *hashes;
     u8  *weights;
@@ -636,7 +639,7 @@ struct Sampler_Allocator {
 Sampler_Allocator create_sampler_allocator (u32 cap);
 void              destroy_sampler_allocator(Sampler_Allocator *alloc);
 
-u64                      add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info);
+u64                      add_sampler(Sampler_Allocator *alloc, Sampler_Info *sampler_info);
 Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler);
 
 struct Uniform_Allocator {

@@ -3893,7 +3893,7 @@ Sampler_Allocator create_sampler_allocator(u32 cap) {
         ret.cap = align(device_cap, 16); // malloc'd size must be aligned to 16 for correct_weights() simd
 
     ret.device_cap = device_cap;
-    ret.map = HashMap<u64, Sampler>::get(ret.cap);
+    ret.map = HashMap<u64, Sampler_Info>::get(ret.cap);
 
     // Align 16 for SIMD
     u64 aligned_cap = align(ret.cap, 16);
@@ -3931,7 +3931,7 @@ void destroy_sampler_allocator(Sampler_Allocator *alloc) {
    marked as having an active sampler linked to it (its top bit is set).
 
 */
-u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
+u64 add_sampler(Sampler_Allocator *alloc, Sampler_Info *sampler_info) {
     //
     // @Note Ik that the hash will change when the sampler handle in the 'Sampler' type
     // changes, but calling 'insert_hash()' doesnt actually do a rehash, so the hash that the
@@ -3939,7 +3939,7 @@ u64 add_sampler(Sampler_Allocator *alloc, Sampler *sampler_info) {
     //
     sampler_info->sampler = NULL; // Ensure only type data influences hash, not the handle
 
-    u64 hash = hash_bytes(sampler_info, sizeof(Sampler));
+    u64 hash = hash_bytes(sampler_info, sizeof(Sampler_Info));
     u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
     if (h_idx != Max_u32) {
         adjust_sampler_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, 1, 0);
@@ -3965,7 +3965,7 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
         return SAMPLER_ALLOCATOR_RESULT_INVALID_KEY;
 
     adjust_sampler_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, 5, 1);
-    Sampler *info = alloc->map.find_hash(hash);
+    Sampler_Info *info = alloc->map.find_hash(hash);
 
     Sampler_Allocator_Result ret = SAMPLER_ALLOCATOR_RESULT_CACHED;
 
@@ -3992,8 +3992,8 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
         VkDevice device = get_gpu_instance()->device;
         if (alloc->active == alloc->device_cap) {
 
-            u32      evict_idx = sampler_find_lowest_weight_flagged_active_not_in_use(alloc->count, alloc->flags);
-            Sampler *to_evict  = alloc->map.find_hash(alloc->hashes[evict_idx]);
+            u32           evict_idx = sampler_find_lowest_weight_flagged_active_not_in_use(alloc->count, alloc->flags);
+            Sampler_Info *to_evict  = alloc->map.find_hash(alloc->hashes[evict_idx]);
 
             // Clear 'active' flag
             alloc->flags[evict_idx] &= ~(u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
@@ -4017,7 +4017,7 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
 }
 
 void done_with_sampler(Sampler_Allocator *alloc, u64 hash) {
-    Sampler *sampler = alloc->map.find_hash(hash);
+    Sampler_Info *sampler = alloc->map.find_hash(hash);
 
     assert(sampler && "This is not a valid sampler hash");
     sampler->user_count -= 1 & (int)(sampler->user_count > 0);
@@ -5191,7 +5191,7 @@ Static_Model load_static_model(Model_Allocators *allocs, String *model_name, Str
     }
 
     // Load Material Data
-    Sampler        sampler_info;
+    Sampler_Info  sampler_info;
     Gltf_Material *gltf_mat = gltf.materials;
     Gltf_Texture  *gltf_tex;
     Gltf_Sampler  *gltf_sampler;
