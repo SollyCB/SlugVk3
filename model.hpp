@@ -1,40 +1,7 @@
-/*
-------------------------------------------------------------------------------------------------------------------------
-
-   ** The below explanation is a little incoherent at points, but the main point I think is plenty clear - I just **
-   ** quickly wrote it out. @Todo improve the explanation **
-
-------------------------------------------------------------------------------------------------------------------------
-
-   This file is really intended to simulate model subsets as a system for model loading. In a more developed
-   app, I would want to load models as they correspond to particular subsets. For instance, I imagine here
-   CesiumMan as a player model, as it is an animated figure with some arbitrary skin an material attributes.
-
-   If one were to use only one model loading function which branched on all potential vertex and material
-   attributes that a model might have, this would be an expensive and annoying to maintain function. It would
-   be preferable to instead branch once outside the function in order to call the appropriate function to load
-   the given model type. This requires writing more functions, but each function is faaar easier to reason
-   about, as it is clear about what exactly it will be doing.
-
-   Some examples: it is likely the case that we have many building models, but in terms of loading them all,
-   we only need one function which can manage them all without having to dynamically branch, as a building has
-   a predefined set of attributes (maybe a metallic roughness texture, normal texture, but no emissive
-   texture). Now we want to load cars, but we cannot use the same function, as now we need an emissive texture
-   for the headlights, plus the glass, interior and the body require different meshes, primitives etc., but
-   again one function is appropriate for all cars.
-
-   As I do have a number of models which all fit given subsets, I am simulating it in this little way. I think
-   it is a decent implementation...???
-
-                                       ******** @Todo @Note *********
-   I understand that for a larger app, defining the models in this way where the programmer has to order
-   the models and define what type they are a part of is unsustainable, so later I will come to writing some
-   custom file format or something which makes it easier for a human to enumerate models, and then this file
-   can be generated  automatically.
-*/
 #ifndef SOL_MODEL_HPP_INCLUDE_GUARD_
 #define SOL_MODEL_HPP_INCLUDE_GUARD_
 
+#include <vulkan/vulkan_core.h>
 #include "typedef.h"
 #include "string.hpp"
 
@@ -47,172 +14,190 @@ static String g_model_dir_names[] = {
     cstr_to_string("models/cesium-man/"),
 };
 
-// @Note model ids must appear in the enum in the same order that they appear in 'model_file_names'
-enum Model_Id {
-    MODEL_ID_CUBE       = 0,
-    MODEL_ID_CESIUM_MAN = 1,
-};
-enum Model_Type { // These are mostly just example types for now - Sol 6 Dec 2023
-    MODEL_TYPE_INVALID  = 0,
-    MODEL_TYPE_CUBE     = 1,
-    MODEL_TYPE_PLAYER   = 2,
-    MODEL_TYPE_BUILDING = 3,
-    MODEL_TYPE_CAR      = 4,
-};
-
-struct Model_Identifier {
-    Model_Id   id;
-    Model_Type type;
-};
-
-// @Note This identifier array must be ordered by model id
-static Model_Identifier g_model_identifiers[] = {
-    {MODEL_ID_CUBE,       MODEL_TYPE_CUBE},
-    {MODEL_ID_CESIUM_MAN, MODEL_TYPE_PLAYER},
-};
-
 static const u32 g_model_count = sizeof(g_model_file_names) / sizeof(g_model_file_names[0]);
 
-struct Animation_Sampler {};
+struct Texture_Info {
+    u32 texture;
+    u32 tex_coord;
+};
 
-struct Model_Cube {
-    Model_Type type;
+struct Pbr_Metallic_Roughness { // 40 bytes
+    float        base_color_factor[4] = {1,1,1,1};
+    float        metallic_factor      = 1;
+    float        roughness_factor     = 1;
+    Texture_Info base_color_texture;
+    Texture_Info metallic_roughness_texture;
+};
 
-    //
-    // On other, more complicated models, this info would be arrayed by primitives,
-    // but a cube model type only hase one primitive.
-    //
+struct Normal_Texture { // 12 bytes
+    float        scale = 1;
+    Texture_Info texture;
+};
 
-    u32 tex_key_base;
-    u32 tex_key_pbr;
-    u64 sampler_key_base;
-    u64 sampler_key_pbr;
+struct Occlusion_Texture { // 12 bytes
+    float        strength = 1;
+    Texture_Info texture;
+};
 
-    u32 index_key;
-    u32 vertex_key;
+enum Material_Flag_Bits { // @Todo I had duplicate flags here, indicating I was going to add smtg - check gltf mat ref
+    MATERIAL_PBR_METALLIC_ROUGHNESS_BIT = 0x0001,
+    MATERIAL_NORMAL_BIT                 = 0x0002,
+    MATERIAL_OCCLUSION_BIT              = 0x0004,
+    MATERIAL_EMISSIVE_BIT               = 0x0008,
+    MATERIAL_MASK_BIT                   = 0x0010,
+    MATERIAL_BLEND_BIT                  = 0x0020,
+    MATERIAL_DOUBLE_SIDED_BIT           = 0x0040,
+};
+typedef u32 Material_Flags;
 
-    u32 count; // draw count (num indices)
-    VkIndexType index_type;
+struct Material { // 92 bytes
+    Material_Flags         flags;
 
-    // Allocation offsets
-    u64 offset_index;
-    u64 offset_position;
-    u64 offset_normal;
-    u64 offset_tangent;
-    u64 offset_tex_coords;
+    Pbr_Metallic_Roughness pbr_metallic_roughness;
+    Normal_Texture         normal_texture;
+    Occlusion_Texture      occlusion_texture;
+    Texture_Info           emissive_texture;
+    float                  emissive_factor[3] = {0,0,0};
+    float                  alpha_cutoff       = 0.5;
 
-    // Pipeline info
+    char pad[128 - 92];
+};
+
+enum Mesh_Primitive_Attribute_Type {
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORD_0,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORD_1,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORD_2,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORD_3,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_COLOR_0,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_COLOR_1,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_COLOR_2,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_COLOR_3,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS_0,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS_1,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS_2,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS_3,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS_0,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS_1,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS_2,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS_3,
+};
+
+struct Mesh_Primitive_Attribute {
+    u32 accessor;
+    Mesh_Primitive_Attribute_Type type;
+};
+
+struct Morph_Target {
+    u32 target_count;
+    Mesh_Primitive_Attribute *attributes;
+};
+
+struct Mesh_Primitive {
     VkPrimitiveTopology topology;
 
-    u32 stride_position;
-    u32 stride_normal;
-    u32 stride_tangent;
-    u32 stride_tex_coords;
-
-    VkFormat fmt_position;
-    VkFormat fmt_normal;
-    VkFormat fmt_tangent;
-    VkFormat fmt_tex_coords;
+    u32 indices;
+    u32 material;
+    u32 attribute_count;
+    Mesh_Primitive_Attribute *attributes;
 };
-constexpr u32 g_model_type_primitive_count_cube          = 1;
-constexpr u32 g_model_type_descriptor_count_cube         = 2; // 2 textures: base + pbr
-constexpr u32 g_model_type_descriptor_binding_count_cube = 1; // 1 array[2] of combined image samplers.
-constexpr u32 g_model_type_descriptor_set_count_cube     = 1; // 1 set: texture set
 
-// @Unimplemented I am just using player to imagine how a more complex model would work, to see if my
-// system scales.
-struct Model_Player_Bone {};
-struct Model_Player_Skeleton {
-    Model_Player_Bone bones[16];
+struct Mesh {
+    u32  primitive_count;
+    u64 *primitives;
+    // @Todo Idk how to store and retrieve weights off the top of my head.
 };
-struct Model_Player_Run {};
-struct Model_Player_Walk {};
-struct Model_Player { // @Unimplemented
-    Model_Type type;
 
-    Model_Player_Skeleton skeleton;
-    Model_Player_Run      run;
-    Model_Player_Walk     walk;
+enum Buffer_View_Type {
+    BUFFER_VIEW_TYPE_INDEX,
+    BUFFER_VIEW_TYPE_VERTEX,
 };
-const u32 g_model_type_descriptor_count_player  = 1; // @Todo This value is not correct, just random one for now.
-const u32 g_model_type_primitive_count_player   = 1;
-
-// @Unimplemented I am just using car to imagine how a more complex model would work, to see if my
-// system scales.
-struct Model_Mesh_Car_Glass {
-    u32 allocation_key_index;
-    u32 allocation_key_position;
-    u32 allocation_key_normal;
-    u32 allocation_key_tex_coords;
-
-    VkPrimitiveTopology topology;
-
-    u32 tex_key_base;
-    u32 tex_key_slightly_broken;
-    u32 tex_key_medium_broken;
-    u32 tex_key_very_broken;
-    u64 sampler_key_base;
-    u64 sampler_key_pbr;
+struct Buffer_View {
+    Buffer_View_Type type;
+    u32 allocation_key;
+    u64 byte_stride;
 };
-struct Model_Mesh_Car_Body {
-    u32 allocation_key_index;
-    u32 allocation_key_position;
-    u32 allocation_key_normal;
-    u32 allocation_key_tex_coords;
 
-    VkPrimitiveTopology topology;
+enum Accessor_Component_Type {
+    ACCESSOR_COMPONENT_TYPE_SCHAR = 5120,
+    ACCESSOR_COMPONENT_TYPE_UCHAR = 5121,
+    ACCESSOR_COMPONENT_TYPE_S16   = 5122,
+    ACCESSOR_COMPONENT_TYPE_U16   = 5123,
+    ACCESSOR_COMPONENT_TYPE_U32   = 5125,
+    ACCESSOR_COMPONENT_TYPE_FLOAT = 5126,
+};
 
-    u32 tex_key_base;
-    u32 tex_key_pbr;
-    u64 sampler_key_base;
-    u64 sampler_key_pbr;
-};
-struct Model_Mesh_Car_Wheel {
-    u32 allocation_key_index;
-    u32 allocation_key_position;
-    u32 allocation_key_normal;
-    u32 allocation_key_tex_coords;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_SCALAR =  1;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_VEC2   =  2;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_VEC3   =  3;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_VEC4   =  4;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_MAT2   =  4;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_MAT3   =  9;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_MAT4   = 16;
 
-    VkPrimitiveTopology topology;
+enum Accessor_Flag_Bits {
+    ACCESSOR_BUFFER_VIEW_BIT          = 0x0001,
+    ACCESSOR_BYTE_OFFSET_BIT          = 0x0002,
+    ACCESSOR_NORMALIZED_BIT           = 0x0004,
+    ACCESSOR_MAX_MIN_BIT              = 0x0008,
+    ACCESSOR_SPARSE_BIT               = 0x0010,
+    ACCESSOR_COMPONENT_TYPE_SCHAR_BIT = 0x0020,
+    ACCESSOR_COMPONENT_TYPE_UCHAR_BIT = 0x0040,
+    ACCESSOR_COMPONENT_TYPE_S16_BIT   = 0x0080,
+    ACCESSOR_COMPONENT_TYPE_U16_BIT   = 0x0100,
+    ACCESSOR_COMPONENT_TYPE_U32_BIT   = 0x0200,
+    ACCESSOR_COMPONENT_TYPE_FLOAT_BIT = 0x0400,
+    ACCESSOR_TYPE_SCALAR              = 0x0080,
+    ACCESSOR_TYPE_VEC2                = 0x0100,
+    ACCESSOR_TYPE_VEC3                = 0x0200,
+    ACCESSOR_TYPE_VEC4                = 0x0400,
+    ACCESSOR_TYPE_MAT2                = 0x0800,
+    ACCESSOR_TYPE_MAT3                = 0x1000,
+    ACCESSOR_TYPE_MAT4                = 0x2000,
 
-    u32 tex_key_base;
-    u32 tex_key_pbr;
-    u64 sampler_key_base;
-    u64 sampler_key_pbr;
-};
-union Model_Car_Mesh {
-    Model_Mesh_Car_Glass  mesh_glass;
-    Model_Mesh_Car_Body   mesh_body;
-    Model_Mesh_Car_Wheel  mesh_wheel;
-};
-struct Model_Car_Spin_Wheel {
-    u32 wheel_index;
-    Animation_Sampler animation_sampler;
-};
-struct Model_Car_Turn_Wheel {
-    u32 wheel_index;
-    Animation_Sampler animation_sampler;
-};
-struct Model_Car_Tilt_Body {
-    Animation_Sampler animation_sampler;
-};
-struct Model_Car {
-    Model_Type type;
+    ACCESSOR_TYPE_BITS = ACCESSOR_TYPE_SCALAR | ACCESSOR_TYPE_VEC2 | ACCESSOR_TYPE_VEC3 |
+                         ACCESSOR_TYPE_VEC4   | ACCESSOR_TYPE_MAT2 | ACCESSOR_TYPE_MAT3 |
+                         ACCESSOR_TYPE_MAT4,
 
-    Model_Mesh_Car_Glass  mesh_glass;
-    Model_Mesh_Car_Body   mesh_body;
-    Model_Mesh_Car_Wheel  mesh_wheel[4];
-
-    Model_Car_Spin_Wheel spin_wheel;
-    Model_Car_Turn_Wheel turn_wheel;
-    Model_Car_Tilt_Body  tilt_body;
+    ACCESSOR_COMPONENT_TYPE_BITS = ACCESSOR_COMPONENT_TYPE_SCHAR_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT |
+                                   ACCESSOR_COMPONENT_TYPE_S16_BIT   | ACCESSOR_COMPONENT_TYPE_U16_BIT   |
+                                   ACCESSOR_COMPONENT_TYPE_U32_BIT   |
+                                   ACCESSOR_COMPONENT_TYPE_FLOAT_BIT,
 };
-const u32 g_model_type_descriptor_count_car  = 1; // @Unimplemented This is just a random value
-const u32 g_model_type_primitive_count_car = 1;
+typedef u32 Accessor_Flags;
 
-union Model {
-    Model_Cube   cube;
-    Model_Player player;
+struct Accessor_Max_Min {
+    float max[16];
+    float min[16];
+};
+struct Accessor_Sparse {
+    u32 count;
+    u32 indices_buffer_view;
+    u32 values_buffer_view;
+    u64 indices_byte_offset;
+    u64 values_byte_offset;
+};
+
+struct Accessor {
+    Accessor_Flags flags;
+    u32 buffer_view;
+    u64 byte_offset;
+    u64 count;
+
+    Accessor_Max_Min *max_min;
+    Accessor_Sparse  *sparse;
+};
+
+struct Model {
+    String       model_data;
+    u32          accessor_count;
+    u32          buffer_view_count;
+    u32          mesh_count;
+    Accessor    *accessors;
+    Buffer_View *buffer_views;
+    Mesh        *meshes;
 };
 
 #endif // include guard
