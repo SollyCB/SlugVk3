@@ -962,10 +962,12 @@ void setup_memory_discrete(u32 device_mem_type, u32 host_mem_type, u32 both_mem_
     create_mem(gpu, device_mem_type, 1, TEXTURE_DEVICE_SIZE, &gpu->memory.texture_mem_device, 0.6);
 }
 void allocate_memory() {
-    Gpu *gpu = get_gpu_instance();
-    VkPhysicalDevice device = gpu->phys_device;
+    Gpu *gpu                     = get_gpu_instance();
+    VkPhysicalDevice phys_device = gpu->phys_device;
+    VkDevice device              = gpu->device;
+
     VkPhysicalDeviceMemoryProperties mem_props;
-    vkGetPhysicalDeviceMemoryProperties(device, &mem_props);
+    vkGetPhysicalDeviceMemoryProperties(phys_device, &mem_props);
 
     // Select largest heaps for device and host
     u32 largest_heap_device;
@@ -1040,17 +1042,21 @@ void allocate_memory() {
 
                         /*Create Descriptor Buffers*/
 
+    VkBuffer       sampler_descriptor_buffer;
+    VkBuffer       resource_descriptor_buffer;
+    VkDeviceMemory descriptor_buffer_memory;
+
     VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 
-    buffer_info.size  = ret.descriptor_buffer_size;
+    buffer_info.size  = DESCRIPTOR_BUFFER_SIZE;
     buffer_info.usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
 
-    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.sampler_descriptor_buffer);
+    auto check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &sampler_descriptor_buffer);
     DEBUG_OBJ_CREATION(vkCreateBuffer, check);
 
     buffer_info.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
 
-    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &ret.resource_descriptor_buffer);
+    check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &resource_descriptor_buffer);
     DEBUG_OBJ_CREATION(vkCreateBuffer, check);
 
     VkPhysicalDeviceDescriptorBufferPropertiesEXT buf_props;
@@ -1060,10 +1066,6 @@ void allocate_memory() {
     props2.pNext = &buf_props;
 
     vkGetPhysicalDeviceProperties2(gpu->phys_device, &props2);
-
-    VkBuffer       sampler_descriptor_buffer;
-    VkBuffer       resource_descriptor_buffer;
-    VkDeviceMemory descriptor_buffer_memory;
 
     VkBufferDeviceAddressInfo address_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     address_info.buffer = sampler_descriptor_buffer;
@@ -1176,7 +1178,11 @@ void free_memory() {
 
 // `Shaders + Descriptors
 Descriptor_Allocator get_descriptor_allocator(u64 size, u8 *mem, VkBuffer buf) {
-    Gpu *gpu = get_gpu_instance();
+    Gpu *gpu        = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    VkBufferDeviceAddressInfo address_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    address_info.buffer = buf;
 
     Descriptor_Allocator ret;
     ret.cap  = size;
@@ -1486,10 +1492,6 @@ static void gpu_shutdown_shaders() {
     for(u32 i = 0; i < mem->shader_count; ++i)
         vkDestroyShaderModule(device, mem->shaders[i].module, ALLOCATION_CALLBACKS);
 
-    vkDestroyBuffer(device, mem->sampler_descriptor_buffer, ALLOCATION_CALLBACKS);
-    vkDestroyBuffer(device, mem->resource_descriptor_buffer, ALLOCATION_CALLBACKS);
-    vkFreeMemory(device, mem->descriptor_buffer_memory, ALLOCATION_CALLBACKS);
-
     #if DEBUG
     for(u32 i = 0; i < mem->shader_count; ++i)
         free_h(mem->shaders[i].layout_indices);
@@ -1542,9 +1544,13 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u32 idx = args->indices[args->idx];
 
     // Find incremented weight
-    u8 w   = args->weights[idx];
-    u8 tmp = Max_u8 + (u8)(w + args->inc > w);
-    w      = (w + args->inc) | tmp;
+    u8 w    = args->weights[idx];
+    u8 tmp  = w + args->inc;
+    tmp    |= Max_u8 + (tmp >= w);
+    w       = (w + args->inc) | tmp;
+
+    // @Note Dont remove this
+    w     &= 0b0111'1111;
 
     args->weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
@@ -1553,12 +1559,18 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     __m128i d;
     __m128i e;
     u32 inc = 0;
-    u32 pos = Max_u32;
     u32 tmp32;
     u16 mask;
 
-    u8 *weights = args->weights;
     u32 count = args->count;
+
+    // if weights didnt change, dont loop
+    count &= ~(Max_u32 + (u32)(args->inc || args->dec));
+
+    // if weights didnt change, pos = idx
+    u32 pos = idx | ~(Max_u32 + (u32)(args->dec || args->inc));
+
+    u8 *weights = args->weights;
     for(inc = 0; inc < count; inc += 16) {
         // Decrement values
         a = _mm_load_si128((__m128i*)(weights + inc));
@@ -1588,11 +1600,9 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u8 *states = args->states;
     u8  state  = states[idx];
 
-    // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
-    // would not need to be memcpyd, just swapped with pos.
-    memmove(weights      + pos + 1, weights + pos, idx - pos);
-    memmove(states       + pos + 1, states  + pos, idx - pos);
-    memmove(allocations  + pos + 1, states  + pos, idx - pos);
+    memmove(weights     + pos + 1, weights + pos, idx - pos);
+    memmove(states      + pos + 1, states  + pos, idx - pos);
+    memmove(allocations + pos + 1, states  + pos, idx - pos);
 
     weights    [pos] = w;
     states     [pos] = state;
@@ -1621,9 +1631,13 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     u32 idx = args->indices[args->idx];
 
     // Find incremented weight
-    u8 w   = args->weights[idx];
-    u8 tmp = Max_u8 + (u8)(w + args->inc > w);
-    w      = (w + args->inc) | tmp;
+    u8 w    = args->weights[idx];
+    u8 tmp  = w + args->inc;
+    tmp    |= Max_u8 + (tmp >= w);
+    w       = (w + args->inc) | tmp;
+
+    // @Note Do not remove this.
+    w      &= 0b0111'1111;
 
     args->weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
@@ -1632,12 +1646,18 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     __m128i d;
     __m128i e;
     u32 inc = 0;
-    u32 pos = Max_u32;
     u32 tmp32;
     u16 mask;
 
-    u8 *weights = args->weights;
     u32 count = args->count;
+
+    // if weights didnt change, dont loop
+    count &= ~(Max_u32 + (u32)(args->inc || args->dec));
+
+    // if weights didnt change, pos = idx
+    u32 pos = idx | ~(Max_u32 + (u32)(args->dec || args->inc));
+
+    u8 *weights = args->weights;
     for(inc = 0; inc < count; inc += 16) {
         // Decrement values
         a = _mm_load_si128((__m128i*)(weights + inc));
@@ -1663,15 +1683,13 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     }
 
     Gpu_Allocation *allocations = args->allocations;
-    Gpu_Allocation  allocation  = allocations[idx];
-    u8  state  = args->states[idx];
+    Gpu_Allocation allocation   = allocations[idx];
     u8 *states = args->states;
+    u8  state  = states[idx];
 
-    // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
-    // would not need to be memcpyd, just swapped with pos.
-    memmove(weights + pos + 1, weights + pos, idx - pos);
-    memmove(states  + pos + 1, states  + pos, idx - pos);
-    memmove(allocations  + pos + 1, states  + pos, idx - pos);
+    memmove(weights     + pos + 1, weights + pos, idx - pos);
+    memmove(states      + pos + 1, states  + pos, idx - pos);
+    memmove(allocations + pos + 1, states  + pos, idx - pos);
 
     weights    [pos] = w;
     states     [pos] = state;
@@ -1680,6 +1698,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     b = _mm_set1_epi32(pos - 1);
     c = _mm_set1_epi32(idx);
     inc = 0;
+
     u32 *indices = args->indices;
     while(inc < count) {
         a = _mm_load_si128((__m128i*)(indices + inc));
@@ -1709,6 +1728,9 @@ void adjust_sampler_weights(u32 count, u8 *weights, u8 *flags, u64 *hashes, u32 
     u8 w   = weights[idx];
     u8 tmp = Max_u8 + (u8)(w + inc > w);
     w      = (w + inc) | tmp;
+
+    // @Note Dont remove this
+    w     &= 0b0111'1111;
 
     weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
@@ -2637,7 +2659,7 @@ Gpu_Allocator_Result staging_queue_begin(Gpu_Allocator *alloc) {
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
-Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
+Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust_weights) {
     if (alloc->to_stage_count >= alloc->to_stage_cap)
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
@@ -2645,6 +2667,10 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
     //
     // @Note This function does a number of things - see the allocator implementation explanation to
     // understand (grep '~MAID').
+
+    u32 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
+    u32 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+
     Weight_Args w_args = {
         .allocations = alloc->allocations,
         .weights     = alloc->allocation_weights,
@@ -2652,8 +2678,8 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key) {
         .indices     = alloc->allocation_indices,
         .count       = alloc->allocation_count,
         .idx = key,
-        .inc = 3,
-        .dec = 1 // @Test Find effective inc and dec values
+        .inc = inc,
+        .dec = dec, // @Test Find effective inc and dec values
     };
     Gpu_Allocation *allocations        = alloc->allocations;
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
@@ -2858,9 +2884,12 @@ Gpu_Allocator_Result upload_queue_begin(Gpu_Allocator *alloc) {
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
-Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
+Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust_weights) {
     if (alloc->to_upload_count >= alloc->to_upload_cap)
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
+
+    u32 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
+    u32 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
 
     Weight_Args w_args = {
         .allocations = alloc->allocations,
@@ -2869,8 +2898,8 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key) {
         .indices     = alloc->allocation_indices,
         .count       = alloc->allocation_count,
         .idx = key,
-        .inc = 3,
-        .dec = 1 // @Test Find effective inc and dec values
+        .inc = inc,
+        .dec = dec, // @Test Find effective inc and dec values
     };
 
     u32 idx = alloc->allocation_indices[key];
@@ -3296,9 +3325,13 @@ Gpu_Allocator_Result tex_staging_queue_begin(Gpu_Tex_Allocator *alloc) {
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
-Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
+Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bool adjust_weights) {
     // Increment the allocation's cache weight since it has been called on.
     // See implementation details to understand (grep '~MAID').
+
+    u32 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
+    u32 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+
     Tex_Weight_Args w_args = {
         .allocations = alloc->allocations,
         .weights     = alloc->allocation_weights,
@@ -3306,8 +3339,8 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
         .indices     = alloc->allocation_indices,
         .count       = alloc->allocation_count,
         .idx = key,
-        .inc = 3,
-        .dec = 1 // @Test Find effective inc and dec values
+        .inc = inc,
+        .dec = dec, // @Test Find effective inc and dec values
     };
 
     u32 allocation_count               = alloc->allocation_count;
@@ -3517,12 +3550,16 @@ Gpu_Allocator_Result tex_upload_queue_begin(Gpu_Tex_Allocator *alloc) {
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
-Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
+Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bool adjust_weights) {
     if (alloc->to_upload_count >= alloc->to_upload_cap)
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
     // Increment the allocation's weight since it has been referenced.
     // See implementation info (grep '~MAID').
+
+    u32 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
+    u32 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+
     Tex_Weight_Args w_args = {
         .allocations = alloc->allocations,
         .weights     = alloc->allocation_weights,
@@ -3530,8 +3567,8 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key) {
         .indices     = alloc->allocation_indices,
         .count       = alloc->allocation_count,
         .idx = key,
-        .inc = 3,
-        .dec = 1 // @Test Find effective inc and dec values
+        .inc = inc,
+        .dec = dec, // @Test Find effective inc and dec values
     };
 
     Gpu_Tex_Allocation *allocations    = alloc->allocations;

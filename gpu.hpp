@@ -406,7 +406,7 @@ Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc, u64 size, void *
 Gpu_Allocator_Result submit_allocation   (Gpu_Allocator *alloc, u32 *key);
 
 Gpu_Allocator_Result staging_queue_begin     (Gpu_Allocator *alloc);
-Gpu_Allocator_Result staging_queue_add       (Gpu_Allocator *alloc, u32 key);
+Gpu_Allocator_Result staging_queue_add       (Gpu_Allocator *alloc, u32 key, bool adjust_weights);
 Gpu_Allocator_Result staging_queue_submit    (Gpu_Allocator *alloc);
 void                 staging_queue_remove    (Gpu_Allocator *alloc, u32 key);
 
@@ -428,7 +428,7 @@ inline static void staging_queue_make_empty(Gpu_Allocator *alloc) {
 }
 
 Gpu_Allocator_Result upload_queue_begin     (Gpu_Allocator *alloc);
-Gpu_Allocator_Result upload_queue_add       (Gpu_Allocator *alloc, u32 key);
+Gpu_Allocator_Result upload_queue_add       (Gpu_Allocator *alloc, u32 key, bool adjust_weights);
 Gpu_Allocator_Result upload_queue_submit    (Gpu_Allocator *alloc);
 void                 upload_queue_remove    (Gpu_Allocator *alloc, u32 key);
 
@@ -551,7 +551,7 @@ void                 destroy_tex_allocator(Gpu_Tex_Allocator *alloc);
 Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name, u32 *key);
 
 Gpu_Allocator_Result tex_staging_queue_begin (Gpu_Tex_Allocator *alloc);
-Gpu_Allocator_Result tex_staging_queue_add   (Gpu_Tex_Allocator *alloc, u32 key);
+Gpu_Allocator_Result tex_staging_queue_add   (Gpu_Tex_Allocator *alloc, u32 key, bool adjust_weights);
 Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc);
 void                 tex_staging_queue_remove(Gpu_Tex_Allocator *alloc, u32 key);
 
@@ -573,7 +573,7 @@ inline static void tex_staging_queue_make_empty(Gpu_Tex_Allocator *alloc) {
 }
 
 Gpu_Allocator_Result tex_upload_queue_begin      (Gpu_Tex_Allocator *alloc);
-Gpu_Allocator_Result tex_upload_queue_add        (Gpu_Tex_Allocator *alloc, u32 key);
+Gpu_Allocator_Result tex_upload_queue_add        (Gpu_Tex_Allocator *alloc, u32 key, bool adjust_weights);
 Gpu_Allocator_Result tex_upload_queue_submit     (Gpu_Tex_Allocator *alloc);
 void                 tex_upload_queue_remove     (Gpu_Tex_Allocator *alloc, u32 key);
 
@@ -673,8 +673,8 @@ struct Image_View_Allocator {
 Image_View_Allocator create_image_view_allocator (u32 cap);
 void                 destroy_image_view_allocator(Image_View_Allocator *alloc);
 
-Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, u64 hash, VkImageView *ret_image_view);
-
+Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageViewCreateInfo *view_info,
+                                           VkImageView *ret_image_view, u64 *ret_view_hash);
 Image_View_Allocator_Result done_with_image_view(Image_View_Allocator *alloc, u64 hash);
 
 struct Uniform_Allocator {
@@ -823,6 +823,12 @@ struct Pl_Config { // @Todo multisample state settings
     Pl_Primitive_Info  primitive_info;
 };
 void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipelines);
+
+inline static void pl_destroy_pipelines(u32 count, VkPipeline *pipelines) {
+    VkDevice device = get_gpu_instance()->device;
+    for(u32 i = 0; i < count; ++i)
+        vkDestroyPipeline(device, pipelines[i], ALLOCATION_CALLBACKS);
+}
 
 // Sync
 inline static VkFence create_fence(bool signalled) {
