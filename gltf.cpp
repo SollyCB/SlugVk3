@@ -522,6 +522,7 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
         *accessor = {};
         accessor->indices_component_type = GLTF_ACCESSOR_TYPE_NONE;
         accessor->format = GLTF_ACCESSOR_FORMAT_UNKNOWN;
+        accessor->buffer_view = -1;
         min_max_len = 0;
         min_found = false;
         max_found = false;
