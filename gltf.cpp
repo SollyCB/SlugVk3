@@ -612,6 +612,10 @@ Gltf_Accessor* gltf_parse_accessors(const char *data, u64 *offset, int *accessor
         } else {
             accessor->stride = sizeof(Gltf_Accessor);
         }
+
+        accessor->type           = accessor_type;
+        accessor->component_type = accessor_component_type;
+
         switch(accessor_type) {
         case GLTF_ACCESSOR_TYPE_SCALAR:
         {
@@ -2038,6 +2042,8 @@ void test_gltf() {
 
     Gltf_Accessor *accessor = gltf_accessor_by_index(&gltf, 2);
     TEST_EQ("accessor[2].format", accessor->format, GLTF_ACCESSOR_FORMAT_VEC3_U32, false);
+    TEST_EQ("accessor[2].type", accessor->type, GLTF_ACCESSOR_TYPE_VEC3, false);
+    TEST_EQ("accessor[2].component_type", accessor->component_type, GLTF_ACCESSOR_TYPE_UNSIGNED_INT, false);
     TEST_EQ("accessor[2].buffer_view", accessor->buffer_view, 3, false);
     TEST_EQ("accessor[2].byte_offset", accessor->byte_offset, (u64)300, false);
     TEST_EQ("accessor[2].count", accessor->count, 12001, false);

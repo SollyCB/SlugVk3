@@ -116,6 +116,8 @@ enum Gltf_Accessor_Format {
 
 struct Gltf_Accessor {
     Gltf_Accessor_Format format;
+    Gltf_Accessor_Type  type;
+    Gltf_Accessor_Type  component_type;
     Gltf_Accessor_Type indices_component_type;
 
     int stride; // Stride to reach next accessor in the array NOT the stride of the accessed data
