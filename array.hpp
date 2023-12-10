@@ -42,9 +42,9 @@ inline static Array<T> new_array(u64 cap, bool growable, bool temp) {
     ret.flags = (growable & ARRAY_GROWABLE_BIT) | ((temp << 1) & ARRAY_TEMP_BIT);
 
     if (ret.flags & ARRAY_TEMP_BIT)
-        ret.data = malloc_t(cap, 16);
+        ret.data = (T*)malloc_t(cap, 16);
     else
-        ret.data = malloc_h(cap, 16);
+        ret.data = (T*)malloc_h(cap, 16);
 
     return ret;
 }
