@@ -63,12 +63,12 @@ inline static void array_add(Array<T> *array, T *t) {
 
             array->cap  *= 2;
             if (array->flags & ARRAY_TEMP_BIT) {
-                u8* old_mem = array->data;
+                u8* old_mem = (u8*)array->data;
                 array->data = (T*)malloc_t(sizeof(T) * array->cap, 16);
 
                 memcpy(array->data, old_mem, array->len * sizeof(T));
             } else {
-                array->data = realloc_h(array->data, array->cap);
+                array->data = (T*)realloc_h(array->data, array->cap);
             }
         } else {
             assert(false && "Array Overflow");
