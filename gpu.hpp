@@ -645,7 +645,7 @@ Sampler_Allocator create_sampler_allocator (u32 cap);
 void              destroy_sampler_allocator(Sampler_Allocator *alloc);
 
 u64                      add_sampler(Sampler_Allocator *alloc, Sampler_Info *sampler_info);
-Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler);
+Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler, bool adjust_weights);
 
 void done_with_sampler(Sampler_Allocator *alloc, u64 hash);
 
@@ -674,7 +674,7 @@ Image_View_Allocator create_image_view_allocator (u32 cap);
 void                 destroy_image_view_allocator(Image_View_Allocator *alloc);
 
 Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageViewCreateInfo *view_info,
-                                           VkImageView *ret_image_view, u64 *ret_view_hash);
+                                           VkImageView *ret_image_view, u64 *ret_view_hash, bool adjust_weights);
 Image_View_Allocator_Result done_with_image_view(Image_View_Allocator *alloc, u64 hash);
 
 struct Uniform_Allocator {

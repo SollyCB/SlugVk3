@@ -57,6 +57,7 @@ enum Model_Type { // These are mostly just example types for now - Sol 6 Dec 202
     MODEL_TYPE_CUBE     = 1,
     MODEL_TYPE_PLAYER   = 2,
     MODEL_TYPE_BUILDING = 3,
+    MODEL_TYPE_CAR      = 4,
 };
 
 struct Model_Identifier {
@@ -113,10 +114,10 @@ struct Model_Cube {
     VkFormat fmt_tangent;
     VkFormat fmt_tex_coords;
 };
-const u32 g_model_type_primitive_count_cube          = 1;
-const u32 g_model_type_descriptor_count_cube         = 2; // 2 textures: base + pbr
-const u32 g_model_type_descriptor_binding_count_cube = 1; // 1 array[2] of combined image samplers.
-const u32 g_model_type_descriptor_set_count_cube     = 1; // 1 set: texture set
+constexpr u32 g_model_type_primitive_count_cube          = 1;
+constexpr u32 g_model_type_descriptor_count_cube         = 2; // 2 textures: base + pbr
+constexpr u32 g_model_type_descriptor_binding_count_cube = 1; // 1 array[2] of combined image samplers.
+constexpr u32 g_model_type_descriptor_set_count_cube     = 1; // 1 set: texture set
 
 // @Unimplemented I am just using player to imagine how a more complex model would work, to see if my
 // system scales.

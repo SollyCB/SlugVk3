@@ -1,6 +1,7 @@
 #include "asset.hpp"
 #include "gltf.hpp"
 #include "file.hpp"
+#include "array.hpp"
 #include "vulkan_errors.hpp"
 
 static Assets s_Assets;
@@ -119,6 +120,23 @@ void init_assets() {
 
     Assets           *g_assets = get_assets_instance();
     Model_Allocators *allocs   = &g_assets->model_allocators;
+
+    bool growable_array = true;
+    bool temp_array     = false;
+
+    g_assets->keys_tex           = new_array(g_assets_keys_array_tex_len,        growable_array, temp_array);
+    g_assets->keys_index         = new_array(g_assets_keys_array_index_len,      growable_array, temp_array);
+    g_assets->keys_vertex        = new_array(g_assets_keys_array_vertex_len,     growable_array, temp_array);
+    g_assets->keys_sampler       = new_array(g_assets_keys_array_sampler_len,    growable_array, temp_array);
+    g_assets->keys_image_view    = new_array(g_assets_keys_array_image_view_len, growable_array, temp_array);
+
+    g_assets->results_tex        = new_array(g_assets_keys_array_tex_len,        growable_array, temp_array);
+    g_assets->results_index      = new_array(g_assets_keys_array_index_len,      growable_array, temp_array);
+    g_assets->results_vertex     = new_array(g_assets_keys_array_vertex_len,     growable_array, temp_array);
+    g_assets->results_sampler    = new_array(g_assets_keys_array_sampler_len,    growable_array, temp_array);
+    g_assets->results_image_view = new_array(g_assets_keys_array_image_view_len, growable_array, temp_array);
+
+    g_assets->draw_infos         = new_array(256, true, false);
 
     g_assets->model_count = g_model_count;
     g_assets->models      = (Model*)malloc_h(sizeof(Model) * g_model_count, 8);
@@ -463,182 +481,39 @@ void free_model(Model *model) {
     }
 }
 
+struct Model_Allocator_Queue_Functions {
+    Gpu_Allocator_Queue_Add_Func        add;
+    Gpu_Tex_Allocator_Queue_Add_Func    tex_add;
+    Gpu_Allocator_Queue_Remove_Func     rm;
+    Gpu_Tex_Allocator_Queue_Remove_Func tex_rm;
+};
+
 static Gpu_Allocator_Result model_queue_cube(
-    Model_Allocators                    *allocs,
-    Model                               *model,
-    Gpu_Allocator_Queue_Add_Func         queue_add_func,
-    Gpu_Tex_Allocator_Queue_Add_Func     tex_queue_add_func,
-    Gpu_Allocator_Queue_Remove_Func      queue_rm_func,
-    Gpu_Tex_Allocator_Queue_Remove_Func  tex_queue_rm_func)
+    Model_Allocators                *allocs,
+    Model_Allocator_Queue_Functions *queue_functions,
+    Model                           *model)
 {
     Gpu_Allocator_Result res[4];
 
-    res[0] = queue_add_func(&allocs->index,  model->cube.index_key);
-    res[1] = queue_add_func(&allocs->vertex, model->cube.vertex_key);
-    res[2] = tex_queue_add_func(&allocs->tex, model->cube.tex_key_base);
-    res[3] = tex_queue_add_func(&allocs->tex, model->cube.tex_key_pbr);
+    // @Todo @Multithreading Everything is a job
+
+    res[0] = queue_functions->add(&allocs->index,  model->cube.index_key);
+    res[1] = queue_functions->add(&allocs->vertex, model->cube.vertex_key);
+    res[2] = queue_functions->tex_add(&allocs->tex, model->cube.tex_key_base);
+    res[3] = queue_functions->tex_add(&allocs->tex, model->cube.tex_key_pbr);
 
     if (res[0] == GPU_ALLOCATOR_RESULT_QUEUE_FULL || res[1] == GPU_ALLOCATOR_RESULT_QUEUE_FULL ||
         res[2] == GPU_ALLOCATOR_RESULT_QUEUE_FULL || res[3] == GPU_ALLOCATOR_RESULT_QUEUE_FULL)
     {
-        queue_rm_func(&allocs->index,  model->cube.index_key);
-        queue_rm_func(&allocs->vertex, model->cube.vertex_key);
-        tex_queue_rm_func(&allocs->tex, model->cube.tex_key_base);
-        tex_queue_rm_func(&allocs->tex, model->cube.tex_key_pbr);
+        queue_functions->rm(&allocs->index,  model->cube.index_key);
+        queue_functions->rm(&allocs->vertex, model->cube.vertex_key);
+        queue_functions->tex_rm(&allocs->tex, model->cube.tex_key_base);
+        queue_functions->tex_rm(&allocs->tex, model->cube.tex_key_pbr);
 
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
     return GPU_ALLOCATOR_RESULT_SUCCESS;
-}
-
-static u32 call_allocator_queue_functions_according_to_model_type(
-    Model_Allocators                    *allocs,
-    u32                                  count,
-    Model                               *models,
-    Gpu_Allocator_Queue_Add_Func         queue_add_func,
-    Gpu_Tex_Allocator_Queue_Add_Func     tex_queue_add_func,
-    Gpu_Allocator_Queue_Remove_Func      queue_rm_func,
-    Gpu_Tex_Allocator_Queue_Remove_Func  tex_queue_rm_func)
-{
-    Gpu_Allocator_Result res = GPU_ALLOCATOR_RESULT_SUCCESS;
-    u32 i;
-    for(i = 0; i < count && res == GPU_ALLOCATOR_RESULT_SUCCESS; ++i) {
-        switch(models[i].cube.type) { // Use any union member to find type
-        case MODEL_TYPE_CUBE:
-        {
-            res = model_queue_cube(allocs, &models[i], queue_add_func, tex_queue_add_func,
-                                   queue_rm_func, tex_queue_rm_func);
-            break;
-        }
-        case MODEL_TYPE_PLAYER:
-        {
-            assert(false && "Unimplemented");
-            return Max_u32;
-        }
-        case MODEL_TYPE_BUILDING:
-        {
-            assert(false && "Unimplemented");
-            return Max_u32;
-        }
-        default: // Really this should not be an error, so I won't do so much to handle it
-            assert(false && "Invalid Model Type");
-            return Max_u32;
-        }
-    }
-    return i;
-}
-
-enum Model_Upload_Phase {
-    MODEL_UPLOAD_PHASE_QUEUE_STAGING  = 0,
-    MODEL_UPLOAD_PHASE_SUBMIT_STAGING = 1,
-    MODEL_UPLOAD_PHASE_QUEUE_UPLOAD   = 2,
-    MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD  = 3,
-    MODEL_UPLOAD_PHASE_COMPLETE       = 4,
-    MODEL_UPLOAD_PHASE_INVALID        = 5,
-};
-struct Model_Upload_Result {
-    u32                count;
-    Model_Upload_Phase phase;
-};
-
-static Model_Upload_Result handle_model_uploads(Model_Allocators *allocs, u32 count, Model *models,
-                                                Model_Upload_Phase start_phase, Model_Upload_Phase end_phase)
-{
-    Model_Upload_Result  ret = {};
-
-    switch(start_phase) {
-    case MODEL_UPLOAD_PHASE_QUEUE_STAGING: // Deliberate fall-through
-    {
-        ret.count = 0;
-        ret.phase = MODEL_UPLOAD_PHASE_QUEUE_STAGING;
-
-        if (staging_queue_begin(&allocs->index)   != GPU_ALLOCATOR_RESULT_SUCCESS ||
-            staging_queue_begin(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
-            tex_staging_queue_begin(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
-        {
-            return ret;
-        }
-
-        ret.count = call_allocator_queue_functions_according_to_model_type(
-                                   allocs,
-                                   count,
-                                   models,
-                                   staging_queue_add,
-                                   tex_staging_queue_add,
-                                   staging_queue_remove,
-                                   tex_staging_queue_remove);
-
-        if (ret.count != count || end_phase == MODEL_UPLOAD_PHASE_QUEUE_STAGING) {
-            return ret;
-        }
-    }
-    case MODEL_UPLOAD_PHASE_SUBMIT_STAGING: // Deliberate fall-through
-    {
-        ret.phase = MODEL_UPLOAD_PHASE_SUBMIT_STAGING;
-
-        if (staging_queue_submit(&allocs->index)   != GPU_ALLOCATOR_RESULT_SUCCESS ||
-            staging_queue_submit(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
-            tex_staging_queue_submit(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
-        {
-            return {0, MODEL_UPLOAD_PHASE_SUBMIT_STAGING};
-        }
-
-        if (end_phase == MODEL_UPLOAD_PHASE_SUBMIT_STAGING) {
-            return ret;
-        }
-    }
-    case MODEL_UPLOAD_PHASE_QUEUE_UPLOAD: // Deliberate fall-through
-    {
-        ret.count = 0;
-        ret.phase = MODEL_UPLOAD_PHASE_QUEUE_UPLOAD;
-
-        if (upload_queue_begin(&allocs->index)   != GPU_ALLOCATOR_RESULT_SUCCESS ||
-            upload_queue_begin(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
-            tex_upload_queue_begin(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
-        {
-            return ret;
-        }
-
-        ret.count = call_allocator_queue_functions_according_to_model_type(
-                                   allocs,
-                                   count,
-                                   models,
-                                   upload_queue_add,
-                                   tex_upload_queue_add,
-                                   upload_queue_remove,
-                                   tex_upload_queue_remove);
-
-        if (ret.count != count || end_phase == MODEL_UPLOAD_PHASE_QUEUE_UPLOAD) {
-            return ret;
-        }
-    }
-    case MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD: // Deliberate fall-through
-    {
-        ret.phase = MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD;
-
-        if (upload_queue_submit(&allocs->index)   != GPU_ALLOCATOR_RESULT_SUCCESS ||
-            upload_queue_submit(&allocs->vertex)  != GPU_ALLOCATOR_RESULT_SUCCESS ||
-            tex_upload_queue_submit(&allocs->tex) != GPU_ALLOCATOR_RESULT_SUCCESS)
-        {
-            return ret;
-        }
-        if (end_phase == MODEL_UPLOAD_PHASE_SUBMIT_UPLOAD) {
-            return ret;
-        }
-    }
-    case MODEL_UPLOAD_PHASE_COMPLETE:
-    {
-        break;
-    }
-    default:
-        assert(false && "Invalid Upload Phase");
-        return {};
-    } // switch upload phase
-
-    ret.count = count;
-    ret.phase = MODEL_UPLOAD_PHASE_COMPLETE;
-    return ret;
 }
 
 void make_staging_queues_empty(Model_Allocators *allocs) {
@@ -651,39 +526,20 @@ enum Renderpass_Type {
     RENDERPASS_TYPE_FORWARD_SINGLE_PASS = 0,
     RENDERPASS_TYPE_FORWARD_WITH_SHADOW = 1,
 };
-struct Model_Draw_Prep_Info {
-    Renderpass_Type  rp_type;
-    Pl_Config       *pl_configs; // The size of this array is inferred by the model type's draw_info fill function
-};
 
-struct Model_Draw_Info {
-    // The length of these arrays is inferred by the model type's corresponding draw function
-    u64        *descriptor_offsets;
-    VkPipeline *pipelines;
-};
-
-enum Model_Draw_Info_Fill_Result {
-    MODEL_DRAW_INFO_FILL_RESULT_SUCCESS               = 0,
-    MODEL_DRAW_INFO_FILL_RESULT_NO_AVAILABLE_SAMPLERS = 1,
-};
-
-// Return the number of configs used.
-Model_Draw_Info_Fill_Result model_fill_draw_info_cube(
-        Model_Allocators     *model_allocators,
-        Model                *model,
-        Model_Draw_Prep_Info *draw_prep_info,
-        Model_Draw_Info      *ret_draw_info,
-        u32                  *ret_pl_configs_used)
+void handle_model_cube(Asset *g_assets, Model *model, Renderpass_Type rp_type, bool retrying_upload)
 {
     //
-    // Cube model type requires one pipeline (uses one primitive), and two combined image sampler descriptors:
-    // one for a base texture, one for a pbr texture.
+    // @Note rp_type currently unused in this function. I can see it being needed
+    // if I add a shadow pass only renderpass pass type I guess...
     //
 
-    u32 primitive_count          = 1;
-    u32 descriptor_count         = 2;
-    u32 descriptor_binding_count = 1;
-    u32 descriptor_set_count     = 1; // one descriptor set, an array[2] of combined image samplers
+    Model_Allocators *model_allocators = g_assets->model_allocators;
+
+    const u32 primitive_count          = 1;
+    const u32 descriptor_count         = 2; // tex base, pbr
+    const u32 descriptor_binding_count = 1; // array[2], binding 1
+    const u32 descriptor_set_count     = 1;
 
     assert(g_model_type_primitive_count_cube  == primitive_count                  &&
           "The number of primitives used by a cube model type changed");
@@ -697,93 +553,157 @@ Model_Draw_Info_Fill_Result model_fill_draw_info_cube(
     VkDevice device = get_gpu_instance()->device;
 
     //
-    // @Multithreading pipeline creations and descriptor allocations can easily become jobs.
+    // See model-outline.
     //
-    switch(draw_prep_info->rp_type) {
-    case RENDERPASS_TYPE_FORWARD_SINGLE_PASS:
-    {
-        ret_draw_info->descriptor_offsets =        (u64*)malloc_t(sizeof(u64)        * descriptor_binding_count, 8);
-        ret_draw_info->pipelines          = (VkPipeline*)malloc_t(sizeof(VkPipeline) * primitive_count,          8);
+    // @Multithreading pipeline creations and descriptor allocations can easily become jobs.
+    // @Multithreading acquiring samplers and image view descriptors can easily become jobs.
+    //
 
-        pl_create_pipelines(primitive_count, draw_prep_info->pl_configs, ret_draw_info->pipelines);
+    // Index + Vertex.
+    // Descriptors: 2x Combined Image Sampler - tex base, tex pbr.
 
-        // Allocate one descriptor set for base and pbr textures
-        u8 *descriptor_mem  = descriptor_allocate_layout(sampler_descriptor_allocator,
-                                                         draw_prep_info->pl_configs[0].layout.set_layout_sizes[0],
-                                                         ret_draw_info->descriptor_offsets);
+    u32 tex_allocation_keys            [descriptor_count];
+    Gpu_Tex_Allocation *tex_allocations[descriptor_count];
+    u64 sampler_keys                   [descriptor_count];
+    u64 image_view_keys                [descriptor_count];
 
-        Sampler_Allocator_Result sampler_allocator_results[2];
-        VkDescriptorImageInfo    descriptor_info_base_tex = {};
-        VkDescriptorImageInfo    descriptor_info_pbr_tex  = {};
+    tex_allocation_keys[0] = model->cube.tex_key_base;
+    tex_allocation_keys[1] = model->cube.tex_key_pbr;
 
-        sampler_allocator_results[0] =
-            get_sampler(&model_allocators->sampler, model->cube.sampler_key_base, &descriptor_info_base_tex.sampler);
-        sampler_allocator_results[1] =
-            get_sampler(&model_allocators->sampler, model->cube.sampler_key_base, &descriptor_info_pbr_tex.sampler);
+    for(u32 i = 0; i < descriptor_count; ++i)
+        tex_allocations[i] = gpu_get_tex_allocation(&model_allocs->tex, tex_allocation_keys[i]);
 
-        if (sampler_allocator_results[0] == SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE ||
-            sampler_allocator_results[1] == SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE)
-        {
-            return MODEL_DRAW_INFO_FILL_RESULT_NO_AVAILABLE_SAMPLERS;
+    VkImageViewCreateInfo image_view_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    image_view_info.format   = VK_FORMAT_R8G8B8A8_SRGB;
+
+    VkImageSubresourceRange subresource_range = {
+        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel   = 0,
+        .baseArrayLayer = 0,
+        .layerCount     = 1,
+    };
+
+    VkImageView                 tmp_view;
+    u64                         tmp_key;
+    Image_View_Allocator_Result tmp_view_result;
+
+    for(u32 i = 0; i < descriptor_count; ++i) {
+        image_view_info.image        = tex_allocations[i].image;
+        subresource_range.levelCount = tex_allocations[i].mip_levels;
+
+        tmp_view_result = get_image_view(&model_allocators->image_view, &image_view_info, &tmp_view, &tmp_key);
+
+        assert(tmp_view_result != IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY && "This should never happen");
+
+        if (tmp_view_result == IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY) {
+            *g_assets = {}; // Crash everything, as this should never happen.
         }
 
-        //
-        // @Note @Todo Implement some sort of caching thing for these image views maybe. I dont know how much of a
-        // waste it is to recreate a lot of the same image views every frame.
-        //
-        // @Todo Mipmapping. I will do this when I start using ktx files instead of just pngs.
-        //
-
-        Gpu_Tex_Allocation *tex_allocation =
-            gpu_get_tex_allocation(&model_allocators->tex, model->cube.tex_key_base);
-
-        VkImageViewCreateInfo view_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        view_info.image            = tex_allocation->image;
-        view_info.viewType         = VK_IMAGE_VIEW_TYPE_2D;
-        view_info.format           = VK_FORMAT_R8G8B8A8_SRGB;
-        view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, tex_allocation->mip_levels, 0, 1};
-
-        VkImageView view;
-        u64 view_hash;
-        Image_View_Allocator_Result view_result = get_image_view(&model_allocator->image_view, &view_info,
-                                                                 &view, &hash);
-
-        // Write array[2] texture descriptors
-
-        *ret_pl_configs_used = primitive_count; // one subpass, so only primitive_count configs used
-        return MODEL_DRAW_INFO_FILL_RESULT_SUCCESS;
+        array_add(&g_assets->keys_image_view,   &tmp_key);
+        array_add(&g_assets->results_image_view, tmp_view_result == IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS);
     }
-    case RENDERPASS_TYPE_FORWARD_WITH_SHADOW:
-    {
-        // The number of descriptors required does not change, as textures are not required for a shadow pass,
-        // and cubes are static (no animations).
-        ret_draw_info->descriptor_offsets =         (u64*)malloc_t(sizeof(u64)        * descriptor_count,    8);
-        ret_draw_info->pipelines          = (VkPipeline*)malloc_t(sizeof(VkPipeline) * primitive_count * 2, 8);
 
-        pl_create_pipelines(primitive_count * 2, draw_prep_info->pl_configs, ret_draw_info->pipelines);
+    sampler_keys[0] = model->cube.sampler_key_base;
+    sampler_keys[1] = model->cube.sampler_key_pbr;
 
-        *ret_pl_configs_used = primitive_count * 2; // two subpasses, so an extra config used
-        return MODEL_DRAW_INFO_FILL_RESULT_SUCCESS;
+    VkSampler                tmp_sampler;
+    Sampler_Allocator_Result tmp_sampler_result;
+
+    for(u32 i = 0; i < descriptor_count; ++i) {
+        tmp_sampler_result = get_sampler(&model_allocators->sampler, sampler_keys[i], &tmp_sampler);
+
+        assert(tmp_sampler_result != SAMPLER_ALLOCATOR_RESULT_INVALID_KEY && "This should never happen");
+
+        if (tmp_sampler_result == SAMPLER_ALLOCATOR_RESULT_INVALID_KEY) {
+            *g_assets = {}; // Crash everything, as this should never happen.
+        }
+
+        array_add(&g_assets->keys_sampler,   &sampler_keys[i]);
+        array_add(&g_assets->results_sampler, tmp_sampler_result == SAMPLER_ALLOCATOR_RESULT_SUCCESS);
     }
-    default:
-        assert(false && "Invalid Renderpass Type");
-        return MODEL_DRAW_INFO_FILL_RESULT_SUCCESS;
-    }
+
+    // @TODO CURRENT TASK!! staging queue and upload queue. Adjust adjust weights setting to image view and samplers.
 }
 
-void handle_model_pipelines(u32 count, Model *models, Model_Draw_Prep_Info *pl_configs,
-                            Model_Draw_Info *ret_draw_info)
-{
-    for(u32 i = 0; i < count; ++i) {
+struct Handle_Models_Info {
+    u32                   count;
+    Model                *models;
+    Model_Draw_Prep_Info *draw_prep_infos;
+    Model_Draw_Info      *ret_draw_info;
+};
 
+// @Note @Todo To load more complicated model types with multiple primitives, meshes, etc.
+// all that needs to happen is this front end needs to be changed. Just needs to take arrays
+// of primitives or whatever instead. The same backend of splitting streams of resource keys
+// between threads scales. This frontend is supposed to be minimum working version.
+static Handle_Models_Result* handle_model_types(Handle_Models_Info *info) {
+    for(u32 i = 0; i < info->count; ++i) {
+        switch(info->models[i].cube.type) {
+        case MODEL_TYPE_CUBE:
+            handle_model_cube(&info->models[i], &info->draw_prep_infos[i], &info->ret_draw_info[i]);
+            break;
+        case MODEL_TYPE_PLAYER:
+            assert(false && "Unimplemented");
+            break;
+        case MODEL_TYPE_CAR:
+            assert(false && "Unimplemented");
+            break;
+        case MODEL_TYPE_BUILDING:
+            assert(false && "Unimplemented");
+            break;
+        default:
+            assert(false && "Invalid Model Type");
+        }
     }
+
+    // @Current task. Model upload rewrite. Async queueing with submission dependencies. If the upload queue
+    // successfully queues items which dont make it into the stage queue (for whatever reason), we go through
+    // and remove these indices from the upload queue, then submit staging, the submit upload. So all we
+    // need to know from the allocator interaction functions is what index staging and uploads got to.
+
+    // @Todo this should happen after we have the models uploaded i think, then he offsets cane set on the
+    // pipelines. Should happen at the same time as allocating descriptors.
+    // pl_create_pipelines(primitive_count, draw_prep_info->pl_configs, return_result.draw_info->pipelines);
+
+    /*
+    // Write descriptors
+    VkDescriptorImageInfo  descriptor_infos    [descriptor_count];
+    VkDescriptorDataEXT    descriptor_datas    [descriptor_count];
+    VkDescriptorGetInfoEXT descriptor_get_infos[descriptor_count];
+
+    for(u32 i = 0; i < descriptor_count; ++i) {
+        descriptor_infos[i].sampler     = samplers   [i];
+        descriptor_infos[i].imageView   = image_views[i];
+        descriptor_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        descriptor_datas[i].pCombinedImageSampler = &descriptor_infos[i];
+
+        descriptor_get_infos[i] = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
+        descriptor_get_infos[i].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptor_get_infos[i].data = descriptor_datas[i];
+    }
+
+    u64 descriptor_set_offset;
+    u8 *descriptor_set_mem = descriptor_allocate_layout(
+                                &model_allocators->descriptor_sampler,
+                                draw_prep_info->pl_configs[0].layout.set_layout_sizes[0],
+                                &descriptor_set_offset);
+
+    descriptor_write_combined_image_sampler(&model_allocators->descriptor_sampler, 2, descriptor_datas,
+                                            descriptor_set_mem);
+
+    // Binding offsets
+    VkDevice device = get_gpu_instance()->device;
+    vkGetDescriptorSetLayoutBindingOffset(device, draw_prep_info->pl_configs[0].layout.set_layouts[0], 0,
+                                          ret_draw_info->descriptor_offsets);
+    */
+
 }
 
 // @Speed Currently this function has the issue that it loops the models a number of times, but this is something
 // that I plan to separate into jobs. - Sol 7th Dec 2023
-Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Draw_Prep_Info *draw_prep_infos,
-                                           Model_Upload_Phase start_phase, Model_Upload_Phase end_phase,
-                                           Model_Draw_Info *ret_draw_info)
+Model_Upload_Result prepare_to_draw_models(Handle_Models_Info)
 {
     Assets *g_assets = get_assets_instance();
     Model_Allocators *model_allocs = &g_assets->model_allocators;
@@ -794,7 +714,7 @@ Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Draw_
     if (res.phase != MODEL_UPLOAD_PHASE_COMPLETE)
         return res;
 
-    // Upload data before creating pipelines if memory arch is not unified
+    // Upload data
     Gpu *gpu = get_gpu_instance();
 
     // OMFG! C++ operator preference is crazy bad with bitwise...
@@ -826,32 +746,6 @@ Model_Upload_Result prepare_to_draw_models(u32 count, Model *models, Model_Draw_
         auto check = vkQueueSubmit(gpu->transfer_queue, 1, &submit_info, g_assets->fences[frame_index]);
         DEBUG_OBJ_CREATION(vkQueueSubmit, check);
     }
-
-    //
-    // @Multithreading
-    // The stuff that happens below can be very cleanly separated into jobs, like creating the pipeline infos and
-    // allocating the descriptors. Even the above can be (as noted by the @Speed) as stuffing the staging and upload
-    // queues does not have to happen on the same thread. So for now this looks dumb, as it is lots of loops over
-    // the same data, but it is rly just waiting for each loop to become a job (or a few jobs, as even the loops
-    // themselves can be broken up, as sections of the models array can be jobs with the descriptor buffer segmented
-    // by thread.
-    //
-
-    // @TODO Need to sync pipelines and models and descriptors. The current idea is the models arg is instead an
-    // array of structs like:
-    //
-    //     struct Model_Draw_Prep_Info {
-    //         Model     *model;
-    //         u32        count;
-    //         Pl_Config *configs;
-    //     };
-    //
-    // And then an array of Model_Draw_Info structs (the last arg) is written with the pipelines corresponding to
-    // the configs. But then I also need some way of doing the descriptors, the easiest way I can see being is
-    // to make a 'model_allocate_descriptors()' similar to 'handle_model_uploads()' which knows which descriptors
-    // that model subset requires. Then I need some way to communicate these allocation offsets back to the bind
-    // command caller.
-
 
     // Record secondary command buffers with appropriate bind commands.
     return res;

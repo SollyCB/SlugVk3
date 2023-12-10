@@ -15,11 +15,42 @@ struct Model_Allocators {
 };
 struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
 
+constexpr u32 g_assets_keys_array_tex_len        = 256;
+constexpr u32 g_assets_keys_array_index_len      = 256;
+constexpr u32 g_assets_keys_array_vertex_len     = 256;
+constexpr u32 g_assets_keys_array_sampler_len    = 256;
+constexpr u32 g_assets_keys_array_image_view_len = 256;
+
 struct Assets {
     Model_Allocators model_allocators;
 
     u32    model_count;
     Model *models;
+
+    u32 pos_keys_tex;
+    u32 pos_keys_index;
+    u32 pos_keys_vertex;
+    u32 pos_keys_sampler;
+    u32 pos_keys_image_view;
+
+    // Read by allocators
+    Array<u32> keys_index;
+    Array<u32> keys_vertex;
+    Array<u32> keys_tex;
+
+    // @Note Will need to add another descriptor array here for uniform buffers? I dont think so.
+    Array<u64> keys_sampler;
+    Array<u64> keys_image_view;
+
+    // Written by allocators
+    Array<bool> results_tex;
+    Array<bool> results_index;
+    Array<bool> results_vertex;
+    Array<bool> results_sampler;
+    Array<bool> results_image_view;
+
+    u32 pos_pipelines;
+    Array<VkPipeline> pipelines;
 
     // fonts, etc.
 
