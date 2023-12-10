@@ -79,13 +79,13 @@ u8 *malloc_h(u64 size, u64 alignment) {
     return (u8*)ret;
 }
 
-u8 *realloc_h(u8 *ptr, u64 new_size) {
-    u64 old_size = tlsf_block_size((void*)ptr);
+u8 *realloc_h(void *ptr, u64 new_size) {
+    u64 old_size = tlsf_block_size(ptr);
     Heap_Allocator *allocator = get_instance_heap();
     allocator->used -= old_size;
-    ptr = (u8*)tlsf_realloc(allocator->tlsf_handle, ptr, align(new_size, 16));
+    ptr = tlsf_realloc(allocator->tlsf_handle, ptr, align(new_size, 16));
     allocator->used += tlsf_block_size((void*)ptr);
-    return ptr;
+    return (u8*)ptr;
 }
 
 u8 *malloc_t(u64 size, u64 alignment) {
