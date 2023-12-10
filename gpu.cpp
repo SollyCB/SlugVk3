@@ -1725,9 +1725,10 @@ void adjust_sampler_weights(u32 count, u8 *weights, u8 *flags, u64 *hashes, u32 
     // Find incremented weight
     // If w + inc wraps bottom 6 bits, w = Max, else w = w + inc
     //
-    u8 w   = weights[idx];
-    u8 tmp = Max_u8 + (u8)(w + inc > w);
-    w      = (w + inc) | tmp;
+    u8 w    = weights[idx];
+    u8 tmp  = w + inc;
+    tmp    |= Max_u8 + (tmp >= w);
+    w       = (w + inc) | tmp;
 
     // @Note Dont remove this
     w     &= 0b0111'1111;
@@ -1739,9 +1740,14 @@ void adjust_sampler_weights(u32 count, u8 *weights, u8 *flags, u64 *hashes, u32 
     __m128i d;
     __m128i e;
     u32 offset = 0;
-    u32 pos    = Max_u32;
     u32 tmp32;
     u16 mask;
+
+    // if weights didnt change, dont loop
+    count &= ~(Max_u32 + (u32)(inc || dec));
+
+    // if weights didnt change, pos = idx
+    u32 pos = idx | ~(Max_u32 + (u32)(dec || inc));
 
     for(offset = 0; offset < count; offset += 16) {
         // Decrement values
@@ -2668,8 +2674,8 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key, bool adjus
     // @Note This function does a number of things - see the allocator implementation explanation to
     // understand (grep '~MAID').
 
-    u32 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
-    u32 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 inc = 10 & ~(Max_u8 + (u8)(adjust_weights));
+    u8 dec =  1 & ~(Max_u8 + (u8)(adjust_weights));
 
     Weight_Args w_args = {
         .allocations = alloc->allocations,
@@ -2888,8 +2894,8 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust
     if (alloc->to_upload_count >= alloc->to_upload_cap)
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
-    u32 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
-    u32 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
 
     Weight_Args w_args = {
         .allocations = alloc->allocations,
@@ -3329,8 +3335,8 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bo
     // Increment the allocation's cache weight since it has been called on.
     // See implementation details to understand (grep '~MAID').
 
-    u32 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
-    u32 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 inc = 10 & ~(Max_u8 + (u8)(adjust_weights));
+    u8 dec =  1 & ~(Max_u8 + (u8)(adjust_weights));
 
     Tex_Weight_Args w_args = {
         .allocations = alloc->allocations,
@@ -3557,8 +3563,8 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key, boo
     // Increment the allocation's weight since it has been referenced.
     // See implementation info (grep '~MAID').
 
-    u32 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
-    u32 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 inc = 10 & ~(Max_u8 + (u8)(adjust_weights));
+    u8 dec =  1 & ~(Max_u8 + (u8)(adjust_weights));
 
     Tex_Weight_Args w_args = {
         .allocations = alloc->allocations,
@@ -4047,7 +4053,7 @@ u64 add_sampler(Sampler_Allocator *alloc, Sampler_Info *sampler_info) {
 
     return hash;
 }
-Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler) {
+Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler, bool adjust_weights) {
     // This is a little lame as a list traversal, but it should be pretty quick in reality.
     u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
 
@@ -4055,18 +4061,16 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
     if (h_idx == Max_u32)
         return SAMPLER_ALLOCATOR_RESULT_INVALID_KEY;
 
-    adjust_sampler_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, 5, 1);
     Sampler_Info *info = alloc->map.find_hash(hash);
 
     Sampler_Allocator_Result ret = SAMPLER_ALLOCATOR_RESULT_CACHED;
 
     if (!info->sampler) {
 
-        ret = SAMPLER_ALLOCATOR_RESULT_NEW;
-
         if (alloc->in_use == alloc->device_cap) {
             return SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE;
         } else {
+            ret = SAMPLER_ALLOCATOR_RESULT_NEW;
             alloc->in_use++;
         }
 
@@ -4100,9 +4104,15 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
     }
 
     alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT;
-    info->user_count++;
+
+    u8 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+
+    // Only adjust weights after all uses of h_idx, as h_idx is invalid after the call.
+    adjust_sampler_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, inc, dec);
 
    *ret_sampler = info->sampler;
+    info->user_count++;
     return ret;
 }
 void done_with_sampler(Sampler_Allocator *alloc, u64 hash) {
@@ -4152,52 +4162,64 @@ void destroy_image_view_allocator(Image_View_Allocator *alloc) {
    Image View Allocator Implementation is basically identical sampler allocator: a hashmap and some weights
 */
 Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageViewCreateInfo *image_view_info,
-                                           VkImageView *ret_view, u64 *ret_hash)
+                                           VkImageView *ret_view, u64 *ret_hash, bool adjust_weights)
 {
-    u64 hash         = hash_bytes(image_view_info, sizeof(VkImageViewCreateInfo));
-    Image_View *ret = alloc->map.find_hash(hash);
+    u64 hash               = hash_bytes(image_view_info, sizeof(VkImageViewCreateInfo));
+    Image_View *image_view = alloc->map.find_hash(hash);
 
-    if (!ret && alloc->count == alloc->cap) {
+    VkImageView ret;
 
-        if (alloc->in_use == alloc->cap)
-            return IMAGE_VIEW_ALLOCATOR_RESULT_ALL_IN_USE;
+    u32 h_idx;
+    if (!image_view) {
+        if (alloc->count == alloc->cap) {
 
-        u32 evict_idx  = image_view_find_lowest_weight_flagged_not_in_use(alloc->count, alloc->flags);
-        u64 evict_hash = alloc->hashes[evict_idx];
+            if (alloc->in_use == alloc->cap)
+                return IMAGE_VIEW_ALLOCATOR_RESULT_ALL_IN_USE;
 
-        // temp use of ret
-        ret = alloc->map.find_hash(evict_hash);
-        assert(ret && "Arrgh broken hash map? Broken alloc->hashes??");
+            u32 evict_idx  = image_view_find_lowest_weight_flagged_not_in_use(alloc->count, alloc->flags);
+            u64 evict_hash = alloc->hashes[evict_idx];
 
-        vkDestroyImageView(alloc->device, ret->view, ALLOCATION_CALLBACKS);
+            image_view = alloc->map.find_hash(evict_hash);
+            assert(ret && "Arrgh broken hash map? Broken alloc->hashes??");
 
-        bool del_result = alloc->map.delete_hash(evict_hash);
-        assert(del_result && "Arrgh broken hash map? Broken alloc->hashes??");
+            vkDestroyImageView(alloc->device, image_view->view, ALLOCATION_CALLBACKS);
 
-        // Overwrite the attributes of the lowest weight view which is not in use
-        u32 size_to_move = alloc->count - (evict_idx + 1);
-        memmove(alloc->hashes  + evict_idx, alloc->hashes  + evict_idx + 1, size_to_move * sizeof(u64));
-        memmove(alloc->weights + evict_idx, alloc->weights + evict_idx + 1, size_to_move);
-        memmove(alloc->flags   + evict_idx, alloc->flags   + evict_idx + 1, size_to_move);
+            bool del_result = alloc->map.delete_hash(evict_hash);
+            assert(del_result && "Arrgh broken hash map? Broken alloc->hashes??");
 
-        Image_View new_view = {};
-        auto check = vkCreateImageView(alloc->device, image_view_info, ALLOCATION_CALLBACKS, &new_view.view);
-        DEBUG_OBJ_CREATION(vkCreateImageView, check);
-
-        alloc->map.insert_hash(hash, &new_view);
-        ret = alloc->map.find_hash(hash);
-
-        assert(ret && "Dude I just inserted this, why my hash map broke?");
+            // Overwrite the attributes of the lowest weight view which is not in use
+            u32 size_to_move = alloc->count - (evict_idx + 1);
+            memmove(alloc->hashes  + evict_idx, alloc->hashes  + evict_idx + 1, size_to_move * sizeof(u64));
+            memmove(alloc->weights + evict_idx, alloc->weights + evict_idx + 1, size_to_move);
+            memmove(alloc->flags   + evict_idx, alloc->flags   + evict_idx + 1, size_to_move);
+        }
 
         alloc->flags  [alloc->count - 1] = IMAGE_VIEW_ALLOCATOR_IN_USE_BIT;
         alloc->weights[alloc->count - 1] = 0;
         alloc->hashes [alloc->count - 1] = hash;
+
+        h_idx = alloc->count - 1;
+
+        auto check = vkCreateImageView(alloc->device, image_view_info, ALLOCATION_CALLBACKS, &ret);
+        DEBUG_OBJ_CREATION(vkCreateImageView, check);
+
+        Image_View new_view = {.view = ret, .user_count = 1};
+        alloc->map.insert_hash(hash, &new_view);
         alloc->in_use++;
+        alloc->count++;
+    } else {
+        h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
+        ret   = image_view->view;
+        image_view->user_count++;
     }
 
-    ret->user_count++;
-   *ret_view = ret->view;
-   *ret_hash = ret->hash;
+    u8 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+
+    adjust_image_view_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, inc, dec);
+
+   *ret_view = ret;
+   *ret_hash = hash;
     return IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS;
 }
 Image_View_Allocator_Result done_with_image_view(Image_View_Allocator *alloc, u64 hash) {

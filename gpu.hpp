@@ -655,7 +655,6 @@ enum Image_View_Allocator_Result {
     IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY = 2,
 };
 struct Image_View {
-    u64         hash;
     VkImageView view;
     u32         user_count;
 };
