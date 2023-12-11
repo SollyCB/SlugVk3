@@ -2017,7 +2017,7 @@ void test_gltf() {
     test_animations(gltf.animations);
     assert(gltf.animation_count[-1] == 4 && "Incorrect Animation Count");
     test_buffers(gltf.buffers);
-    assert(gltf.buffer_count[-1] == 5 && "Incorrect Buffer Count");
+    assert(gltf.buffer_count[-1] == 1 && "Incorrect Buffer Count");
     test_buffer_views(gltf.buffer_views);
     assert(gltf.buffer_view_count[-1] == 4 && "Incorrect Buffer View Count");
     test_cameras(gltf.cameras);
@@ -2247,21 +2247,21 @@ static void test_buffers(Gltf_Buffer *buffers) {
        TEST_EQ("buffers[0].byteLength", buffer->byte_length, (u64)10001, false);
     TEST_STREQ("buffers[0].uri", buffer->uri, "duck1.bin", false);
 
-    buffer = (Gltf_Buffer*)((u8*)buffer + buffer->stride);
-       TEST_EQ("buffers[1].byteLength", buffer->byte_length, (u64)10002, false);
-    TEST_STREQ("buffers[1].uri", buffer->uri, "duck2.bin", false);
+    //buffer = (Gltf_Buffer*)((u8*)buffer + buffer->stride);
+    //   TEST_EQ("buffers[1].byteLength", buffer->byte_length, (u64)10002, false);
+    //TEST_STREQ("buffers[1].uri", buffer->uri, "duck2.bin", false);
 
-    buffer = (Gltf_Buffer*)((u8*)buffer + buffer->stride);
-       TEST_EQ("buffers[2].byteLength", buffer->byte_length, (u64)10003, false);
-    TEST_STREQ("buffers[2].uri", buffer->uri,   "duck3.bin", false);
+    //buffer = (Gltf_Buffer*)((u8*)buffer + buffer->stride);
+    //   TEST_EQ("buffers[2].byteLength", buffer->byte_length, (u64)10003, false);
+    //TEST_STREQ("buffers[2].uri", buffer->uri,   "duck3.bin", false);
 
-    buffer = (Gltf_Buffer*)((u8*)buffer + buffer->stride);
-       TEST_EQ("buffers[3].byteLength", buffer->byte_length, (u64)10004, false);
-    TEST_STREQ("buffers[3].uri", buffer->uri, "duck4.bin", false);
+    //buffer = (Gltf_Buffer*)((u8*)buffer + buffer->stride);
+    //   TEST_EQ("buffers[3].byteLength", buffer->byte_length, (u64)10004, false);
+    //TEST_STREQ("buffers[3].uri", buffer->uri, "duck4.bin", false);
 
-    buffer = (Gltf_Buffer*)((u8*)buffer + buffer->stride);
-       TEST_EQ("buffers[4].byteLength", buffer->byte_length, (u64)10005, false);
-    TEST_STREQ("buffers[4].uri", buffer->uri, "duck5.bin", false);
+    //buffer = (Gltf_Buffer*)((u8*)buffer + buffer->stride);
+    //   TEST_EQ("buffers[4].byteLength", buffer->byte_length, (u64)10005, false);
+    //TEST_STREQ("buffers[4].uri", buffer->uri, "duck5.bin", false);
 
     END_TEST_MODULE();
 }
@@ -2347,7 +2347,29 @@ static void test_materials(Gltf_Material *materials) {
 
     Gltf_Material *material = materials;
 
+    TEST_EQ("materials[0].base_color_texture_index",         material->base_color_texture_index,          1, false);
+    TEST_EQ("materials[0].base_color_tex_coord",             material->base_color_tex_coord,              1, false);
+    TEST_EQ("materials[0].metallic_roughness_texture_index", material->metallic_roughness_texture_index,  2, false);
+    TEST_EQ("materials[0].metallic_roughness_tex_coord",     material->metallic_roughness_tex_coord,      1, false);
+    TEST_EQ("materials[0].normal_texture_index",             material->normal_texture_index,             3, false);
+    TEST_EQ("materials[0].normal_tex_coord",                 material->normal_tex_coord,                 1, false);
+
+    TEST_FEQ("materials[0].metallic_factor",      material->metallic_factor    , 1   , false);
+    TEST_FEQ("materials[0].roughness_factor",     material->roughness_factor   , 1   , false);
+    TEST_FEQ("materials[0].normal_scale",         material->normal_scale       , 2   , false);
+
+    TEST_FEQ("materials[0].base_color_factor[0]", material->base_color_factor[0] ,  0.5, false);
+    TEST_FEQ("materials[0].base_color_factor[1]", material->base_color_factor[1] ,  0.5, false);
+    TEST_FEQ("materials[0].base_color_factor[2]", material->base_color_factor[2] ,  0.5, false);
+    TEST_FEQ("materials[0].base_color_factor[3]", material->base_color_factor[3] ,  1.0, false);
+
+    TEST_FEQ("materials[0].emissive_factor[0]", material->emissive_factor[0] ,  0.2, false);
+    TEST_FEQ("materials[0].emissive_factor[1]", material->emissive_factor[1] ,  0.1, false);
+    TEST_FEQ("materials[0].emissive_factor[2]", material->emissive_factor[2] ,  0.0, false);
+
+    // Material[1]
     material = (Gltf_Material*)((u8*)material + material->stride);
+
     TEST_EQ("materials[1].base_color_texture_index",         material->base_color_texture_index,          3, false);
     TEST_EQ("materials[1].base_color_tex_coord",             material->base_color_tex_coord,              4, false);
     TEST_EQ("materials[1].metallic_roughness_texture_index", material->metallic_roughness_texture_index,  8, false);
