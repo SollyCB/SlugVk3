@@ -44,12 +44,12 @@
             },
             "occlusionTexture": {
                 "index": 79,
-                "texCoord": 9906 
+                "texCoord": 9906
                 "strength": 0.679
             },
             "emissiveTexture": {
                 "index": 3,
-                "texCoord": 56070 
+                "texCoord": 56070
             },
             "emissiveFactor": [ 11.2, 0.1, 0.0 ]
         }
@@ -221,7 +221,7 @@
             "sparse": {
                 "values": {
                     "bufferView": 4,
-                    "byteOffset": 9999 
+                    "byteOffset": 9999
                 }
                 "count": 10,
                 "indices": {
@@ -329,7 +329,7 @@
                 {
                     "input": 676,
                     "interpolation": "STEP",
-                    "output": 472 
+                    "output": 472
                 }
             ]
         },
@@ -355,7 +355,7 @@
                 {
                     "input": 999,
                     "interpolation": "LINEAR",
-                    "output": 753 
+                    "output": 753
                 },
                 {
                     "input": 4,
@@ -370,22 +370,6 @@
            "byteLength": 10001,
            "uri": "duck1.bin"
        },
-       {
-           "byteLength": 10002,
-           "uri": "duck2.bin"
-       },
-       {
-           "byteLength": 10003,
-           "uri": "duck3.bin"
-       },
-       {
-           "byteLength": 10004,
-           "uri": "duck4.bin"
-       },
-       {
-           "byteLength": 10005,
-           "uri": "duck5.bin"
-       }
     ],
     "bufferViews": [
         {

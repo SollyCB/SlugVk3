@@ -4,6 +4,10 @@
 #include "array.hpp"
 #include "vulkan_errors.hpp"
 
+#if TEST
+#include "test/test.hpp"
+#endif
+
 static Assets s_Assets;
 Assets* get_assets_instance() { return &s_Assets; }
 
@@ -207,15 +211,13 @@ static u64 model_get_required_size_from_gltf(Gltf *gltf) {
     u32 mesh_count        = gltf_mesh_get_count(gltf);
 
     // Accessors: min/max and sparse
-    u32 sparse_count  = 0;
+    u32 sparse_count  = 0; // The number of accessor sparse structures
     u32 max_min_count = 0;
 
     Gltf_Accessor *gltf_accessor = gltf->accessors;
     for(u32 i = 0; i < accessor_count; ++i) {
-        if (gltf_accessor->sparse_count) // If there are some number of sparse indices
-            sparse_count++;
-        if (gltf_accessor->max)
-            max_min_count++;
+        sparse_count  += gltf_accessor->sparse_count != 0;
+        max_min_count += gltf_accessor->max != NULL;
 
         gltf_accessor = (Gltf_Accessor*)((u8*)gltf_accessor + gltf_accessor->stride);
     }
@@ -230,19 +232,18 @@ static u64 model_get_required_size_from_gltf(Gltf *gltf) {
     Gltf_Mesh           *gltf_mesh = gltf->meshes;
     Gltf_Mesh_Primitive *gltf_primitive;
     for(u32 i = 0; i < mesh_count; ++i) {
+
+        gltf_primitive = gltf_mesh->primitives;
+
         weight_count    += gltf_mesh->weight_count;
         primitive_count += gltf_mesh->primitive_count;
 
         for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
             // I am glad that I dont *have* to redo the gltf parser, but I made some annoying decisions...
-            if (gltf_primitive->position)
-                attribute_count++;
-            if (gltf_primitive->normal)
-                attribute_count++;
-            if (gltf_primitive->tangent)
-                attribute_count++;
-            if (gltf_primitive->tex_coord_0)
-                attribute_count++;
+            attribute_count += gltf_primitive->position    != -1;
+            attribute_count += gltf_primitive->normal      != -1;
+            attribute_count += gltf_primitive->tangent     != -1;
+            attribute_count += gltf_primitive->tex_coord_0 != -1;
 
             attribute_count += gltf_primitive->extra_attribute_count;
 
@@ -277,66 +278,49 @@ static u64 model_get_required_size_from_gltf(Gltf *gltf) {
 
 inline static Accessor_Flag_Bits translate_gltf_accessor_type_to_bits(Gltf_Accessor_Type type, u32 *ret_size) {
 
-    Accessor_Flag_Bits ret = {};
+    Accessor_Flags ret = 0x0;
+    *ret_size = 0;
 
-    switch(type) {
-    case GLTF_ACCESSOR_TYPE_SCALAR:
-        ret = ACCESSOR_TYPE_SCALAR_BIT;
-        *ret_size = 1;
-        break;
-    case GLTF_ACCESSOR_TYPE_VEC2:
-        ret = ACCESSOR_TYPE_VEC2_BIT;
-        *ret_size = 2;
-        break;
-    case GLTF_ACCESSOR_TYPE_VEC3:
-        ret = ACCESSOR_TYPE_VEC3_BIT;
-        *ret_size = 3;
-        break;
-    case GLTF_ACCESSOR_TYPE_VEC4:
-        ret = ACCESSOR_TYPE_VEC4_BIT;
-        *ret_size = 4;
-        break;
-    case GLTF_ACCESSOR_TYPE_MAT2:
-        ret = ACCESSOR_TYPE_MAT2_BIT;
-        *ret_size = 4;
-        break;
-    case GLTF_ACCESSOR_TYPE_MAT3:
-        ret = ACCESSOR_TYPE_MAT3_BIT;
-        *ret_size = 9;
-        break;
-    case GLTF_ACCESSOR_TYPE_MAT4:
-        ret = ACCESSOR_TYPE_MAT4_BIT;
-        *ret_size = 16;
-        break;
-    case GLTF_ACCESSOR_TYPE_BYTE:
-        ret = ACCESSOR_COMPONENT_TYPE_SCHAR_BIT;
-        *ret_size = 1;
-        break;
-    case GLTF_ACCESSOR_TYPE_UNSIGNED_BYTE:
-        ret = ACCESSOR_COMPONENT_TYPE_UCHAR_BIT;
-        *ret_size = 1;
-        break;
-    case GLTF_ACCESSOR_TYPE_SHORT:
-        ret = ACCESSOR_COMPONENT_TYPE_S16_BIT;
-        *ret_size = 2;
-        break;
-    case GLTF_ACCESSOR_TYPE_UNSIGNED_SHORT:
-        ret = ACCESSOR_COMPONENT_TYPE_U16_BIT;
-        *ret_size = 2;
-        break;
-    case GLTF_ACCESSOR_TYPE_UNSIGNED_INT:
-        ret = ACCESSOR_COMPONENT_TYPE_U32_BIT;
-        *ret_size = 4;
-        break;
-    case GLTF_ACCESSOR_TYPE_FLOAT:
-        ret = ACCESSOR_COMPONENT_TYPE_FLOAT_BIT;
-        *ret_size = 4;
-        break;
-    default:
-        assert(false && "Invalid Accessor Type");
-        return {};
-    }
-    return ret;
+    ret |= (Accessor_Flags)(ACCESSOR_TYPE_SCALAR_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_SCALAR == type));
+    *ret_size += 1 & max32_if_true(GLTF_ACCESSOR_TYPE_SCALAR == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_TYPE_VEC2_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_VEC2 == type));
+    *ret_size += 2 & max32_if_true(GLTF_ACCESSOR_TYPE_VEC2 == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_TYPE_VEC3_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_VEC3 == type));
+    *ret_size += 3 & max32_if_true(GLTF_ACCESSOR_TYPE_VEC3 == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_TYPE_VEC4_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_VEC4 == type));
+    *ret_size += 4 & max32_if_true(GLTF_ACCESSOR_TYPE_VEC4 == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_TYPE_MAT2_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_MAT2 == type));
+    *ret_size += 4 & max32_if_true(GLTF_ACCESSOR_TYPE_MAT2 == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_TYPE_MAT3_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_MAT3 == type));
+    *ret_size += 9 & max32_if_true(GLTF_ACCESSOR_TYPE_MAT3 == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_TYPE_MAT4_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_MAT4 == type));
+    *ret_size += 16 & max32_if_true(GLTF_ACCESSOR_TYPE_MAT4 == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_COMPONENT_TYPE_SCHAR_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_BYTE == type));
+    *ret_size += 1 & max32_if_true(GLTF_ACCESSOR_TYPE_BYTE == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_COMPONENT_TYPE_UCHAR_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_UNSIGNED_BYTE == type));
+    *ret_size += 1 & max32_if_true(GLTF_ACCESSOR_TYPE_UNSIGNED_BYTE == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_COMPONENT_TYPE_S16_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_SHORT == type));
+    *ret_size += 2 & max32_if_true(GLTF_ACCESSOR_TYPE_SHORT == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_COMPONENT_TYPE_U16_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_UNSIGNED_SHORT == type));
+    *ret_size += 2 & max32_if_true(GLTF_ACCESSOR_TYPE_UNSIGNED_SHORT == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_COMPONENT_TYPE_U32_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_UNSIGNED_INT == type));
+    *ret_size += 4 & max32_if_true(GLTF_ACCESSOR_TYPE_UNSIGNED_INT == type);
+
+    ret |= (Accessor_Flags)(ACCESSOR_COMPONENT_TYPE_FLOAT_BIT & max32_if_true(GLTF_ACCESSOR_TYPE_FLOAT == type));
+    *ret_size += 4 & max32_if_true(GLTF_ACCESSOR_TYPE_FLOAT == type);
+
+    return (Accessor_Flag_Bits)ret;
 }
 
 static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, Accessor *accessors, u8 *model_buffer, u64 *size_used) {
@@ -350,29 +334,32 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
     for(u32 i = 0; i < count; ++i) {
         accessors[i] = {};
 
-        accessors[i].flags |= translate_gltf_accessor_type_to_bits(gltf_accessor->type, &tmp_component_count);
+        accessors[i].flags |= translate_gltf_accessor_type_to_bits(gltf_accessor->type,           &tmp_component_count);
         accessors[i].flags |= translate_gltf_accessor_type_to_bits(gltf_accessor->component_type, &tmp_component_width);
 
-        accessors[i].flags |= ACCESSOR_BUFFER_VIEW_BIT & max32_if_true(gltf_accessor->buffer_view != -1);
-        accessors[i].flags |= ACCESSOR_NORMALIZED_BIT  & max32_if_true(gltf_accessor->normalized);
-        accessors[i].flags |= ACCESSOR_MAX_MIN_BIT     & max32_if_true(gltf_accessor->max != NULL);
-        accessors[i].flags |= ACCESSOR_SPARSE_BIT      & max32_if_true(gltf_accessor->sparse_count);
+        if (i == 0)
+            assert(accessors[i].flags & ACCESSOR_TYPE_SCALAR_BIT);
 
-        //accessors[i].buffer_view  = gltf_accessor->buffer_view;
+        accessors[i].flags |= ACCESSOR_NORMALIZED_BIT  & max32_if_true(gltf_accessor->normalized);
+
         accessors[i].byte_stride  = gltf_accessor->byte_stride;
         accessors[i].count        = gltf_accessor->count;
 
-        if (accessors[i].flags & ACCESSOR_MAX_MIN_BIT) {
+        if (gltf_accessor->max) {
             accessors[i].max_min = (Accessor_Max_Min*)(model_buffer + *size_used);
             tmp                  = sizeof(float) * tmp_component_count;
 
-            memcpy(accessors[i].max_min +   0, gltf_accessor->max, tmp);
-            memcpy(accessors[i].max_min + tmp, gltf_accessor->min, tmp);
+            println("tmp: %u", tmp);
+            if (i == 0)
+                assert( tmp == 4);
+
+            memcpy(accessors[i].max_min->max, gltf_accessor->max, tmp);
+            memcpy(accessors[i].max_min->min, gltf_accessor->min, tmp);
 
             *size_used += sizeof(Accessor_Max_Min);
         }
 
-        if (accessors[i].flags & ACCESSOR_SPARSE_BIT) {
+        if (gltf_accessor->sparse_count) {
             accessors[i].sparse = (Accessor_Sparse*)(model_buffer + *size_used);
 
             accessors[i].sparse->indices_component_type = translate_gltf_accessor_type_to_bits(gltf_accessor->indices_component_type, &tmp);
@@ -397,17 +384,17 @@ static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, 
     for(u32 i = 0; i < count; ++i) {
         materials[i] = {};
 
-        materials[i].flags |= MATERIAL_BASE_BIT                   & max32_if_true(gltf_material->base_color_texture_index         != -1);
-        materials[i].flags |= MATERIAL_PBR_METALLIC_ROUGHNESS_BIT & max32_if_true(gltf_material->metallic_roughness_texture_index != -1);
-        materials[i].flags |= MATERIAL_NORMAL_BIT                 & max32_if_true(gltf_material->normal_texture_index             != -1);
-        materials[i].flags |= MATERIAL_OCCLUSION_BIT              & max32_if_true(gltf_material->occlusion_texture_index          != -1);
-        materials[i].flags |= MATERIAL_EMISSIVE_BIT               & max32_if_true(gltf_material->emissive_texture_index           != -1);
+        materials[i].flags |= MATERIAL_BASE_BIT      & max32_if_true(gltf_material->base_color_texture_index         != -1);
+        materials[i].flags |= MATERIAL_PBR_BIT       & max32_if_true(gltf_material->metallic_roughness_texture_index != -1);
+        materials[i].flags |= MATERIAL_NORMAL_BIT    & max32_if_true(gltf_material->normal_texture_index             != -1);
+        materials[i].flags |= MATERIAL_OCCLUSION_BIT & max32_if_true(gltf_material->occlusion_texture_index          != -1);
+        materials[i].flags |= MATERIAL_EMISSIVE_BIT  & max32_if_true(gltf_material->emissive_texture_index           != -1);
 
-        materials[i].flags |= MATERIAL_BASE_TEX_COORD_BIT                   & max32_if_true(gltf_material->base_color_tex_coord         != -1);
-        materials[i].flags |= MATERIAL_PBR_METALLIC_ROUGHNESS_TEX_COORD_BIT & max32_if_true(gltf_material->metallic_roughness_tex_coord != -1);
-        materials[i].flags |= MATERIAL_NORMAL_TEX_COORD_BIT                 & max32_if_true(gltf_material->normal_tex_coord             != -1);
-        materials[i].flags |= MATERIAL_OCCLUSION_TEX_COORD_BIT              & max32_if_true(gltf_material->occlusion_tex_coord          != -1);
-        materials[i].flags |= MATERIAL_EMISSIVE_TEX_COORD_BIT               & max32_if_true(gltf_material->emissive_tex_coord           != -1);
+        materials[i].flags |= MATERIAL_BASE_TEX_COORD_BIT      & max32_if_true(gltf_material->base_color_tex_coord         != -1);
+        materials[i].flags |= MATERIAL_PBR_TEX_COORD_BIT       & max32_if_true(gltf_material->metallic_roughness_tex_coord != -1);
+        materials[i].flags |= MATERIAL_NORMAL_TEX_COORD_BIT    & max32_if_true(gltf_material->normal_tex_coord             != -1);
+        materials[i].flags |= MATERIAL_OCCLUSION_TEX_COORD_BIT & max32_if_true(gltf_material->occlusion_tex_coord          != -1);
+        materials[i].flags |= MATERIAL_EMISSIVE_TEX_COORD_BIT  & max32_if_true(gltf_material->emissive_tex_coord           != -1);
 
         materials[i].flags |= MATERIAL_OPAQUE_BIT & max32_if_true(gltf_material->alpha_mode == GLTF_ALPHA_MODE_OPAQUE);
         materials[i].flags |= MATERIAL_MASK_BIT   & max32_if_true(gltf_material->alpha_mode == GLTF_ALPHA_MODE_MASK);
@@ -418,20 +405,20 @@ static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, 
         materials[i].alpha_cutoff = gltf_material->alpha_cutoff;
 
         // Pbr
-        materials[i].pbr_metallic_roughness = {};
+        materials[i].pbr = {};
 
-        materials[i].pbr_metallic_roughness.base_color_factor[0]       = gltf_material->base_color_factor[0];
-        materials[i].pbr_metallic_roughness.base_color_factor[1]       = gltf_material->base_color_factor[1];
-        materials[i].pbr_metallic_roughness.base_color_factor[2]       = gltf_material->base_color_factor[2];
-        materials[i].pbr_metallic_roughness.base_color_factor[3]       = gltf_material->base_color_factor[3];
+        materials[i].pbr.base_color_factor[0] = gltf_material->base_color_factor[0];
+        materials[i].pbr.base_color_factor[1] = gltf_material->base_color_factor[1];
+        materials[i].pbr.base_color_factor[2] = gltf_material->base_color_factor[2];
+        materials[i].pbr.base_color_factor[3] = gltf_material->base_color_factor[3];
 
-        materials[i].pbr_metallic_roughness.metallic_factor            = gltf_material->metallic_factor;
-        materials[i].pbr_metallic_roughness.roughness_factor           = gltf_material->roughness_factor;
+        materials[i].pbr.metallic_factor  = gltf_material->metallic_factor;
+        materials[i].pbr.roughness_factor = gltf_material->roughness_factor;
 
-        materials[i].pbr_metallic_roughness.base_color_texture         = gltf_material->base_color_texture_index;
-        materials[i].pbr_metallic_roughness.base_color_tex_coord       = gltf_material->base_color_tex_coord;
-        materials[i].pbr_metallic_roughness.metallic_roughness_texture = gltf_material->metallic_roughness_texture_index;
-        materials[i].pbr_metallic_roughness.metallic_roughness_texture = gltf_material->metallic_roughness_tex_coord;
+        materials[i].pbr.base_color_texture           = gltf_material->base_color_texture_index;
+        materials[i].pbr.base_color_tex_coord         = gltf_material->base_color_tex_coord;
+        materials[i].pbr.metallic_roughness_texture   = gltf_material->metallic_roughness_texture_index;
+        materials[i].pbr.metallic_roughness_tex_coord = gltf_material->metallic_roughness_tex_coord;
 
         // Normal
         materials[i].normal.scale     = gltf_material->normal_scale;
@@ -439,9 +426,9 @@ static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, 
         materials[i].normal.tex_coord = gltf_material->normal_tex_coord;
 
         // Occlusion
-        materials[i].occlusion.strength  = gltf_material->normal_scale;
-        materials[i].occlusion.texture   = gltf_material->normal_texture_index;
-        materials[i].occlusion.tex_coord = gltf_material->normal_tex_coord;
+        materials[i].occlusion.strength  = gltf_material->occlusion_strength;
+        materials[i].occlusion.texture   = gltf_material->occlusion_texture_index;
+        materials[i].occlusion.tex_coord = gltf_material->occlusion_tex_coord;
 
         // Emissive
         materials[i].emissive.factor[0] = gltf_material->emissive_factor[0];
@@ -563,7 +550,7 @@ struct Buffer_View {
 };
 
 // @Todo Skins, Animations, Cameras.
-Model model_from_gltf(String *gltf_file_name, u8 *model_buffer, u64 size_available, u64 *ret_size_used) {
+Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buffer, u64 *ret_size_used) {
     Gltf gltf = parse_gltf(gltf_file_name->str);
 
     // Get required bytes
@@ -624,3 +611,154 @@ Model load_model(String *gltf_file) { // @Unimplemented
     Model  ret;
     return ret;
 }
+
+#if TEST
+static void test_model_from_gltf();
+
+void test_asset() {
+    test_model_from_gltf();
+}
+
+void test_model_from_gltf() {
+    BEGIN_TEST_MODULE("Model_From_Gltf", true, false);
+
+    u64 size = 1024 * 8;
+    u8 *model_buffer = malloc_h(size, 16);
+
+    u64 size_used = 0;
+    String file_name = cstr_to_string("test/test_gltf.gltf");
+    Model model = model_from_gltf(&file_name, size, model_buffer, &size_used);
+
+    // Accessors
+    Accessor *accessors = model.accessors;
+    TEST_EQ("accessor_count", model.accessor_count, 3, false);
+
+    TEST_EQ("accessors[0].type",      (accessors[0].flags & ACCESSOR_TYPE_BITS),           ACCESSOR_TYPE_SCALAR_BIT, false);
+    TEST_EQ("accessors[0].comp_type", (accessors[0].flags & ACCESSOR_COMPONENT_TYPE_BITS), ACCESSOR_COMPONENT_TYPE_U16_BIT,    false);
+
+    TEST_EQ("accessors[0].count",  accessors[0].count,             12636, false);
+    TEST_EQ("accessors[0].max[0]", accessors[0].max_min->max[0],    4212, false);
+    TEST_EQ("accessors[0].min[0]", accessors[0].max_min->min[0],       0, false);
+
+    TEST_EQ("accessors[1].type",      accessors[1].flags & ACCESSOR_TYPE_BITS,           ACCESSOR_TYPE_MAT4_BIT,  false);
+    TEST_EQ("accessors[1].comp_type", accessors[1].flags & ACCESSOR_COMPONENT_TYPE_BITS, ACCESSOR_COMPONENT_TYPE_FLOAT_BIT, false);
+    TEST_EQ("accessors[1].count",     accessors[1].count, 2399, false);
+
+    TEST_FEQ("accessors[1].max[0]",  accessors[1].max_min->max[0],  0.9971418380737304    , false);
+    TEST_FEQ("accessors[1].max[1]",  accessors[1].max_min->max[1],  -4.371139894487897e-8 , false);
+    TEST_FEQ("accessors[1].max[2]",  accessors[1].max_min->max[2],  0.9996265172958374    , false);
+    TEST_FEQ("accessors[1].max[3]",  accessors[1].max_min->max[3],  0                     , false);
+    TEST_FEQ("accessors[1].max[4]",  accessors[1].max_min->max[4],  4.3586464215650273e-8 , false);
+    TEST_FEQ("accessors[1].max[5]",  accessors[1].max_min->max[5],  1                     , false);
+    TEST_FEQ("accessors[1].max[6]",  accessors[1].max_min->max[6],  4.3695074225524884e-8 , false);
+    TEST_FEQ("accessors[1].max[7]",  accessors[1].max_min->max[7],  0                     , false);
+    TEST_FEQ("accessors[1].max[8]",  accessors[1].max_min->max[8],  0.9999366402626038    , false);
+    TEST_FEQ("accessors[1].max[9]",  accessors[1].max_min->max[9],  0                     , false);
+    TEST_FEQ("accessors[1].max[10]", accessors[1].max_min->max[10], 0.9971418380737304    , false);
+    TEST_FEQ("accessors[1].max[11]", accessors[1].max_min->max[11], 0                     , false);
+    TEST_FEQ("accessors[1].max[12]", accessors[1].max_min->max[12], 1.1374080181121828    , false);
+    TEST_FEQ("accessors[1].max[13]", accessors[1].max_min->max[13], 0.44450080394744873   , false);
+    TEST_FEQ("accessors[1].max[14]", accessors[1].max_min->max[14], 1.0739599466323853    , false);
+    TEST_FEQ("accessors[1].max[15]", accessors[1].max_min->max[15], 1                     , false);
+
+    TEST_FEQ("accessors[1].min[0]",  accessors[1].max_min->min[0],  -0.9999089241027832    , false);
+    TEST_FEQ("accessors[1].min[1]",  accessors[1].max_min->min[1],  -4.371139894487897e-8  , false);
+    TEST_FEQ("accessors[1].min[2]",  accessors[1].max_min->min[2],  -0.9999366402626038    , false);
+    TEST_FEQ("accessors[1].min[3]",  accessors[1].max_min->min[3],  0                      , false);
+    TEST_FEQ("accessors[1].min[4]",  accessors[1].max_min->min[4],  -4.3707416352845037e-8 , false);
+    TEST_FEQ("accessors[1].min[5]",  accessors[1].max_min->min[5],  1                      , false);
+    TEST_FEQ("accessors[1].min[6]",  accessors[1].max_min->min[6],  -4.37086278282095e-8   , false);
+    TEST_FEQ("accessors[1].min[7]",  accessors[1].max_min->min[7],  0                      , false);
+    TEST_FEQ("accessors[1].min[8]",  accessors[1].max_min->min[8],  -0.9996265172958374    , false);
+    TEST_FEQ("accessors[1].min[9]",  accessors[1].max_min->min[9],  0                      , false);
+    TEST_FEQ("accessors[1].min[10]", accessors[1].max_min->min[10], -0.9999089241027832    , false);
+    TEST_FEQ("accessors[1].min[11]", accessors[1].max_min->min[11], 0                      , false);
+    TEST_FEQ("accessors[1].min[12]", accessors[1].max_min->min[12], -1.189831018447876     , false);
+    TEST_FEQ("accessors[1].min[13]", accessors[1].max_min->min[13], -0.45450031757354736   , false);
+    TEST_FEQ("accessors[1].min[14]", accessors[1].max_min->min[14], -1.058603048324585     , false);
+    TEST_FEQ("accessors[1].min[15]", accessors[1].max_min->min[15], 1                      , false);
+
+    TEST_EQ("accessors[2].type",      accessors[2].flags & ACCESSOR_TYPE_BITS,           ACCESSOR_TYPE_VEC3_BIT,  false);
+    TEST_EQ("accessors[2].comp_type", accessors[2].flags & ACCESSOR_COMPONENT_TYPE_BITS, ACCESSOR_COMPONENT_TYPE_U32_BIT, false);
+    TEST_EQ("accessors[2].count",     accessors[2].count, 12001, false);
+
+    TEST_EQ("accessors[2].sparse.indices_comp_type", accessors[2].sparse->indices_component_type, ACCESSOR_COMPONENT_TYPE_U16_BIT, false);
+    TEST_EQ("accessors[2].sparse.count",             accessors[2].sparse->count, 10, false);
+
+    // Materials
+    Material *materials = model.materials;
+    TEST_EQ("model.material_count", model.material_count, 2, false);
+
+    TEST_EQ("materials[0].base_bit",         materials[0].flags & MATERIAL_BASE_BIT,        MATERIAL_BASE_BIT,   false);
+    TEST_EQ("materials[0].pbr_bit",          materials[0].flags & MATERIAL_PBR_BIT,         MATERIAL_PBR_BIT,    false);
+    TEST_EQ("materials[0].normal_bit",       materials[0].flags & MATERIAL_NORMAL_BIT,      MATERIAL_NORMAL_BIT, false);
+    TEST_EQ("materials[0].occlusion_bit",    materials[0].flags & MATERIAL_OCCLUSION_BIT,              0x0, false);
+    TEST_EQ("materials[0].emissive_bit",     materials[0].flags & MATERIAL_EMISSIVE_BIT,               0x0, false);
+    TEST_EQ("materials[0].double_sided_bit", materials[0].flags & MATERIAL_DOUBLE_SIDED_BIT,           0x0, false);
+    TEST_EQ("materials[0].opaque_bit",       materials[0].flags & MATERIAL_OPAQUE_BIT, MATERIAL_OPAQUE_BIT, false);
+    TEST_EQ("materials[0].opaque_bit",       materials[0].flags & MATERIAL_MASK_BIT,                   0x0, false);
+    TEST_EQ("materials[0].opaque_bit",       materials[0].flags & MATERIAL_BLEND_BIT,                  0x0, false);
+
+    TEST_EQ("materials[1].base_bit",         materials[1].flags & MATERIAL_BASE_BIT,         MATERIAL_BASE_BIT,   false);
+    TEST_EQ("materials[1].pbr_bit",          materials[1].flags & MATERIAL_PBR_BIT,          MATERIAL_PBR_BIT,    false);
+    TEST_EQ("materials[1].normal_bit",       materials[1].flags & MATERIAL_NORMAL_BIT,       MATERIAL_NORMAL_BIT, false);
+    TEST_EQ("materials[1].occlusion_bit",    materials[1].flags & MATERIAL_OCCLUSION_BIT,    MATERIAL_OCCLUSION_BIT, false);
+    TEST_EQ("materials[1].emissive_bit",     materials[1].flags & MATERIAL_EMISSIVE_BIT,     MATERIAL_EMISSIVE_BIT, false);
+    TEST_EQ("materials[1].double_sided_bit", materials[1].flags & MATERIAL_DOUBLE_SIDED_BIT,           0x0, false);
+    TEST_EQ("materials[1].opaque_bit",       materials[1].flags & MATERIAL_OPAQUE_BIT,       MATERIAL_OPAQUE_BIT, false);
+    TEST_EQ("materials[1].opaque_bit",       materials[1].flags & MATERIAL_MASK_BIT,                   0x0, false);
+    TEST_EQ("materials[1].opaque_bit",       materials[1].flags & MATERIAL_BLEND_BIT,                  0x0, false);
+
+
+    TEST_EQ("materials[0].base_color_texture_index",         materials[0].pbr.base_color_texture,          1, false);
+    TEST_EQ("materials[0].base_color_tex_coord",             materials[0].pbr.base_color_tex_coord,        1, false);
+    TEST_EQ("materials[0].metallic_roughness_texture_index", materials[0].pbr.metallic_roughness_texture,  2, false);
+    TEST_EQ("materials[0].metallic_roughness_tex_coord",     materials[0].pbr.metallic_roughness_tex_coord,1, false);
+
+    TEST_EQ("materials[0].normal_texture_index",             materials[0].normal.texture,                   3, false);
+    TEST_EQ("materials[0].normal_tex_coord",                 materials[0].normal.tex_coord,                 1, false);
+
+    TEST_EQ("materials[1].base_color_texture_index",         materials[1].pbr.base_color_texture,           3, false);
+    TEST_EQ("materials[1].base_color_tex_coord",             materials[1].pbr.base_color_tex_coord,         4, false);
+    TEST_EQ("materials[1].metallic_roughness_texture_index", materials[1].pbr.metallic_roughness_texture,   8, false);
+    TEST_EQ("materials[1].metallic_roughness_tex_coord",     materials[1].pbr.metallic_roughness_tex_coord, 8, false);
+
+    TEST_EQ("materials[1].normal_texture_index",             materials[1].normal.texture,                   12, false);
+    TEST_EQ("materials[1].normal_tex_coord",                 materials[1].normal.tex_coord,                 11, false);
+
+    TEST_EQ("materials[1].emissive_texture_index",           materials[1].emissive.texture,                  3, false);
+    TEST_EQ("materials[1].emissive_tex_coord",               materials[1].emissive.tex_coord,            56070, false);
+
+    TEST_EQ("materials[1].occlusion_texture_index",          materials[1].occlusion.texture,                79, false);
+    TEST_EQ("materials[1].occlusion_tex_coord",              materials[1].occlusion.tex_coord,            9906, false);
+
+    TEST_FEQ("materials[0].metallic_factor",      materials[0].pbr.metallic_factor , 1   , false);
+    TEST_FEQ("materials[0].roughness_factor",     materials[0].pbr.roughness_factor, 1   , false);
+    TEST_FEQ("materials[0].normal_scale",         materials[0].normal.scale        , 2   , false);
+
+    TEST_FEQ("materials[0].base_color_factor[0]", materials[0].pbr.base_color_factor[0],  0.5, false);
+    TEST_FEQ("materials[0].base_color_factor[1]", materials[0].pbr.base_color_factor[1],  0.5, false);
+    TEST_FEQ("materials[0].base_color_factor[2]", materials[0].pbr.base_color_factor[2],  0.5, false);
+    TEST_FEQ("materials[0].base_color_factor[3]", materials[0].pbr.base_color_factor[3],  1.0, false);
+
+    TEST_FEQ("materials[0].emissive_factor[0]",   materials[0].emissive.factor[0],  0.2, false);
+    TEST_FEQ("materials[0].emissive_factor[1]",   materials[0].emissive.factor[1],  0.1, false);
+    TEST_FEQ("materials[0].emissive_factor[2]",   materials[0].emissive.factor[2],  0.0, false);
+
+    TEST_FEQ("materials[1].metallic_factor",      materials[1].pbr.metallic_factor , 5.0  , false);
+    TEST_FEQ("materials[1].roughness_factor",     materials[1].pbr.roughness_factor, 6.0  , false);
+    TEST_FEQ("materials[1].normal_scale",         materials[1].normal.scale        , 1.0  , false);
+    TEST_FEQ("materials[1].occlusion_strength",   materials[1].occlusion.strength  , 0.679, false);
+
+    TEST_FEQ("materials[1].base_color_factor[0]", materials[1].pbr.base_color_factor[0] ,  2.5, false);
+    TEST_FEQ("materials[1].base_color_factor[1]", materials[1].pbr.base_color_factor[1] ,  4.5, false);
+    TEST_FEQ("materials[1].base_color_factor[2]", materials[1].pbr.base_color_factor[2] ,  2.5, false);
+    TEST_FEQ("materials[1].base_color_factor[3]", materials[1].pbr.base_color_factor[3] ,  1.0, false);
+
+    TEST_FEQ("materials[1].emissive_factor[0]", materials[1].emissive.factor[0] , 11.2, false);
+    TEST_FEQ("materials[1].emissive_factor[1]", materials[1].emissive.factor[1] ,  0.1, false);
+    TEST_FEQ("materials[1].emissive_factor[2]", materials[1].emissive.factor[2] ,  0.0, false);
+
+    END_TEST_MODULE();
+}
+#endif

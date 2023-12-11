@@ -4,6 +4,10 @@
 #include "gpu.hpp"
 #include "model.hpp"
 
+#if TEST
+void test_asset();
+#endif
+
 struct Model_Allocators {
     Gpu_Allocator        index;
     Gpu_Allocator        vertex;
@@ -102,31 +106,31 @@ struct Emissive_Texture { // 20 bytes
 };
 
 enum Material_Flag_Bits {
-    MATERIAL_BASE_BIT                             = 0x0001,
-    MATERIAL_PBR_METALLIC_ROUGHNESS_BIT           = 0x0002,
-    MATERIAL_NORMAL_BIT                           = 0x0004,
-    MATERIAL_OCCLUSION_BIT                        = 0x0008,
-    MATERIAL_EMISSIVE_BIT                         = 0x0010,
-    MATERIAL_BASE_TEX_COORD_BIT                   = 0x0020,
-    MATERIAL_PBR_METALLIC_ROUGHNESS_TEX_COORD_BIT = 0x0040,
-    MATERIAL_NORMAL_TEX_COORD_BIT                 = 0x0080,
-    MATERIAL_OCCLUSION_TEX_COORD_BIT              = 0x0100,
-    MATERIAL_EMISSIVE_TEX_COORD_BIT               = 0x0200,
-    MATERIAL_OPAQUE_BIT                           = 0x0400,
-    MATERIAL_MASK_BIT                             = 0x0800,
-    MATERIAL_BLEND_BIT                            = 0x1000,
-    MATERIAL_DOUBLE_SIDED_BIT                     = 0x2000,
+    MATERIAL_BASE_BIT                = 0x0001,
+    MATERIAL_PBR_BIT                 = 0x0002,
+    MATERIAL_NORMAL_BIT              = 0x0004,
+    MATERIAL_OCCLUSION_BIT           = 0x0008,
+    MATERIAL_EMISSIVE_BIT            = 0x0010,
+    MATERIAL_BASE_TEX_COORD_BIT      = 0x0020,
+    MATERIAL_PBR_TEX_COORD_BIT       = 0x0040,
+    MATERIAL_NORMAL_TEX_COORD_BIT    = 0x0080,
+    MATERIAL_OCCLUSION_TEX_COORD_BIT = 0x0100,
+    MATERIAL_EMISSIVE_TEX_COORD_BIT  = 0x0200,
+    MATERIAL_OPAQUE_BIT              = 0x0400,
+    MATERIAL_MASK_BIT                = 0x0800,
+    MATERIAL_BLEND_BIT               = 0x1000,
+    MATERIAL_DOUBLE_SIDED_BIT        = 0x2000,
 };
 typedef u32 Material_Flags;
 
 struct Material { // 92 bytes
-    Material_Flags         flags;                    // 4
-    float                  alpha_cutoff       = 0.5; // 4
+    Material_Flags         flags;              // 4
+    float                  alpha_cutoff = 0.5; // 4
 
-    Pbr_Metallic_Roughness pbr_metallic_roughness;   // 40
-    Normal_Texture         normal;                   // 12
-    Occlusion_Texture      occlusion;                // 12
-    Emissive_Texture       emissive;                 // 20
+    Pbr_Metallic_Roughness pbr;          // 40
+    Normal_Texture         normal;       // 12
+    Occlusion_Texture      occlusion;    // 12
+    Emissive_Texture       emissive;     // 20
 
     char pad[128 - 92]; // 4 + 4 + 40 + 12 + 12 + 20
 };
@@ -188,17 +192,13 @@ static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_MAT3   =  9;
 static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_MAT4   = 16;
 
 enum Accessor_Flag_Bits {
-    ACCESSOR_BUFFER_VIEW_BIT          = 0x0001,
-    ACCESSOR_BYTE_OFFSET_BIT          = 0x0002, // Irrelevant, but cba changing all the flags
-    ACCESSOR_NORMALIZED_BIT           = 0x0004,
-    ACCESSOR_MAX_MIN_BIT              = 0x0008,
-    ACCESSOR_SPARSE_BIT               = 0x0010,
-    ACCESSOR_COMPONENT_TYPE_SCHAR_BIT = 0x0020,
-    ACCESSOR_COMPONENT_TYPE_UCHAR_BIT = 0x0040,
-    ACCESSOR_COMPONENT_TYPE_S16_BIT   = 0x0080,
-    ACCESSOR_COMPONENT_TYPE_U16_BIT   = 0x0100,
-    ACCESSOR_COMPONENT_TYPE_U32_BIT   = 0x0200,
-    ACCESSOR_COMPONENT_TYPE_FLOAT_BIT = 0x0400,
+    ACCESSOR_NORMALIZED_BIT           = 0x0001,
+    ACCESSOR_COMPONENT_TYPE_SCHAR_BIT = 0x0002,
+    ACCESSOR_COMPONENT_TYPE_UCHAR_BIT = 0x0004,
+    ACCESSOR_COMPONENT_TYPE_S16_BIT   = 0x0008,
+    ACCESSOR_COMPONENT_TYPE_U16_BIT   = 0x0010,
+    ACCESSOR_COMPONENT_TYPE_U32_BIT   = 0x0020,
+    ACCESSOR_COMPONENT_TYPE_FLOAT_BIT = 0x0040,
     ACCESSOR_TYPE_SCALAR_BIT          = 0x0080,
     ACCESSOR_TYPE_VEC2_BIT            = 0x0100,
     ACCESSOR_TYPE_VEC3_BIT            = 0x0200,
