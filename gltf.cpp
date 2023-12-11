@@ -2476,8 +2476,18 @@ void test_meshes(Gltf_Mesh *meshes) {
 
     TEST_EQ("meshes[1].primitives[1].position", primitive->position, 12, false);
     TEST_EQ("meshes[1].primitives[1].normal", primitive->normal, 13, false);
-    TEST_EQ("meshes[1].primitives[1].tangent", primitive->tangent, 14, false);
-    TEST_EQ("meshes[1].primitives[1].tex_coord_0", primitive->tex_coord_0, 15, false);
+    //TEST_EQ("meshes[1].primitives[1].tangent", primitive->tangent, 14, false);
+    //TEST_EQ("meshes[1].primitives[1].tex_coord_0", primitive->tex_coord_0, 15, false);
+
+    TEST_EQ("meshes[1].primitives[1].extra_attribute_count", primitive->extra_attribute_count, 2, false);
+
+    TEST_EQ("meshes[1].primitives[1].extra_attributes[0]", primitive->extra_attributes[0].n, 1, false);
+    TEST_EQ("meshes[1].primitives[1].extra_attributes[0]", primitive->extra_attributes[0].type, GLTF_MESH_ATTRIBUTE_TYPE_JOINTS, false);
+    TEST_EQ("meshes[1].primitives[1].extra_attributes[0]", primitive->extra_attributes[0].accessor_index, 14, false);
+
+    TEST_EQ("meshes[1].primitives[1].extra_attributes[1]", primitive->extra_attributes[1].n, 1, false);
+    TEST_EQ("meshes[1].primitives[1].extra_attributes[1]", primitive->extra_attributes[1].type, GLTF_MESH_ATTRIBUTE_TYPE_WEIGHTS, false);
+    TEST_EQ("meshes[1].primitives[1].extra_attributes[1]", primitive->extra_attributes[1].accessor_index, 15, false);
 
     target = primitive->targets;
     TEST_EQ("meshes[1].primitives[1].target_count", primitive->target_count, 2, false);
