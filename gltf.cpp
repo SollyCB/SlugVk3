@@ -2411,7 +2411,7 @@ void test_meshes(Gltf_Mesh *meshes) {
     Gltf_Mesh_Primitive *primitive = mesh->primitives;
     TEST_EQ("meshes[0].primitives[0]", primitive->indices, 21, false);
     TEST_EQ("meshes[0].primitives[0]", primitive->material, 3, false);
-    //TEST_EQ("meshes[0].primitives[0]", primitive->mode,     (Gltf_Primitive_Topology)1, false);
+    TEST_EQ("meshes[0].primitives[0]", primitive->topology,     (Gltf_Primitive_Topology)1, false);
     TEST_EQ("meshes[0].primitives[0].position", primitive->position, 22, false);
     TEST_EQ("meshes[0].primitives[0].normal", primitive->normal, 23, false);
     TEST_EQ("meshes[0].primitives[0].tangent", primitive->tangent, 24, false);
@@ -2423,7 +2423,7 @@ void test_meshes(Gltf_Mesh *meshes) {
     primitive = (Gltf_Mesh_Primitive*)((u8*)primitive + primitive->stride);
     TEST_EQ("meshes[0].primitives[1]", primitive->indices,  31, false);
     TEST_EQ("meshes[0].primitives[1]", primitive->material, 33, false);
-    //TEST_EQ("meshes[0].primitives[1]", primitive->mode,      (Gltf_Primitive_Topology)1, false);
+    TEST_EQ("meshes[0].primitives[1]", primitive->topology, (Gltf_Primitive_Topology)3, false);
 
     TEST_EQ("meshes[0].primitives[1].position", primitive->position, 32, false);
     TEST_EQ("meshes[0].primitives[1].normal", primitive->normal, 33, false);
