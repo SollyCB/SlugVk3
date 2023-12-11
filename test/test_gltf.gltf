@@ -110,8 +110,8 @@
                     "attributes": {
                         "NORMAL": 13,
                         "POSITION": 12,
-                        "TANGENT": 14,
-                        "TEXCOORD_0": 15
+                        "JOINTS_1": 14,
+                        "WEIGHTS_1": 15
                     },
                     "indices": 11,
                     "material": 13,

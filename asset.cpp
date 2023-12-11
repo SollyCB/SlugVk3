@@ -231,12 +231,13 @@ static u64 model_get_required_size_from_gltf(Gltf *gltf) {
 
     Gltf_Mesh           *gltf_mesh = gltf->meshes;
     Gltf_Mesh_Primitive *gltf_primitive;
+    Gltf_Morph_Target   *gltf_morph_target;
     for(u32 i = 0; i < mesh_count; ++i) {
-
-        gltf_primitive = gltf_mesh->primitives;
 
         weight_count    += gltf_mesh->weight_count;
         primitive_count += gltf_mesh->primitive_count;
+
+        gltf_primitive = gltf_mesh->primitives;
 
         for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
             // I am glad that I dont *have* to redo the gltf parser, but I made some annoying decisions...
@@ -247,9 +248,14 @@ static u64 model_get_required_size_from_gltf(Gltf *gltf) {
 
             attribute_count += gltf_primitive->extra_attribute_count;
 
-            target_count += gltf_primitive->target_count;
-            for(u32 k = 0; k < gltf_primitive->target_count; ++k)
-                target_attribute_count += gltf_primitive->targets[k].attribute_count;
+            target_count    += gltf_primitive->target_count;
+
+            gltf_morph_target = gltf_primitive->targets;
+            for(u32 k = 0; k < gltf_primitive->target_count; ++k) {
+                target_attribute_count += gltf_morph_target->attribute_count;
+
+                gltf_morph_target = (Gltf_Morph_Target*)((u8*)gltf_morph_target + gltf_morph_target->stride);
+            }
 
             gltf_primitive = (Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
         }
@@ -337,9 +343,6 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
         accessors[i].flags |= translate_gltf_accessor_type_to_bits(gltf_accessor->type,           &tmp_component_count);
         accessors[i].flags |= translate_gltf_accessor_type_to_bits(gltf_accessor->component_type, &tmp_component_width);
 
-        if (i == 0)
-            assert(accessors[i].flags & ACCESSOR_TYPE_SCALAR_BIT);
-
         accessors[i].flags |= ACCESSOR_NORMALIZED_BIT  & max32_if_true(gltf_accessor->normalized);
 
         accessors[i].byte_stride  = gltf_accessor->byte_stride;
@@ -347,20 +350,17 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
 
         if (gltf_accessor->max) {
             accessors[i].max_min = (Accessor_Max_Min*)(model_buffer + *size_used);
-            tmp                  = sizeof(float) * tmp_component_count;
+            *size_used += sizeof(Accessor_Max_Min);
 
-            println("tmp: %u", tmp);
-            if (i == 0)
-                assert( tmp == 4);
+            tmp = sizeof(float) * tmp_component_count;
 
             memcpy(accessors[i].max_min->max, gltf_accessor->max, tmp);
             memcpy(accessors[i].max_min->min, gltf_accessor->min, tmp);
-
-            *size_used += sizeof(Accessor_Max_Min);
         }
 
         if (gltf_accessor->sparse_count) {
             accessors[i].sparse = (Accessor_Sparse*)(model_buffer + *size_used);
+            *size_used += sizeof(Accessor_Sparse);
 
             accessors[i].sparse->indices_component_type = translate_gltf_accessor_type_to_bits(gltf_accessor->indices_component_type, &tmp);
             accessors[i].sparse->count                  = gltf_accessor->sparse_count;
@@ -368,8 +368,6 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
             accessors[i].sparse->values_buffer_view     = gltf_accessor->values_buffer_view;
             accessors[i].sparse->indices_byte_offset    = gltf_accessor->indices_byte_offset;
             accessors[i].sparse->values_byte_offset     = gltf_accessor->values_byte_offset;
-
-            *size_used += sizeof(Accessor_Sparse);
         }
 
         gltf_accessor = (Gltf_Accessor*)((u8*)gltf_accessor + gltf_accessor->stride);
@@ -463,7 +461,8 @@ static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *mesh
     Morph_Target             *target;
 
     for(u32 i = 0; i < count; ++i) {
-        primitive_count = gltf_mesh->primitive_count;
+        primitive_count           = gltf_mesh->primitive_count;
+        meshes[i].primitive_count = primitive_count;
 
         meshes[i].primitives = (Mesh_Primitive*)(model_buffer + *size_used);
         *size_used          += sizeof(Mesh_Primitive) * primitive_count;
@@ -490,11 +489,11 @@ static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *mesh
             // If an attribute is not set, rather than branch, we just overwrite it by not incrementing the index.
             tmp = 0;
 
-            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->position,    .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION};
-            tmp += (u32)(gltf_primitive->position != -1);
-
             primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->normal,      .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL};
             tmp += (u32)(gltf_primitive->normal != -1);
+
+            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->position,    .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION};
+            tmp += (u32)(gltf_primitive->position != -1);
 
             primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->tangent,     .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT};
             tmp += (u32)(gltf_primitive->tangent != -1);
@@ -535,6 +534,13 @@ static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *mesh
 
             gltf_primitive = (Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
         }
+
+        meshes[i].weights      = (float*)(model_buffer + *size_used);
+        meshes[i].weight_count = gltf_mesh->weight_count;
+        *size_used += sizeof(float) * meshes[i].weight_count;
+
+        memcpy(meshes[i].weights, gltf_mesh->weights, sizeof(float) * meshes[i].weight_count);
+
         gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 }
@@ -600,6 +606,8 @@ Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buff
     ret.meshes = (Mesh*)(model_buffer + size_used);
     model_load_gltf_meshes(ret.mesh_count, gltf.meshes, ret.meshes, model_buffer, &size_used);
 
+    assert(size_used == req_size);
+
     *ret_size_used = size_used;
     return ret;
 }
@@ -607,7 +615,7 @@ Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buff
 Model_Storage_Info store_model(Model *model) { // @Unimplemented
     return {};
 }
-Model load_model(String *gltf_file) { // @Unimplemented
+Model load_model(Model_Storage_Info *strorage_info) { // @Unimplemented
     Model  ret;
     return ret;
 }
@@ -758,6 +766,222 @@ void test_model_from_gltf() {
     TEST_FEQ("materials[1].emissive_factor[0]", materials[1].emissive.factor[0] , 11.2, false);
     TEST_FEQ("materials[1].emissive_factor[1]", materials[1].emissive.factor[1] ,  0.1, false);
     TEST_FEQ("materials[1].emissive_factor[2]", materials[1].emissive.factor[2] ,  0.0, false);
+
+    // Meshes
+    TEST_EQ("model.mesh_count", model.mesh_count, 2, false);
+
+    Mesh *meshes = &model.meshes[0];
+
+    TEST_EQ("meshes[0].primitive_count", meshes[0].primitive_count, 2, false);
+    TEST_EQ("meshes[0].weight_count"   , meshes[0].weight_count   , 2, false);
+    TEST_EQ("meshes[1].primitive_count", meshes[1].primitive_count, 3, false);
+    TEST_EQ("meshes[1].weight_count"   , meshes[1].weight_count   , 2, false);
+
+    TEST_FEQ("meshes[0].weights[0]"   , meshes[0].weights[0], 0,   false);
+    TEST_FEQ("meshes[0].weights[1]"   , meshes[0].weights[1], 0.5, false);
+
+    TEST_FEQ("meshes[1].weights[0]"   , meshes[1].weights[0], 0,   false);
+    TEST_FEQ("meshes[1].weights[1]"   , meshes[1].weights[1], 0.5, false);
+
+    TEST_EQ("meshes[0].primitives[0].indices",  meshes[0].primitives[0].indices, 21, false);
+    TEST_EQ("meshes[0].primitives[1].indices",  meshes[0].primitives[1].indices, 31, false);
+    TEST_EQ("meshes[0].primitives[0].material", meshes[0].primitives[0].material, 3, false);
+
+    TEST_EQ("meshes[0].primitives[1].material", meshes[0].primitives[1].material, 33, false);
+    TEST_EQ("meshes[0].primitives[0].topology", meshes[0].primitives[0].topology, (VkPrimitiveTopology)1, false);
+    TEST_EQ("meshes[0].primitives[1].topology", meshes[0].primitives[1].topology, (VkPrimitiveTopology)3, false);
+
+    TEST_EQ("meshes[1].primitives[0].indices",  meshes[1].primitives[0].indices, 11, false);
+    TEST_EQ("meshes[1].primitives[1].indices",  meshes[1].primitives[1].indices, 11, false);
+    TEST_EQ("meshes[1].primitives[2].indices",  meshes[1].primitives[2].indices,  1, false);
+
+    TEST_EQ("meshes[1].primitives[0].material", meshes[1].primitives[0].material, 13, false);
+    TEST_EQ("meshes[1].primitives[1].material", meshes[1].primitives[1].material, 13, false);
+    TEST_EQ("meshes[1].primitives[2].material", meshes[1].primitives[2].material,  3, false);
+
+    TEST_EQ("meshes[1].primitives[0].topology", meshes[1].primitives[0].topology, (VkPrimitiveTopology)2, false);
+    TEST_EQ("meshes[1].primitives[1].topology", meshes[1].primitives[1].topology, (VkPrimitiveTopology)3, false);
+    TEST_EQ("meshes[1].primitives[2].topology", meshes[1].primitives[2].topology, (VkPrimitiveTopology)0, false);
+
+    // Attributes, targets
+    Mesh_Primitive *primitives = meshes[0].primitives;
+    TEST_EQ("meshes[0].primitives[0].attribute_count", primitives[0].attribute_count, 4, false);
+
+    TEST_EQ("meshes[0].primitives[0].attributes[0]", primitives[0].attributes[0].n,         0, false);
+    TEST_EQ("meshes[0].primitives[0].attributes[0]", primitives[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[0].primitives[0].attributes[0]", primitives[0].attributes[0].accessor, 23, false);
+
+    TEST_EQ("meshes[0].primitives[0].attributes[1]", primitives[0].attributes[1].n,         0, false);
+    TEST_EQ("meshes[0].primitives[0].attributes[1]", primitives[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[0].primitives[0].attributes[1]", primitives[0].attributes[1].accessor, 22, false);
+
+    TEST_EQ("meshes[0].primitives[0].attributes[2]", primitives[0].attributes[2].n,         0, false);
+    TEST_EQ("meshes[0].primitives[0].attributes[2]", primitives[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[0].primitives[0].attributes[2]", primitives[0].attributes[2].accessor, 24, false);
+
+    TEST_EQ("meshes[0].primitives[0].attributes[3]", primitives[0].attributes[3].n,         0, false);
+    TEST_EQ("meshes[0].primitives[0].attributes[3]", primitives[0].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS, false);
+    TEST_EQ("meshes[0].primitives[0].attributes[3]", primitives[0].attributes[3].accessor, 25, false);
+
+    TEST_EQ("meshes[0].primitives[1].attribute_count", primitives[1].attribute_count, 4, false);
+
+    TEST_EQ("meshes[0].primitives[1].attributes[0]", primitives[1].attributes[0].n,         0, false);
+    TEST_EQ("meshes[0].primitives[1].attributes[0]", primitives[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[0].primitives[1].attributes[0]", primitives[1].attributes[0].accessor, 33, false);
+
+    TEST_EQ("meshes[0].primitives[1].attributes[1]", primitives[1].attributes[1].n,         0, false);
+    TEST_EQ("meshes[0].primitives[1].attributes[1]", primitives[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[0].primitives[1].attributes[1]", primitives[1].attributes[1].accessor, 32, false);
+
+    TEST_EQ("meshes[0].primitives[1].attributes[2]", primitives[1].attributes[2].n,         0, false);
+    TEST_EQ("meshes[0].primitives[1].attributes[2]", primitives[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[0].primitives[1].attributes[2]", primitives[1].attributes[2].accessor, 34, false);
+
+    TEST_EQ("meshes[0].primitives[1].attributes[3]", primitives[1].attributes[3].n,         0, false);
+    TEST_EQ("meshes[0].primitives[1].attributes[3]", primitives[1].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS, false);
+    TEST_EQ("meshes[0].primitives[1].attributes[3]", primitives[1].attributes[3].accessor, 35, false);
+
+    Morph_Target *targets = primitives[1].targets;
+    TEST_EQ("meshes[0].primitives[0].target_count", primitives[0].target_count, 0, false);
+    TEST_EQ("meshes[0].primitives[1].target_count", primitives[1].target_count, 2, false);
+
+    TEST_EQ("meshes[0].targets[0].attributes[0]", targets[0].attributes[0].n,         0, false);
+    TEST_EQ("meshes[0].targets[0].attributes[0]", targets[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[0].targets[0].attributes[0]", targets[0].attributes[0].accessor, 33, false);
+
+    TEST_EQ("meshes[0].targets[0].attributes[1]", targets[0].attributes[1].n,         0, false);
+    TEST_EQ("meshes[0].targets[0].attributes[1]", targets[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[0].targets[0].attributes[1]", targets[0].attributes[1].accessor, 32, false);
+
+    TEST_EQ("meshes[0].targets[0].attributes[2]", targets[0].attributes[2].n,         0, false);
+    TEST_EQ("meshes[0].targets[0].attributes[2]", targets[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[0].targets[0].attributes[2]", targets[0].attributes[2].accessor, 34, false);
+
+    TEST_EQ("meshes[0].targets[1].attributes[0]", targets[1].attributes[0].n,         0, false);
+    TEST_EQ("meshes[0].targets[1].attributes[0]", targets[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[0].targets[1].attributes[0]", targets[1].attributes[0].accessor, 43, false);
+
+    TEST_EQ("meshes[0].targets[1].attributes[1]", targets[1].attributes[1].n,         0, false);
+    TEST_EQ("meshes[0].targets[1].attributes[1]", targets[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[0].targets[1].attributes[1]", targets[1].attributes[1].accessor, 42, false);
+
+    TEST_EQ("meshes[0].targets[1].attributes[2]", targets[1].attributes[2].n,         0, false);
+    TEST_EQ("meshes[0].targets[1].attributes[2]", targets[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[0].targets[1].attributes[2]", targets[1].attributes[2].accessor, 44, false);
+
+    primitives = meshes[1].primitives;
+    TEST_EQ("meshes[1].primitives[0].attribute_count", primitives[0].attribute_count, 4, false);
+
+    TEST_EQ("meshes[1].primitives[0].attributes[0]", primitives[0].attributes[0].n,         0, false);
+    TEST_EQ("meshes[1].primitives[0].attributes[0]", primitives[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[1].primitives[0].attributes[0]", primitives[0].attributes[0].accessor, 13, false);
+
+    TEST_EQ("meshes[1].primitives[0].attributes[1]", primitives[0].attributes[1].n,         0, false);
+    TEST_EQ("meshes[1].primitives[0].attributes[1]", primitives[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[1].primitives[0].attributes[1]", primitives[0].attributes[1].accessor, 12, false);
+
+    TEST_EQ("meshes[1].primitives[0].attributes[2]", primitives[0].attributes[2].n,         0, false);
+    TEST_EQ("meshes[1].primitives[0].attributes[2]", primitives[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[1].primitives[0].attributes[2]", primitives[0].attributes[2].accessor, 14, false);
+
+    TEST_EQ("meshes[1].primitives[0].attributes[3]", primitives[0].attributes[3].n,         0, false);
+    TEST_EQ("meshes[1].primitives[0].attributes[3]", primitives[0].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS, false);
+    TEST_EQ("meshes[1].primitives[0].attributes[3]", primitives[0].attributes[3].accessor, 15, false);
+
+    TEST_EQ("meshes[1].primitives[1].attribute_count", primitives[1].attribute_count, 4, false);
+
+    TEST_EQ("meshes[1].primitives[1].attributes[0]", primitives[1].attributes[0].n,         0, false);
+    TEST_EQ("meshes[1].primitives[1].attributes[0]", primitives[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[1].primitives[1].attributes[0]", primitives[1].attributes[0].accessor, 13, false);
+
+    TEST_EQ("meshes[1].primitives[1].attributes[1]", primitives[1].attributes[1].n,         0, false);
+    TEST_EQ("meshes[1].primitives[1].attributes[1]", primitives[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[1].primitives[1].attributes[1]", primitives[1].attributes[1].accessor, 12, false);
+
+    TEST_EQ("meshes[1].primitives[1].attributes[2]", primitives[1].attributes[2].n,         1, false);
+    TEST_EQ("meshes[1].primitives[1].attributes[2]", primitives[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS, false);
+    TEST_EQ("meshes[1].primitives[1].attributes[2]", primitives[1].attributes[2].accessor, 14, false);
+
+    TEST_EQ("meshes[1].primitives[1].attributes[3]", primitives[1].attributes[3].n,         1, false);
+    TEST_EQ("meshes[1].primitives[1].attributes[3]", primitives[1].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS, false);
+    TEST_EQ("meshes[1].primitives[1].attributes[3]", primitives[1].attributes[3].accessor, 15, false);
+
+    TEST_EQ("meshes[1].primitives[2].attributes[0]", primitives[2].attributes[0].n,         0, false);
+    TEST_EQ("meshes[1].primitives[2].attributes[0]", primitives[2].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[1].primitives[2].attributes[0]", primitives[2].attributes[0].accessor,  3, false);
+
+    TEST_EQ("meshes[1].primitives[2].attributes[1]", primitives[2].attributes[1].n,         0, false);
+    TEST_EQ("meshes[1].primitives[2].attributes[1]", primitives[2].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[1].primitives[2].attributes[1]", primitives[2].attributes[1].accessor,  2, false);
+
+    TEST_EQ("meshes[1].primitives[2].attributes[2]", primitives[2].attributes[2].n,         0, false);
+    TEST_EQ("meshes[1].primitives[2].attributes[2]", primitives[2].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[1].primitives[2].attributes[2]", primitives[2].attributes[2].accessor,  4, false);
+
+    TEST_EQ("meshes[1].primitives[2].attributes[3]", primitives[2].attributes[3].n,         1, false);
+    TEST_EQ("meshes[1].primitives[2].attributes[3]", primitives[2].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS, false);
+    TEST_EQ("meshes[1].primitives[2].attributes[3]", primitives[2].attributes[3].accessor,  5, false);
+
+    // Targets
+    TEST_EQ("meshes[1].primitives[0].attributes[2]", primitives[1].target_count, 2, false);
+
+    targets = primitives[1].targets;
+    TEST_EQ("meshes[1].primitives[0].target_count", primitives[0].target_count, 0, false);
+    TEST_EQ("meshes[1].primitives[1].target_count", primitives[1].target_count, 2, false);
+
+    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].n,         0, false);
+    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].accessor, 13, false);
+
+    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].n,         0, false);
+    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].accessor, 12, false);
+
+    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].n,         0, false);
+    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].accessor, 14, false);
+
+    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].n,         0, false);
+    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].accessor, 23, false);
+
+    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].n,         0, false);
+    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].accessor, 22, false);
+
+    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].n,         0, false);
+    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].accessor, 24, false);
+
+    targets = primitives[2].targets;
+    TEST_EQ("meshes[1].primitives[0].target_count", primitives[0].target_count, 0, false);
+    TEST_EQ("meshes[1].primitives[1].target_count", primitives[1].target_count, 2, false);
+    TEST_EQ("meshes[1].primitives[2].target_count", primitives[2].target_count, 2, false);
+
+    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].n,         0, false);
+    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].accessor,  3, false);
+
+    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].n,         0, false);
+    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].accessor,  2, false);
+
+    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].n,         0, false);
+    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].accessor,  4, false);
+
+    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].n,         0, false);
+    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
+    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].accessor, 9, false);
+
+    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].n,         0, false);
+    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
+    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].accessor,  7, false);
+
+    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].n,         0, false);
+    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
+    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].accessor,  6, false);
+
 
     END_TEST_MODULE();
 }
