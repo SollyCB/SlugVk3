@@ -21,6 +21,8 @@ constexpr u32 g_assets_keys_array_vertex_len     = 256;
 constexpr u32 g_assets_keys_array_sampler_len    = 256;
 constexpr u32 g_assets_keys_array_image_view_len = 256;
 
+struct Model;
+
 struct Assets {
     Model_Allocators model_allocators;
 
@@ -66,145 +68,205 @@ Assets* get_assets_instance();
 void init_assets();
 void kill_assets();
 
-Model load_model(Model_Identifier model_id);
-void  free_model(Model *model);
+// Model
 
-bool prepare_to_draw_models(u32 count, Model *models); // @Unimplemented wip
+// @Todo Animations, Skins, Cameras
+// @Todo store more of the Gpu_Tex_Allocation data on the model
+
+struct Pbr_Metallic_Roughness { // 40 bytes
+    float base_color_factor[4] = {1,1,1,1};
+    float metallic_factor      = 1;
+    float roughness_factor     = 1;
+    u32   base_color_texture;
+    u32   base_color_tex_coord;
+    u32   metallic_roughness_texture;
+    u32   metallic_roughness_tex_coord;
+};
+
+struct Normal_Texture { // 12 bytes
+    float scale = 1;
+    u32   texture;
+    u32   tex_coord;
+};
+
+struct Occlusion_Texture { // 12 bytes
+    float strength = 1;
+    u32   texture;
+    u32   tex_coord;
+};
+
+struct Emissive_Texture { // 20 bytes
+    float factor[3] = {0,0,0};
+    u32   texture;
+    u32   tex_coord;
+};
+
+enum Material_Flag_Bits {
+    MATERIAL_BASE_BIT                             = 0x0001,
+    MATERIAL_PBR_METALLIC_ROUGHNESS_BIT           = 0x0002,
+    MATERIAL_NORMAL_BIT                           = 0x0004,
+    MATERIAL_OCCLUSION_BIT                        = 0x0008,
+    MATERIAL_EMISSIVE_BIT                         = 0x0010,
+    MATERIAL_BASE_TEX_COORD_BIT                   = 0x0020,
+    MATERIAL_PBR_METALLIC_ROUGHNESS_TEX_COORD_BIT = 0x0040,
+    MATERIAL_NORMAL_TEX_COORD_BIT                 = 0x0080,
+    MATERIAL_OCCLUSION_TEX_COORD_BIT              = 0x0100,
+    MATERIAL_EMISSIVE_TEX_COORD_BIT               = 0x0200,
+    MATERIAL_OPAQUE_BIT                           = 0x0400,
+    MATERIAL_MASK_BIT                             = 0x0800,
+    MATERIAL_BLEND_BIT                            = 0x1000,
+    MATERIAL_DOUBLE_SIDED_BIT                     = 0x2000,
+};
+typedef u32 Material_Flags;
+
+struct Material { // 92 bytes
+    Material_Flags         flags;                    // 4
+    float                  alpha_cutoff       = 0.5; // 4
+
+    Pbr_Metallic_Roughness pbr_metallic_roughness;   // 40
+    Normal_Texture         normal;                   // 12
+    Occlusion_Texture      occlusion;                // 12
+    Emissive_Texture       emissive;                 // 20
+
+    char pad[128 - 92]; // 4 + 4 + 40 + 12 + 12 + 20
+};
+
+enum Mesh_Primitive_Attribute_Type {
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION   = 1,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL     = 2,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT    = 3,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS = 4,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_COLOR      = 5,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS     = 6,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS    = 7,
+};
+
+struct Mesh_Primitive_Attribute {
+    u32 n;
+    u32 accessor;
+    Mesh_Primitive_Attribute_Type type;
+};
+
+struct Morph_Target {
+    u32 attribute_count;
+    Mesh_Primitive_Attribute *attributes;
+};
+
+struct Mesh_Primitive {
+    VkPrimitiveTopology topology;
+
+    u32 indices;
+    u32 material;
+    u32 attribute_count;
+    u32 target_count;
+    Mesh_Primitive_Attribute *attributes;
+    Morph_Target             *targets;
+};
+
+struct Mesh {
+    u32 primitive_count;
+    u32 weight_count;
+    Mesh_Primitive *primitives;
+    float          *weights;
+};
+
+enum Accessor_Component_Type {
+    ACCESSOR_COMPONENT_TYPE_SCHAR = 5120,
+    ACCESSOR_COMPONENT_TYPE_UCHAR = 5121,
+    ACCESSOR_COMPONENT_TYPE_S16   = 5122,
+    ACCESSOR_COMPONENT_TYPE_U16   = 5123,
+    ACCESSOR_COMPONENT_TYPE_U32   = 5125,
+    ACCESSOR_COMPONENT_TYPE_FLOAT = 5126,
+};
+
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_SCALAR =  1;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_VEC2   =  2;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_VEC3   =  3;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_VEC4   =  4;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_MAT2   =  4;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_MAT3   =  9;
+static constexpr u32 ACCESSOR_TYPE_COMPONENT_COUNT_MAT4   = 16;
+
+enum Accessor_Flag_Bits {
+    ACCESSOR_BUFFER_VIEW_BIT          = 0x0001,
+    ACCESSOR_BYTE_OFFSET_BIT          = 0x0002, // Irrelevant, but cba changing all the flags
+    ACCESSOR_NORMALIZED_BIT           = 0x0004,
+    ACCESSOR_MAX_MIN_BIT              = 0x0008,
+    ACCESSOR_SPARSE_BIT               = 0x0010,
+    ACCESSOR_COMPONENT_TYPE_SCHAR_BIT = 0x0020,
+    ACCESSOR_COMPONENT_TYPE_UCHAR_BIT = 0x0040,
+    ACCESSOR_COMPONENT_TYPE_S16_BIT   = 0x0080,
+    ACCESSOR_COMPONENT_TYPE_U16_BIT   = 0x0100,
+    ACCESSOR_COMPONENT_TYPE_U32_BIT   = 0x0200,
+    ACCESSOR_COMPONENT_TYPE_FLOAT_BIT = 0x0400,
+    ACCESSOR_TYPE_SCALAR_BIT          = 0x0080,
+    ACCESSOR_TYPE_VEC2_BIT            = 0x0100,
+    ACCESSOR_TYPE_VEC3_BIT            = 0x0200,
+    ACCESSOR_TYPE_VEC4_BIT            = 0x0400,
+    ACCESSOR_TYPE_MAT2_BIT            = 0x0800,
+    ACCESSOR_TYPE_MAT3_BIT            = 0x1000,
+    ACCESSOR_TYPE_MAT4_BIT            = 0x2000,
+
+    ACCESSOR_TYPE_BITS = ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_TYPE_VEC3_BIT |
+                         ACCESSOR_TYPE_VEC4_BIT   | ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_TYPE_MAT3_BIT |
+                         ACCESSOR_TYPE_MAT4_BIT,
+
+    ACCESSOR_COMPONENT_TYPE_BITS = ACCESSOR_COMPONENT_TYPE_SCHAR_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT |
+                                   ACCESSOR_COMPONENT_TYPE_S16_BIT   | ACCESSOR_COMPONENT_TYPE_U16_BIT   |
+                                   ACCESSOR_COMPONENT_TYPE_U32_BIT   |
+                                   ACCESSOR_COMPONENT_TYPE_FLOAT_BIT,
+};
+typedef u32 Accessor_Flags;
+
+struct Accessor_Max_Min {
+    float max[16];
+    float min[16];
+};
+struct Accessor_Sparse {
+    Accessor_Flag_Bits indices_component_type;
+    u32 count;
+    u32 indices_buffer_view;
+    u32 values_buffer_view;
+    u64 indices_byte_offset;
+    u64 values_byte_offset;
+};
+
+struct Accessor { // 44 bytes
+    Accessor_Flags flags;
+
+    u32 allocation_key;
+    u32 byte_stride;
+    u64 byte_offset;
+    u64 count;
+
+    Accessor_Max_Min *max_min;
+    Accessor_Sparse  *sparse;
+};
+
+struct Texture { // Allocation keys
+    u64 sampler;
+    u32 texture;
+};
+
+struct Model {
+    u64       size; // size required in model buffer
+    u32       accessor_count;
+    u32       material_count;
+    u32       texture_count;
+    u32       mesh_count;
+    Accessor *accessors;
+    Material *materials;
+    Texture  *textures;
+    Mesh     *meshes;
+};
+
+Model model_from_gltf(String *gltf_file);
+
+struct Model_Storage_Info {
+    u64 offset;
+    u64 size;
+};
+Model_Storage_Info store_model(Model *model); // @Unimplemented
+Model              load_model (String *gltf_file);
 
 #endif // include guard
-
-//
-// Below is code that was created very general in the prototype phase when I would see everything that I would need.
-// I keep it around as it is useful as an example of how I did stuff before when I come to do different things that
-// I have already kind of implemented to whatever extent.
-//
-
-#if 0
-#if 0 // General model data (mostly for example)
-struct Node;
-struct Skin {
-    u32       joint_count;
-    Node     *joints;
-    Node     *skeleton;
-    VkBuffer  matrices;
-};
-struct Trs {
-    Vec3 trans;
-    Vec4 rot;
-    Vec3 scale;
-};
-struct Texture {
-    u32 allocation_key;
-    u64 sampler_key; // @Todo Look at if sampler allocator works with the vert/tex index system.
-};
-struct Material {
-    float base_factors[4];
-    float metal_factor;
-    float rough_factor;
-    float norm_scale;
-    float occlusion_strength;
-    float emissive_factors[3];
-
-    // @Note I do not know how to resolve texture coordinates defined on both the primitive
-    // and the material...?? I will experiment I guess??
-
-    // Texture indices
-    Texture tex_base;
-    Texture tex_pbr;
-    Texture tex_norm;
-    Texture tex_occlusion;
-    Texture tex_emissive;
-    // @Todo Alpha mode
-};
-struct Primitive {
-    u32 count; // draw count (num indices)
-    VkIndexType index_type;
-
-    u64 offset_index;
-    u64 offset_position;
-    u64 offset_normal;
-    u64 offset_tangent;
-    u64 offset_tex_coords;
-
-    Material *material;
-};
-struct Skinned_Primitive {
-    Primitive primitive;
-    u64 offset_joints;
-    u64 offset_weights;
-};
-struct Pl_Primitive_Info {
-    VkPrimitiveTopology topology;
-    u32 stride_position;
-    u32 stride_normal;
-    u32 stride_tangent;
-    u32 stride_tex_coords;
-    VkFormat fmt_position;
-    VkFormat fmt_normal;
-    VkFormat fmt_tangent;
-    VkFormat fmt_tex_coords;
-};
-struct Pl_Prim_Info_Skinned {
-    Pl_Primitive_Info prim;
-    u32 stride_joints;
-    u32 stride_weights;
-    VkFormat fmt_joints;
-    VkFormat fmt_weights;
-};
-struct Mesh {
-    u32 count;
-    Primitive         *primitives;
-    Pl_Primitive_Info *pl_infos;
-};
-struct Skinned_Mesh {
-    u32 count;
-    Skinned_Primitive *primitives;
-    Pl_Primitive_Info *pl_infos;
-};
-struct Node {
-union {
-    Trs trs;
-    Mat4 mat;
-};
-    u32 child_count;
-    Node *children;
-    Mesh *mesh;
-    Skin *skin;
-};
-struct Model {
-    u32 node_count;
-    u32 mesh_count;
-    u32 skinned_mesh_count;
-    u32 skin_count;
-    u32 material_count;
-
-    Node         *nodes;
-    Mesh         *meshes;
-    Material     *mats;
-    Skin         *skins;
-    Skinned_Mesh *skinned_meshes;
-
-    u32      index_allocation_key;
-    u32      vertex_allocation_key;
-    Texture *textures;
-
-    void *animation_data; // @Wip
-};
-struct Static_Model {
-    u32 node_count;
-    u32 mesh_count;
-    u32 mat_count;
-
-    // Node *nodes; <- Idk if this is necessary for a static model
-    Mesh     *meshes;
-    Material *mats;
-
-    u32      index_allocation_key;
-    u32      vertex_allocation_key;
-};
-
-Static_Model load_static_model(Model_Allocators *allocs, String *model_name, String *dir);
-void         free_static_model(Static_Model *model);
-
-#endif // General model data (mostly for example)
-#endif

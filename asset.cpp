@@ -124,26 +124,22 @@ void init_assets() {
     bool growable_array = true;
     bool temp_array     = false;
 
-    g_assets->keys_tex           = new_array(g_assets_keys_array_tex_len,        growable_array, temp_array);
-    g_assets->keys_index         = new_array(g_assets_keys_array_index_len,      growable_array, temp_array);
-    g_assets->keys_vertex        = new_array(g_assets_keys_array_vertex_len,     growable_array, temp_array);
-    g_assets->keys_sampler       = new_array(g_assets_keys_array_sampler_len,    growable_array, temp_array);
-    g_assets->keys_image_view    = new_array(g_assets_keys_array_image_view_len, growable_array, temp_array);
+    g_assets->keys_tex           = new_array<u32>(g_assets_keys_array_tex_len,        growable_array, temp_array);
+    g_assets->keys_index         = new_array<u32>(g_assets_keys_array_index_len,      growable_array, temp_array);
+    g_assets->keys_vertex        = new_array<u32>(g_assets_keys_array_vertex_len,     growable_array, temp_array);
+    g_assets->keys_sampler       = new_array<u64>(g_assets_keys_array_sampler_len,    growable_array, temp_array);
+    g_assets->keys_image_view    = new_array<u64>(g_assets_keys_array_image_view_len, growable_array, temp_array);
 
-    g_assets->results_tex        = new_array(g_assets_keys_array_tex_len,        growable_array, temp_array);
-    g_assets->results_index      = new_array(g_assets_keys_array_index_len,      growable_array, temp_array);
-    g_assets->results_vertex     = new_array(g_assets_keys_array_vertex_len,     growable_array, temp_array);
-    g_assets->results_sampler    = new_array(g_assets_keys_array_sampler_len,    growable_array, temp_array);
-    g_assets->results_image_view = new_array(g_assets_keys_array_image_view_len, growable_array, temp_array);
+    g_assets->results_tex        = new_array<bool>(g_assets_keys_array_tex_len,        growable_array, temp_array);
+    g_assets->results_index      = new_array<bool>(g_assets_keys_array_index_len,      growable_array, temp_array);
+    g_assets->results_vertex     = new_array<bool>(g_assets_keys_array_vertex_len,     growable_array, temp_array);
+    g_assets->results_sampler    = new_array<bool>(g_assets_keys_array_sampler_len,    growable_array, temp_array);
+    g_assets->results_image_view = new_array<bool>(g_assets_keys_array_image_view_len, growable_array, temp_array);
 
-    g_assets->draw_infos         = new_array(256, true, false);
+    g_assets->pipelines          = new_array<VkPipeline>(256, true, false);
 
     g_assets->model_count = g_model_count;
     g_assets->models      = (Model*)malloc_h(sizeof(Model) * g_model_count, 8);
-
-    for(u32 i = 0; i < g_model_count; ++i) {
-        g_assets->models[i] = load_model(g_model_identifiers[i]);
-    }
 
     g_assets->semaphores[0] = create_semaphore();
     g_assets->semaphores[1] = create_semaphore();
@@ -176,11 +172,23 @@ void init_assets() {
 void kill_assets() {
     Assets *g_assets = get_assets_instance();
 
-    for(u32 i = 0; i < g_assets->model_count; ++i)
-        free_model(&g_assets->models[i]);
-
     free_h(g_assets->models);
     shutdown_model_allocators();
+
+    free_array<u32>(&g_assets->keys_tex       );
+    free_array<u32>(&g_assets->keys_index     );
+    free_array<u32>(&g_assets->keys_vertex    );
+    free_array<u64>(&g_assets->keys_sampler   );
+    free_array<u64>(&g_assets->keys_image_view);
+
+    free_array<bool>(&g_assets->results_tex       );
+    free_array<bool>(&g_assets->results_index     );
+    free_array<bool>(&g_assets->results_vertex    );
+    free_array<bool>(&g_assets->results_sampler   );
+    free_array<bool>(&g_assets->results_image_view);
+
+    free_array<VkPipeline>(&g_assets->pipelines);
+
 
     destroy_semaphore(g_assets->semaphores[0]);
     destroy_semaphore(g_assets->semaphores[1]);
@@ -188,565 +196,431 @@ void kill_assets() {
     destroy_fence(g_assets->fences[1]);
 }
 
-// These types are used for model loading
-enum Buffer_View_Data_Type {
-    BUFFER_VIEW_DATA_TYPE_NONE    = 0,
-    BUFFER_VIEW_DATA_TYPE_VERTEX  = 1,
-    BUFFER_VIEW_DATA_TYPE_INDEX   = 2,
-    BUFFER_VIEW_DATA_TYPE_UNIFORM = 3,
-};
-struct Buffer_View {
-    u64 offset;
-    u64 size;
-    Buffer_View_Data_Type type;
-};
+static u64 model_get_required_size_from_gltf(Gltf *gltf) {
+    assert(gltf_buffer_get_count(gltf) == 1 && "Ugh, need to make buffers an array");
 
-//
-// The below function is a simulation of what a real loading function would look like. For instance, in a more
-// developed app with a broader set of models, it would still be true that sets of models have specific
-// characteristics: even though you may have 200 buildings, each building model may share an equivalent shader, etc.
-// and so loading the buildings/map can be grouped to a 'load_buildings()' function. I just currently do not have
-// well defined subsets of models yet, so 'load_cube()' and 'load_player()' (<- coming soon, Cesium_Man) will do for
-// now.
-//
-// @Note Maybe I should go through and revert gltf parser to use counts, rather than the procedural temp allocation
-// method. It is cool in principle, but I cannot tell if it is worth it, need to @Test.
-//
-static Model_Cube load_model_cube(Model_Allocators *allocs, String *model_file, String *model_dir) {
-    Model_Cube ret = {};
+    // @Todo Animations, Skins, Cameras
 
-    // Setup model directory
-    char uri_buf[127];
-    memcpy(uri_buf, model_dir->str,  model_dir->len);
-    memcpy(uri_buf + model_dir->len, model_file->str, model_file->len);
+    u32 accessor_count    = gltf_accessor_get_count(gltf);
+    u32 material_count    = gltf_material_get_count(gltf);
+    u32 texture_count     = gltf_texture_get_count(gltf);
+    u32 mesh_count        = gltf_mesh_get_count(gltf);
 
-    Gltf gltf = parse_gltf(uri_buf);
+    // Accessors: min/max and sparse
+    u32 sparse_count  = 0;
+    u32 max_min_count = 0;
 
-    // Load base texture
-    Gltf_Material *gltf_mat     = gltf.materials;
-    Gltf_Texture  *gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->base_color_texture_index);
-    Gltf_Sampler  *gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-    Gltf_Image    *gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
+    Gltf_Accessor *gltf_accessor = gltf->accessors;
+    for(u32 i = 0; i < accessor_count; ++i) {
+        if (gltf_accessor->sparse_count) // If there are some number of sparse indices
+            sparse_count++;
+        if (gltf_accessor->max)
+            max_min_count++;
 
-    // @Ugly This is a bit ugly
-    String tmp_uri;
-    strcpy(uri_buf + model_dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
-    tmp_uri = cstr_to_string((const char*)uri_buf);
+        gltf_accessor = (Gltf_Accessor*)((u8*)gltf_accessor + gltf_accessor->stride);
+    }
 
-    Gpu_Allocator_Result res;
-    Sampler_Info sampler_info = {};
+    // Meshes: weights, primitive attributes, morph targets
+    u32 weight_count           = 0;
+    u32 primitive_count        = 0;
+    u32 attribute_count        = 0;
+    u32 target_count           = 0;
+    u32 target_attribute_count = 0;
 
-    sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-    sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-    sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
-    sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
-
-    res                      = tex_add_texture(&allocs->tex, &tmp_uri, &ret.tex_key_base);
-    ret.sampler_key_base     = add_sampler(&allocs->sampler, &sampler_info);
-
-    // Load pbr texture
-    gltf_tex     = gltf_texture_by_index(&gltf, gltf_mat->metallic_roughness_texture_index);
-    gltf_sampler = gltf_sampler_by_index(&gltf, gltf_tex->sampler);
-    gltf_image   = gltf_image_by_index  (&gltf, gltf_tex->source_image);
-
-    // @Ugly This is a bit ugly
-    strcpy(uri_buf + model_dir->len, gltf_image->uri); // @Todo update the gltf uris to use String type
-    tmp_uri = cstr_to_string((const char*)uri_buf);
-
-    sampler_info.wrap_s     = (VkSamplerAddressMode)gltf_sampler->wrap_u;
-    sampler_info.wrap_t     = (VkSamplerAddressMode)gltf_sampler->wrap_v;
-    sampler_info.mag_filter = (VkFilter)gltf_sampler->mag_filter;
-    sampler_info.min_filter = (VkFilter)gltf_sampler->min_filter;
-
-    res                  = tex_add_texture(&allocs->tex, &tmp_uri, &ret.tex_key_pbr);
-    ret.sampler_key_pbr  = add_sampler(&allocs->sampler, &sampler_info);
-
-    // Load vertex/index data
-    Gltf_Buffer         *gltf_buffer;
-    Gltf_Accessor       *gltf_accessor;
-    Gltf_Buffer_View    *gltf_buffer_view;
+    Gltf_Mesh           *gltf_mesh = gltf->meshes;
     Gltf_Mesh_Primitive *gltf_primitive;
+    for(u32 i = 0; i < mesh_count; ++i) {
+        weight_count    += gltf_mesh->weight_count;
+        primitive_count += gltf_mesh->primitive_count;
 
-    u32          buffer_view_count = gltf_buffer_view_get_count(&gltf);
-    Buffer_View *buffer_views      = (Buffer_View*)malloc_t(sizeof(Buffer_View) * buffer_view_count, 8);
-    memset(buffer_views, 0, sizeof(Buffer_View) * buffer_view_count);
+        for(u32 j = 0; j < gltf_mesh->primitive_count; ++j) {
+            // I am glad that I dont *have* to redo the gltf parser, but I made some annoying decisions...
+            if (gltf_primitive->position)
+                attribute_count++;
+            if (gltf_primitive->normal)
+                attribute_count++;
+            if (gltf_primitive->tangent)
+                attribute_count++;
+            if (gltf_primitive->tex_coord_0)
+                attribute_count++;
 
-    u32 buffer_view_index;
-    u32 buffer_view_position;
-    u32 buffer_view_normal;
-    u32 buffer_view_tangent;
-    u32 buffer_view_tex_coords;
+            attribute_count += gltf_primitive->extra_attribute_count;
 
-    // Index data
-    u32 tmp          = gltf.meshes[0].primitives[0].indices;
-    ret.topology     = (VkPrimitiveTopology)gltf.meshes[0].primitives[0].topology;
-    gltf_accessor    = gltf_accessor_by_index(&gltf, tmp);
-    ret.offset_index = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.count        = gltf_accessor->count;
+            target_count += gltf_primitive->target_count;
+            for(u32 k = 0; k < gltf_primitive->target_count; ++k)
+                target_attribute_count += gltf_primitive->targets[k].attribute_count;
 
-    switch(gltf_accessor->format) {
-    case GLTF_ACCESSOR_FORMAT_SCALAR_U16:
-    {
-        ret.index_type = VK_INDEX_TYPE_UINT16;
-        break;
-    }
-    case GLTF_ACCESSOR_FORMAT_SCALAR_U32:
-    {
-        ret.index_type = VK_INDEX_TYPE_UINT32;
-        break;
-    }
-    default:
-        assert(false && "Invalid Index Type");
-    }
-
-    tmp                      = gltf_accessor->buffer_view;
-    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
-    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_INDEX;
-    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
-
-    buffer_view_index = tmp;
-
-    // Position data
-    tmp = gltf.meshes[0].primitives[0].position;
-
-    gltf_accessor       = gltf_accessor_by_index(&gltf, tmp);
-    ret.offset_position = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.fmt_position    = (VkFormat)gltf_accessor->format;
-    ret.stride_position = gltf_accessor->byte_stride;
-    ret.count           = gltf_accessor->count;
-
-    tmp                      = gltf_accessor->buffer_view;
-    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
-    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
-    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
-
-    buffer_view_position = tmp;
-
-    // Normal data
-    tmp = gltf.meshes[0].primitives[0].normal;
-
-    gltf_accessor     = gltf_accessor_by_index(&gltf, tmp);
-    ret.offset_normal = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.fmt_normal    = (VkFormat)gltf_accessor->format;
-    ret.stride_normal = gltf_accessor->byte_stride;
-    ret.count         = gltf_accessor->count;
-
-    tmp = gltf_accessor->buffer_view;
-    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
-    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
-    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
-
-    buffer_view_normal = tmp;
-
-    // Tangent data
-    tmp = gltf.meshes[0].primitives[0].tangent;
-
-    gltf_accessor      = gltf_accessor_by_index(&gltf, tmp);
-    ret.offset_tangent = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.fmt_tangent    = (VkFormat)gltf_accessor->format;
-    ret.stride_tangent = gltf_accessor->byte_stride;
-    ret.count          = gltf_accessor->count;
-
-    tmp                      = gltf_accessor->buffer_view;
-    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
-    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
-    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
-
-    buffer_view_tangent = tmp;
-
-    // Tex Coords
-    tmp = gltf.meshes[0].primitives[0].tex_coord_0;
-
-    gltf_accessor         = gltf_accessor_by_index(&gltf, tmp);
-    ret.offset_tex_coords = gltf_accessor->byte_offset; // This will later be summed with the allocation offset
-    ret.fmt_tex_coords    = (VkFormat)gltf_accessor->format;
-    ret.stride_tex_coords = gltf_accessor->byte_stride;
-    ret.count             = gltf_accessor->count;
-
-    tmp                      = gltf_accessor->buffer_view;
-    gltf_buffer_view         = gltf_buffer_view_by_index(&gltf, tmp);
-    buffer_views[tmp].type   = BUFFER_VIEW_DATA_TYPE_VERTEX;
-    buffer_views[tmp].offset = gltf_buffer_view->byte_offset;
-    buffer_views[tmp].size   = gltf_buffer_view->byte_length;
-
-    buffer_view_tex_coords = tmp;
-
-    // Allocate vertex/index data
-    res = begin_allocation(&allocs->index);
-    CHECK_GPU_ALLOCATOR_RESULT(res);
-    res = begin_allocation(&allocs->vertex);
-    CHECK_GPU_ALLOCATOR_RESULT(res);
-
-    u64 current_index_allocation_offset  = 0;
-    u64 current_vertex_allocation_offset = 0;
-
-    u8 *buffer_data = (u8*)file_read_bin_temp_large(gltf.buffers[0].uri, gltf.buffers[0].byte_length);
-    u64 tmp_offset;
-    for(u32 i = 0; i < buffer_view_count; ++i) {
-        switch(buffer_views[i].type) {
-        case BUFFER_VIEW_DATA_TYPE_INDEX:
-        {
-            res = continue_allocation(&allocs->index, buffer_views[i].size, buffer_data + buffer_views[i].offset);
-            CHECK_GPU_ALLOCATOR_RESULT(res);
-
-            buffer_views[i].offset           = current_index_allocation_offset;
-            current_index_allocation_offset += buffer_views[i].size;
-
-            break;
+            gltf_primitive = (Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
         }
-        case BUFFER_VIEW_DATA_TYPE_VERTEX:
-        {
-            res = continue_allocation(&allocs->vertex, buffer_views[i].size, buffer_data + buffer_views[i].offset);
-            CHECK_GPU_ALLOCATOR_RESULT(res);
 
-            buffer_views[i].offset            = current_vertex_allocation_offset;
-            current_vertex_allocation_offset += buffer_views[i].size;
-
-            break;
-        }
-        default:
-            continue;
-        }
+        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 
-    res = submit_allocation(&allocs->index,  &ret.index_key);
-    CHECK_GPU_ALLOCATOR_RESULT(res);
-    res = submit_allocation(&allocs->vertex, &ret.vertex_key);
-    CHECK_GPU_ALLOCATOR_RESULT(res);
+    u64 req_size = 0;
 
-    // Offset the data into the allocation.
-    ret.offset_index      += buffer_views[buffer_view_index].offset;
-    ret.offset_position   += buffer_views[buffer_view_position].offset;
-    ret.offset_normal     += buffer_views[buffer_view_normal].offset;
-    ret.offset_tangent    += buffer_views[buffer_view_tangent].offset;
-    ret.offset_tex_coords += buffer_views[buffer_view_tex_coords].offset;
+    req_size += sparse_count  * sizeof(Accessor_Sparse);
+    req_size += max_min_count * sizeof(Accessor_Max_Min);
 
-    return ret;
+    req_size +=  weight_count           * sizeof(float);
+    req_size +=  primitive_count        * sizeof(Mesh_Primitive);
+    req_size +=  attribute_count        * sizeof(Mesh_Primitive_Attribute);
+    req_size +=  target_count           * sizeof(Morph_Target);
+    req_size +=  target_attribute_count * sizeof(Mesh_Primitive_Attribute);
+
+    req_size += sizeof(Accessor) * accessor_count;
+    req_size += sizeof(Material) * material_count;
+    req_size += sizeof(Texture)  * texture_count;
+    req_size += sizeof(Mesh)     * mesh_count;
+
+    return req_size;
 }
 
-// @Unimplemented
-Model_Player load_model_player(Model_Allocators *allocs, String *model_file_name, String *model_dir_name) {
-    return {};
-}
-// @Unimplemented
-void free_model_player(Model *model) {}
+inline static Accessor_Flag_Bits translate_gltf_accessor_type_to_bits(Gltf_Accessor_Type type, u32 *ret_size) {
 
-Model load_model(Model_Identifier model_id) {
-    u32 model_index = (u32)model_id.id;
-
-    Model ret;
-    Model_Allocators *allocs = &get_assets_instance()->model_allocators;
-
-    switch(model_id.type) {
-    case MODEL_TYPE_CUBE:
-    {
-        ret.cube = load_model_cube(allocs, &g_model_file_names[model_index], &g_model_dir_names[model_index]);
-        ret.cube.type = MODEL_TYPE_CUBE;
-        break;
-    }
-    case MODEL_TYPE_PLAYER:
-    {
-        // @Unimplemented
-        ret.player = load_model_player(allocs, &g_model_file_names[model_index], &g_model_dir_names[model_index]);
-        ret.player.type = MODEL_TYPE_PLAYER;
-        break;
-    }
-    default:
-        assert(false && "Invalid Model Type");
-    }
-    return ret;
-}
-
-void free_model(Model *model) {
-    Model_Type type = model->cube.type; // @Note type must always appear as the first field in a model struct
+    Accessor_Flag_Bits ret = {};
 
     switch(type) {
-    case MODEL_TYPE_CUBE:
-    {
-        // Cube does not require any allocation
+    case GLTF_ACCESSOR_TYPE_SCALAR:
+        ret = ACCESSOR_TYPE_SCALAR_BIT;
+        *ret_size = 1;
         break;
-    }
-    case MODEL_TYPE_PLAYER:
-    {
-        // @Unimplemented
-        // free_model_player(model);
+    case GLTF_ACCESSOR_TYPE_VEC2:
+        ret = ACCESSOR_TYPE_VEC2_BIT;
+        *ret_size = 2;
         break;
-    }
+    case GLTF_ACCESSOR_TYPE_VEC3:
+        ret = ACCESSOR_TYPE_VEC3_BIT;
+        *ret_size = 3;
+        break;
+    case GLTF_ACCESSOR_TYPE_VEC4:
+        ret = ACCESSOR_TYPE_VEC4_BIT;
+        *ret_size = 4;
+        break;
+    case GLTF_ACCESSOR_TYPE_MAT2:
+        ret = ACCESSOR_TYPE_MAT2_BIT;
+        *ret_size = 4;
+        break;
+    case GLTF_ACCESSOR_TYPE_MAT3:
+        ret = ACCESSOR_TYPE_MAT3_BIT;
+        *ret_size = 9;
+        break;
+    case GLTF_ACCESSOR_TYPE_MAT4:
+        ret = ACCESSOR_TYPE_MAT4_BIT;
+        *ret_size = 16;
+        break;
+    case GLTF_ACCESSOR_TYPE_BYTE:
+        ret = ACCESSOR_COMPONENT_TYPE_SCHAR_BIT;
+        *ret_size = 1;
+        break;
+    case GLTF_ACCESSOR_TYPE_UNSIGNED_BYTE:
+        ret = ACCESSOR_COMPONENT_TYPE_UCHAR_BIT;
+        *ret_size = 1;
+        break;
+    case GLTF_ACCESSOR_TYPE_SHORT:
+        ret = ACCESSOR_COMPONENT_TYPE_S16_BIT;
+        *ret_size = 2;
+        break;
+    case GLTF_ACCESSOR_TYPE_UNSIGNED_SHORT:
+        ret = ACCESSOR_COMPONENT_TYPE_U16_BIT;
+        *ret_size = 2;
+        break;
+    case GLTF_ACCESSOR_TYPE_UNSIGNED_INT:
+        ret = ACCESSOR_COMPONENT_TYPE_U32_BIT;
+        *ret_size = 4;
+        break;
+    case GLTF_ACCESSOR_TYPE_FLOAT:
+        ret = ACCESSOR_COMPONENT_TYPE_FLOAT_BIT;
+        *ret_size = 4;
+        break;
     default:
-        assert(false && "Invalid Model Type");
+        assert(false && "Invalid Accessor Type");
+        return {};
     }
+    return ret;
 }
 
-struct Model_Allocator_Queue_Functions {
-    Gpu_Allocator_Queue_Add_Func        add;
-    Gpu_Tex_Allocator_Queue_Add_Func    tex_add;
-    Gpu_Allocator_Queue_Remove_Func     rm;
-    Gpu_Tex_Allocator_Queue_Remove_Func tex_rm;
-};
+static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, Accessor *accessors, u8 *model_buffer, u64 *size_used) {
+    u32 tmp_component_count;
+    u32 tmp_component_width;
+    u32 tmp;
 
-static Gpu_Allocator_Result model_queue_cube(
-    Model_Allocators                *allocs,
-    Model_Allocator_Queue_Functions *queue_functions,
-    Model                           *model)
-{
-    Gpu_Allocator_Result res[4];
+    *size_used += sizeof(Accessor) * count;
 
-    // @Todo @Multithreading Everything is a job
+    Gltf_Accessor *gltf_accessor = gltf_accessors;
+    for(u32 i = 0; i < count; ++i) {
+        accessors[i] = {};
 
-    res[0] = queue_functions->add(&allocs->index,  model->cube.index_key);
-    res[1] = queue_functions->add(&allocs->vertex, model->cube.vertex_key);
-    res[2] = queue_functions->tex_add(&allocs->tex, model->cube.tex_key_base);
-    res[3] = queue_functions->tex_add(&allocs->tex, model->cube.tex_key_pbr);
+        accessors[i].flags |= translate_gltf_accessor_type_to_bits(gltf_accessor->type, &tmp_component_count);
+        accessors[i].flags |= translate_gltf_accessor_type_to_bits(gltf_accessor->component_type, &tmp_component_width);
 
-    if (res[0] == GPU_ALLOCATOR_RESULT_QUEUE_FULL || res[1] == GPU_ALLOCATOR_RESULT_QUEUE_FULL ||
-        res[2] == GPU_ALLOCATOR_RESULT_QUEUE_FULL || res[3] == GPU_ALLOCATOR_RESULT_QUEUE_FULL)
-    {
-        queue_functions->rm(&allocs->index,  model->cube.index_key);
-        queue_functions->rm(&allocs->vertex, model->cube.vertex_key);
-        queue_functions->tex_rm(&allocs->tex, model->cube.tex_key_base);
-        queue_functions->tex_rm(&allocs->tex, model->cube.tex_key_pbr);
+        accessors[i].flags |= ACCESSOR_BUFFER_VIEW_BIT & max32_if_true(gltf_accessor->buffer_view != -1);
+        accessors[i].flags |= ACCESSOR_NORMALIZED_BIT  & max32_if_true(gltf_accessor->normalized);
+        accessors[i].flags |= ACCESSOR_MAX_MIN_BIT     & max32_if_true(gltf_accessor->max != NULL);
+        accessors[i].flags |= ACCESSOR_SPARSE_BIT      & max32_if_true(gltf_accessor->sparse_count);
 
-        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
-    }
+        //accessors[i].buffer_view  = gltf_accessor->buffer_view;
+        accessors[i].byte_stride  = gltf_accessor->byte_stride;
+        accessors[i].count        = gltf_accessor->count;
 
-    return GPU_ALLOCATOR_RESULT_SUCCESS;
-}
+        if (accessors[i].flags & ACCESSOR_MAX_MIN_BIT) {
+            accessors[i].max_min = (Accessor_Max_Min*)(model_buffer + *size_used);
+            tmp                  = sizeof(float) * tmp_component_count;
 
-void make_staging_queues_empty(Model_Allocators *allocs) {
-    staging_queue_make_empty(&allocs->index);
-    staging_queue_make_empty(&allocs->vertex);
-    tex_staging_queue_make_empty(&allocs->tex);
-}
+            memcpy(accessors[i].max_min +   0, gltf_accessor->max, tmp);
+            memcpy(accessors[i].max_min + tmp, gltf_accessor->min, tmp);
 
-enum Renderpass_Type {
-    RENDERPASS_TYPE_FORWARD_SINGLE_PASS = 0,
-    RENDERPASS_TYPE_FORWARD_WITH_SHADOW = 1,
-};
-
-void handle_model_cube(Asset *g_assets, Model *model, Renderpass_Type rp_type, bool retrying_upload)
-{
-    //
-    // @Note rp_type currently unused in this function. I can see it being needed
-    // if I add a shadow pass only renderpass pass type I guess...
-    //
-
-    Model_Allocators *model_allocators = g_assets->model_allocators;
-
-    const u32 primitive_count          = 1;
-    const u32 descriptor_count         = 2; // tex base, pbr
-    const u32 descriptor_binding_count = 1; // array[2], binding 1
-    const u32 descriptor_set_count     = 1;
-
-    assert(g_model_type_primitive_count_cube  == primitive_count                  &&
-          "The number of primitives used by a cube model type changed");
-    assert(g_model_type_descriptor_count_cube == descriptor_binding_count         &&
-          "The number of descriptors used by a cube model type changed");
-    assert(g_model_type_descriptor_binding_count_cube == descriptor_binding_count &&
-          "The number of descriptor bindings used by a cube model type changed");
-    assert(g_model_type_descriptor_set_count_cube == descriptor_set_count         &&
-          "The number of descriptor sets used by a cube model type changed");
-
-    VkDevice device = get_gpu_instance()->device;
-
-    //
-    // See model-outline.
-    //
-    // @Multithreading pipeline creations and descriptor allocations can easily become jobs.
-    // @Multithreading acquiring samplers and image view descriptors can easily become jobs.
-    //
-
-    // Index + Vertex.
-    // Descriptors: 2x Combined Image Sampler - tex base, tex pbr.
-
-    u32 tex_allocation_keys            [descriptor_count];
-    Gpu_Tex_Allocation *tex_allocations[descriptor_count];
-    u64 sampler_keys                   [descriptor_count];
-    u64 image_view_keys                [descriptor_count];
-
-    tex_allocation_keys[0] = model->cube.tex_key_base;
-    tex_allocation_keys[1] = model->cube.tex_key_pbr;
-
-    for(u32 i = 0; i < descriptor_count; ++i)
-        tex_allocations[i] = gpu_get_tex_allocation(&model_allocs->tex, tex_allocation_keys[i]);
-
-    VkImageViewCreateInfo image_view_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    image_view_info.format   = VK_FORMAT_R8G8B8A8_SRGB;
-
-    VkImageSubresourceRange subresource_range = {
-        .aspectMask     = VK_IMAGE_ASPECT_COLOR_BIT,
-        .baseMipLevel   = 0,
-        .baseArrayLayer = 0,
-        .layerCount     = 1,
-    };
-
-    VkImageView                 tmp_view;
-    u64                         tmp_key;
-    Image_View_Allocator_Result tmp_view_result;
-
-    for(u32 i = 0; i < descriptor_count; ++i) {
-        image_view_info.image        = tex_allocations[i].image;
-        subresource_range.levelCount = tex_allocations[i].mip_levels;
-
-        tmp_view_result = get_image_view(&model_allocators->image_view, &image_view_info, &tmp_view, &tmp_key);
-
-        assert(tmp_view_result != IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY && "This should never happen");
-
-        if (tmp_view_result == IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY) {
-            *g_assets = {}; // Crash everything, as this should never happen.
+            *size_used += sizeof(Accessor_Max_Min);
         }
 
-        array_add(&g_assets->keys_image_view,   &tmp_key);
-        array_add(&g_assets->results_image_view, tmp_view_result == IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS);
-    }
+        if (accessors[i].flags & ACCESSOR_SPARSE_BIT) {
+            accessors[i].sparse = (Accessor_Sparse*)(model_buffer + *size_used);
 
-    sampler_keys[0] = model->cube.sampler_key_base;
-    sampler_keys[1] = model->cube.sampler_key_pbr;
+            accessors[i].sparse->indices_component_type = translate_gltf_accessor_type_to_bits(gltf_accessor->indices_component_type, &tmp);
+            accessors[i].sparse->count                  = gltf_accessor->sparse_count;
+            accessors[i].sparse->indices_buffer_view    = gltf_accessor->indices_buffer_view;
+            accessors[i].sparse->values_buffer_view     = gltf_accessor->values_buffer_view;
+            accessors[i].sparse->indices_byte_offset    = gltf_accessor->indices_byte_offset;
+            accessors[i].sparse->values_byte_offset     = gltf_accessor->values_byte_offset;
 
-    VkSampler                tmp_sampler;
-    Sampler_Allocator_Result tmp_sampler_result;
-
-    for(u32 i = 0; i < descriptor_count; ++i) {
-        tmp_sampler_result = get_sampler(&model_allocators->sampler, sampler_keys[i], &tmp_sampler);
-
-        assert(tmp_sampler_result != SAMPLER_ALLOCATOR_RESULT_INVALID_KEY && "This should never happen");
-
-        if (tmp_sampler_result == SAMPLER_ALLOCATOR_RESULT_INVALID_KEY) {
-            *g_assets = {}; // Crash everything, as this should never happen.
+            *size_used += sizeof(Accessor_Sparse);
         }
 
-        array_add(&g_assets->keys_sampler,   &sampler_keys[i]);
-        array_add(&g_assets->results_sampler, tmp_sampler_result == SAMPLER_ALLOCATOR_RESULT_SUCCESS);
+        gltf_accessor = (Gltf_Accessor*)((u8*)gltf_accessor + gltf_accessor->stride);
     }
-
-    // @TODO CURRENT TASK!! staging queue and upload queue. Adjust adjust weights setting to image view and samplers.
 }
 
-struct Handle_Models_Info {
-    u32                   count;
-    Model                *models;
-    Model_Draw_Prep_Info *draw_prep_infos;
-    Model_Draw_Info      *ret_draw_info;
+static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, Material *materials, u8 *model_buffer, u64 *size_used) {
+
+    *size_used += sizeof(Material) * count;
+
+    Gltf_Material *gltf_material = gltf_materials;
+    for(u32 i = 0; i < count; ++i) {
+        materials[i] = {};
+
+        materials[i].flags |= MATERIAL_BASE_BIT                   & max32_if_true(gltf_material->base_color_texture_index         != -1);
+        materials[i].flags |= MATERIAL_PBR_METALLIC_ROUGHNESS_BIT & max32_if_true(gltf_material->metallic_roughness_texture_index != -1);
+        materials[i].flags |= MATERIAL_NORMAL_BIT                 & max32_if_true(gltf_material->normal_texture_index             != -1);
+        materials[i].flags |= MATERIAL_OCCLUSION_BIT              & max32_if_true(gltf_material->occlusion_texture_index          != -1);
+        materials[i].flags |= MATERIAL_EMISSIVE_BIT               & max32_if_true(gltf_material->emissive_texture_index           != -1);
+
+        materials[i].flags |= MATERIAL_BASE_TEX_COORD_BIT                   & max32_if_true(gltf_material->base_color_tex_coord         != -1);
+        materials[i].flags |= MATERIAL_PBR_METALLIC_ROUGHNESS_TEX_COORD_BIT & max32_if_true(gltf_material->metallic_roughness_tex_coord != -1);
+        materials[i].flags |= MATERIAL_NORMAL_TEX_COORD_BIT                 & max32_if_true(gltf_material->normal_tex_coord             != -1);
+        materials[i].flags |= MATERIAL_OCCLUSION_TEX_COORD_BIT              & max32_if_true(gltf_material->occlusion_tex_coord          != -1);
+        materials[i].flags |= MATERIAL_EMISSIVE_TEX_COORD_BIT               & max32_if_true(gltf_material->emissive_tex_coord           != -1);
+
+        materials[i].flags |= MATERIAL_OPAQUE_BIT & max32_if_true(gltf_material->alpha_mode == GLTF_ALPHA_MODE_OPAQUE);
+        materials[i].flags |= MATERIAL_MASK_BIT   & max32_if_true(gltf_material->alpha_mode == GLTF_ALPHA_MODE_MASK);
+        materials[i].flags |= MATERIAL_BLEND_BIT  & max32_if_true(gltf_material->alpha_mode == GLTF_ALPHA_MODE_BLEND);
+
+        // Misc
+        materials[i].flags |= MATERIAL_DOUBLE_SIDED_BIT & max32_if_true(gltf_material->double_sided);
+        materials[i].alpha_cutoff = gltf_material->alpha_cutoff;
+
+        // Pbr
+        materials[i].pbr_metallic_roughness = {};
+
+        materials[i].pbr_metallic_roughness.base_color_factor[0]       = gltf_material->base_color_factor[0];
+        materials[i].pbr_metallic_roughness.base_color_factor[1]       = gltf_material->base_color_factor[1];
+        materials[i].pbr_metallic_roughness.base_color_factor[2]       = gltf_material->base_color_factor[2];
+        materials[i].pbr_metallic_roughness.base_color_factor[3]       = gltf_material->base_color_factor[3];
+
+        materials[i].pbr_metallic_roughness.metallic_factor            = gltf_material->metallic_factor;
+        materials[i].pbr_metallic_roughness.roughness_factor           = gltf_material->roughness_factor;
+
+        materials[i].pbr_metallic_roughness.base_color_texture         = gltf_material->base_color_texture_index;
+        materials[i].pbr_metallic_roughness.base_color_tex_coord       = gltf_material->base_color_tex_coord;
+        materials[i].pbr_metallic_roughness.metallic_roughness_texture = gltf_material->metallic_roughness_texture_index;
+        materials[i].pbr_metallic_roughness.metallic_roughness_texture = gltf_material->metallic_roughness_tex_coord;
+
+        // Normal
+        materials[i].normal.scale     = gltf_material->normal_scale;
+        materials[i].normal.texture   = gltf_material->normal_texture_index;
+        materials[i].normal.tex_coord = gltf_material->normal_tex_coord;
+
+        // Occlusion
+        materials[i].occlusion.strength  = gltf_material->normal_scale;
+        materials[i].occlusion.texture   = gltf_material->normal_texture_index;
+        materials[i].occlusion.tex_coord = gltf_material->normal_tex_coord;
+
+        // Emissive
+        materials[i].emissive.factor[0] = gltf_material->emissive_factor[0];
+        materials[i].emissive.factor[1] = gltf_material->emissive_factor[1];
+        materials[i].emissive.factor[2] = gltf_material->emissive_factor[2];
+        materials[i].emissive.texture   = gltf_material->emissive_texture_index;
+        materials[i].emissive.tex_coord = gltf_material->emissive_tex_coord;
+
+        gltf_material = (Gltf_Material*)((u8*)gltf_material + gltf_material->stride);
+    }
+}
+
+inline static void model_load_gltf_textures(u32 count, Gltf_Texture *gltf_textures, Texture *textures, u8 *model_buffer, u64 *size_used) {
+    // Just reserve space for now. Actual allocation work done later.
+    *size_used += sizeof(Texture) * count;
+}
+
+static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *meshes, u8 *model_buffer, u64 *size_used) {
+
+    *size_used += sizeof(Mesh) * count;
+
+    u32 tmp;
+
+    Gltf_Mesh           *gltf_mesh = gltf_meshes;
+    Gltf_Mesh_Primitive *gltf_primitive;
+    Gltf_Morph_Target   *gltf_morph_target;
+
+    u32 primitive_count;
+
+    Mesh_Primitive           *primitive;
+    Mesh_Primitive_Attribute *attribute;
+    Morph_Target             *target;
+
+    for(u32 i = 0; i < count; ++i) {
+        primitive_count = gltf_mesh->primitive_count;
+
+        meshes[i].primitives = (Mesh_Primitive*)(model_buffer + *size_used);
+        *size_used          += sizeof(Mesh_Primitive) * primitive_count;
+
+        gltf_primitive = gltf_mesh->primitives;
+        for(u32 j = 0; j < primitive_count; ++j) {
+            primitive = &meshes[i].primitives[j];
+
+            primitive->topology     = (VkPrimitiveTopology)gltf_primitive->topology;
+            primitive->indices      = gltf_primitive->indices;
+            primitive->material     = gltf_primitive->material;
+
+            primitive->attribute_count  = gltf_primitive->extra_attribute_count;
+            primitive->attribute_count += (u32)(gltf_primitive->position    != -1);
+            primitive->attribute_count += (u32)(gltf_primitive->normal      != -1);
+            primitive->attribute_count += (u32)(gltf_primitive->tangent     != -1);
+            primitive->attribute_count += (u32)(gltf_primitive->tex_coord_0 != -1);
+
+            primitive->attributes  = (Mesh_Primitive_Attribute*)(model_buffer + *size_used);
+
+            *size_used += sizeof(Mesh_Primitive_Attribute) * primitive->attribute_count;
+
+            // When I set up this api in the gltf file, I had no idea how annoying it would be later...
+            // If an attribute is not set, rather than branch, we just overwrite it by not incrementing the index.
+            tmp = 0;
+
+            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->position,    .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION};
+            tmp += (u32)(gltf_primitive->position != -1);
+
+            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->normal,      .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL};
+            tmp += (u32)(gltf_primitive->normal != -1);
+
+            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->tangent,     .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT};
+            tmp += (u32)(gltf_primitive->tangent != -1);
+
+            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->tex_coord_0, .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS};
+            tmp += (u32)(gltf_primitive->tex_coord_0 != -1);
+
+            for(u32 k = 0; k < gltf_primitive->extra_attribute_count; ++k) {
+                attribute = &primitive->attributes[tmp + k];
+                attribute->n        = gltf_primitive->extra_attributes[k].n;
+                attribute->accessor = gltf_primitive->extra_attributes[k].accessor_index;
+                attribute->type     = (Mesh_Primitive_Attribute_Type)gltf_primitive->extra_attributes[k].type;
+            }
+
+            primitive->target_count = gltf_primitive->target_count;
+            primitive->targets      = (Morph_Target*)(model_buffer + *size_used);
+
+            *size_used += sizeof(Morph_Target) * primitive->target_count;
+
+            gltf_morph_target = gltf_primitive->targets;
+            for(u32 k = 0; k < gltf_primitive->target_count; ++k) {
+                target = &primitive->targets[k];
+
+                target->attribute_count = gltf_morph_target->attribute_count;
+                target->attributes      = (Mesh_Primitive_Attribute*)(model_buffer + *size_used);
+
+                *size_used += sizeof(Mesh_Primitive_Attribute) * gltf_morph_target->attribute_count;
+
+                for(u32 l = 0; l < gltf_morph_target->attribute_count; ++l) {
+                    attribute = &target->attributes[l];
+                    attribute->n        = gltf_morph_target->attributes[l].n;
+                    attribute->accessor = gltf_morph_target->attributes[l].accessor_index;
+                    attribute->type     = (Mesh_Primitive_Attribute_Type)gltf_morph_target->attributes[l].type;
+                }
+
+                gltf_morph_target = (Gltf_Morph_Target*)((u8*)gltf_morph_target + gltf_morph_target->stride);
+            }
+
+            gltf_primitive = (Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
+        }
+        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
+    }
+}
+
+enum View_Type {
+    VIEW_TYPE_INDEX,
+    VIEW_TYPE_VERTEX,
+};
+struct Buffer_View {
+    View_Type type;
+    u64 offset;
+    u64 byte_stride;
 };
 
-// @Note @Todo To load more complicated model types with multiple primitives, meshes, etc.
-// all that needs to happen is this front end needs to be changed. Just needs to take arrays
-// of primitives or whatever instead. The same backend of splitting streams of resource keys
-// between threads scales. This frontend is supposed to be minimum working version.
-static Handle_Models_Result* handle_model_types(Handle_Models_Info *info) {
-    for(u32 i = 0; i < info->count; ++i) {
-        switch(info->models[i].cube.type) {
-        case MODEL_TYPE_CUBE:
-            handle_model_cube(&info->models[i], &info->draw_prep_infos[i], &info->ret_draw_info[i]);
-            break;
-        case MODEL_TYPE_PLAYER:
-            assert(false && "Unimplemented");
-            break;
-        case MODEL_TYPE_CAR:
-            assert(false && "Unimplemented");
-            break;
-        case MODEL_TYPE_BUILDING:
-            assert(false && "Unimplemented");
-            break;
-        default:
-            assert(false && "Invalid Model Type");
-        }
+// @Todo Skins, Animations, Cameras.
+Model model_from_gltf(String *gltf_file_name, u8 *model_buffer, u64 size_available, u64 *ret_size_used) {
+    Gltf gltf = parse_gltf(gltf_file_name->str);
+
+    // Get required bytes
+    u64 req_size = model_get_required_size_from_gltf(&gltf);
+
+    println("Size required for model %s: %u, Bytes remaining in buffer: %u", gltf_file_name->str, req_size, size_available);
+
+    if (req_size > size_available) {
+        *ret_size_used = req_size;
+        println("Insufficient size remaining in buffer!");
+        return {};
+    } else {
+        println("Loading Model...");
+        println("Size remaining after load: %u", size_available - req_size);
     }
 
-    // @Current task. Model upload rewrite. Async queueing with submission dependencies. If the upload queue
-    // successfully queues items which dont make it into the stage queue (for whatever reason), we go through
-    // and remove these indices from the upload queue, then submit staging, the submit upload. So all we
-    // need to know from the allocator interaction functions is what index staging and uploads got to.
+    Model ret = {};
+    ret.mesh_count = gltf_mesh_get_count(&gltf);
 
-    // @Todo this should happen after we have the models uploaded i think, then he offsets cane set on the
-    // pipelines. Should happen at the same time as allocating descriptors.
-    // pl_create_pipelines(primitive_count, draw_prep_info->pl_configs, return_result.draw_info->pipelines);
+    u64 size_used = 0;
+    ret.accessor_count = gltf_accessor_get_count(&gltf);
+    ret.material_count = gltf_material_get_count(&gltf);
+    ret.texture_count  = gltf_texture_get_count(&gltf);
+    ret.mesh_count     = gltf_mesh_get_count(&gltf);
 
-    /*
-    // Write descriptors
-    VkDescriptorImageInfo  descriptor_infos    [descriptor_count];
-    VkDescriptorDataEXT    descriptor_datas    [descriptor_count];
-    VkDescriptorGetInfoEXT descriptor_get_infos[descriptor_count];
+    ret.textures       = (Texture*) (ret.materials + ret.material_count);
+    ret.meshes         = (Mesh*)    (ret.textures  + ret.texture_count);
 
-    for(u32 i = 0; i < descriptor_count; ++i) {
-        descriptor_infos[i].sampler     = samplers   [i];
-        descriptor_infos[i].imageView   = image_views[i];
-        descriptor_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    u64 tmp_size;
 
-        descriptor_datas[i].pCombinedImageSampler = &descriptor_infos[i];
+    // model_buffer layout:
+    // | Accessor * count | extra accessor data | Material * count | extra material data | ... | Mesh * count | Primitive * count | extra primitive data | weights | ...
 
-        descriptor_get_infos[i] = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
-        descriptor_get_infos[i].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptor_get_infos[i].data = descriptor_datas[i];
-    }
+    // Accessor
+    ret.accessors = (Accessor*)(model_buffer + size_used);
+    model_load_gltf_accessors(ret.accessor_count, gltf.accessors, ret.accessors, model_buffer, &size_used);
 
-    u64 descriptor_set_offset;
-    u8 *descriptor_set_mem = descriptor_allocate_layout(
-                                &model_allocators->descriptor_sampler,
-                                draw_prep_info->pl_configs[0].layout.set_layout_sizes[0],
-                                &descriptor_set_offset);
+    // Material
+    ret.materials = (Material*)(model_buffer + size_used);
+    model_load_gltf_materials(ret.material_count, gltf.materials, ret.materials, model_buffer, &size_used);
 
-    descriptor_write_combined_image_sampler(&model_allocators->descriptor_sampler, 2, descriptor_datas,
-                                            descriptor_set_mem);
+    // Texture
+    ret.textures = (Texture*)(model_buffer + size_used);
+    model_load_gltf_textures(ret.texture_count, gltf.textures, ret.textures, model_buffer, &size_used);
 
-    // Binding offsets
-    VkDevice device = get_gpu_instance()->device;
-    vkGetDescriptorSetLayoutBindingOffset(device, draw_prep_info->pl_configs[0].layout.set_layouts[0], 0,
-                                          ret_draw_info->descriptor_offsets);
-    */
+    // Mesh
+    ret.meshes = (Mesh*)(model_buffer + size_used);
+    model_load_gltf_meshes(ret.mesh_count, gltf.meshes, ret.meshes, model_buffer, &size_used);
 
+    *ret_size_used = size_used;
+    return ret;
 }
 
-// @Speed Currently this function has the issue that it loops the models a number of times, but this is something
-// that I plan to separate into jobs. - Sol 7th Dec 2023
-Model_Upload_Result prepare_to_draw_models(Handle_Models_Info)
-{
-    Assets *g_assets = get_assets_instance();
-    Model_Allocators *model_allocs = &g_assets->model_allocators;
-
-    // Communicate with allocators
-    Model_Upload_Result res = handle_model_uploads(model_allocs, count, models, start_phase, end_phase);
-
-    if (res.phase != MODEL_UPLOAD_PHASE_COMPLETE)
-        return res;
-
-    // Upload data
-    Gpu *gpu = get_gpu_instance();
-
-    // OMFG! C++ operator preference is crazy bad with bitwise...
-    if ((gpu->memory.flags & GPU_MEMORY_UMA_BIT) == 0) {
-        VkCommandBufferBeginInfo cmd_begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        cmd_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-        VkCommandBuffer cmd = g_assets->cmd_buffers[g_frame_index];
-        vkBeginCommandBuffer(cmd, &cmd_begin_info);
-
-        u32 frame_index = g_frame_index;
-
-        VkCommandBuffer secondary_cmds[] = {
-            model_allocs->index.transfer_cmds [frame_index],
-            model_allocs->vertex.transfer_cmds[frame_index],
-            model_allocs->tex.transfer_cmds   [frame_index],
-        };
-
-        vkCmdExecuteCommands(cmd, 3, secondary_cmds);
-
-        vkEndCommandBuffer(cmd);
-
-        VkSubmitInfo submit_info = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        submit_info.commandBufferCount   = 1;
-        submit_info.pCommandBuffers      = &cmd;
-        submit_info.signalSemaphoreCount = 1;
-        submit_info.pSignalSemaphores    = &g_assets->semaphores[frame_index];
-
-        auto check = vkQueueSubmit(gpu->transfer_queue, 1, &submit_info, g_assets->fences[frame_index]);
-        DEBUG_OBJ_CREATION(vkQueueSubmit, check);
-    }
-
-    // Record secondary command buffers with appropriate bind commands.
-    return res;
+Model_Storage_Info store_model(Model *model) { // @Unimplemented
+    return {};
+}
+Model load_model(String *gltf_file) { // @Unimplemented
+    Model  ret;
+    return ret;
 }
