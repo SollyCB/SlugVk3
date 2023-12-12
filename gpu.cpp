@@ -961,6 +961,13 @@ void setup_memory_discrete(u32 device_mem_type, u32 host_mem_type, u32 both_mem_
     // Device Mem
     create_mem(gpu, device_mem_type, 1, TEXTURE_DEVICE_SIZE, &gpu->memory.texture_mem_device, 0.6);
 }
+
+//
+// @Todo Update the way I find the memory type indices. What I implemented was a super naive implementation
+// before I knew how the stuff worked as well as I do now (which is still not great). The indices should be
+// found by first creating the buffers, then selecting from the memory types which are suitable for the buffer,
+// as opposed to finding the types, then applying the buffers to them.
+//
 void allocate_memory() {
     Gpu *gpu                     = get_gpu_instance();
     VkPhysicalDevice phys_device = gpu->phys_device;
@@ -1021,6 +1028,9 @@ void allocate_memory() {
         gpu->memory.vertex_mem_index     = device_mem_type;
         gpu->memory.uniform_mem_index    = device_mem_type;
 
+        assert(mem_props.memoryTypes[device_mem_type].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        assert(mem_props.memoryTypes[device_mem_type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+
     } else if (gpu->info.props.deviceType != VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
         discrete_gpu_get_memory_type( // @Note Assumes there is some shared heap (for uniform buffers)
             &mem_props,
@@ -1049,12 +1059,12 @@ void allocate_memory() {
     VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 
     buffer_info.size  = DESCRIPTOR_BUFFER_SIZE;
-    buffer_info.usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
+    buffer_info.usage = VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
     auto check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &sampler_descriptor_buffer);
     DEBUG_OBJ_CREATION(vkCreateBuffer, check);
 
-    buffer_info.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT;
+    buffer_info.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
     check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &resource_descriptor_buffer);
     DEBUG_OBJ_CREATION(vkCreateBuffer, check);
@@ -1067,39 +1077,40 @@ void allocate_memory() {
 
     vkGetPhysicalDeviceProperties2(gpu->phys_device, &props2);
 
-    VkBufferDeviceAddressInfo address_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-    address_info.buffer = sampler_descriptor_buffer;
+    VkMemoryRequirements mem_req[2];
+    vkGetBufferMemoryRequirements(device, sampler_descriptor_buffer,  &mem_req[0]);
+    vkGetBufferMemoryRequirements(device, resource_descriptor_buffer, &mem_req[1]);
 
-    VkDeviceAddress sampler_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+    u64 sampler_size = mem_req[0].size;
+    sampler_size     = align(sampler_size, mem_req[1].alignment);
 
-    address_info.buffer = resource_descriptor_buffer;
-    VkDeviceAddress resource_buffer_address = vkGetBufferDeviceAddress(device, &address_info);
+    u32 descriptor_mem_type_index = Max_u32;
+    for(u32 i = 0; i < mem_props.memoryTypeCount; ++i) {
+        if (!((1 << i) & mem_req[0].memoryTypeBits & mem_req[1].memoryTypeBits))
+            continue;
 
-    assert(sampler_buffer_address  + DESCRIPTOR_BUFFER_SIZE < buf_props.maxSamplerDescriptorBufferRange);
-    assert(resource_buffer_address + DESCRIPTOR_BUFFER_SIZE < buf_props.maxResourceDescriptorBufferRange);
+        if ((mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+            (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)     &&
+            (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+        {
+            descriptor_mem_type_index = i;
+            break;
+        }
+    }
 
-    if (sampler_buffer_address  + DESCRIPTOR_BUFFER_SIZE > buf_props.maxSamplerDescriptorBufferRange ||
-        resource_buffer_address + DESCRIPTOR_BUFFER_SIZE > buf_props.maxResourceDescriptorBufferRange)
-    {
-        println("Requested descriptor buffer size + buffer device address would overflow max buffer range");
+    if (descriptor_mem_type_index == Max_u32) {
+        println("Unable to find memory type for descriptor buffers");
+        assert(false && "See Above Me");
         return;
     }
 
-    VkMemoryRequirements mem_req;
-    vkGetBufferMemoryRequirements(device, sampler_descriptor_buffer, &mem_req);
+    VkMemoryAllocateFlagsInfo allocate_flags = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    allocate_flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
 
-    u64 sampler_size = mem_req.size;
-
-    vkGetBufferMemoryRequirements(device, resource_descriptor_buffer, &mem_req);
-
-    sampler_size = align(sampler_size, mem_req.alignment);
-
-    //
-    // @Todo Memory Priority necessary here? Idk since descriptor mem is supposed to be its own special thing...
-    //
     VkMemoryAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    alloc_info.allocationSize  = sampler_size + mem_req.size;
-    alloc_info.memoryTypeIndex = gpu->memory.uniform_mem_index; // This is device local + host visible memory
+    alloc_info.pNext           = &allocate_flags;
+    alloc_info.allocationSize  = sampler_size + mem_req[1].size;
+    alloc_info.memoryTypeIndex = descriptor_mem_type_index; // This is device local + host visible memory
 
     check = vkAllocateMemory(device, &alloc_info, ALLOCATION_CALLBACKS, &descriptor_buffer_memory);
     DEBUG_OBJ_CREATION(vkAllocateMemory, check);
@@ -1109,6 +1120,16 @@ void allocate_memory() {
 
     check = vkBindBufferMemory(device, resource_descriptor_buffer, descriptor_buffer_memory, sampler_size);
     DEBUG_OBJ_CREATION(vkBindBufferMemory, check);
+
+    assert(DESCRIPTOR_BUFFER_SIZE < buf_props.maxSamplerDescriptorBufferRange);
+    assert(DESCRIPTOR_BUFFER_SIZE < buf_props.maxResourceDescriptorBufferRange);
+
+    if (DESCRIPTOR_BUFFER_SIZE > buf_props.maxSamplerDescriptorBufferRange ||
+        DESCRIPTOR_BUFFER_SIZE > buf_props.maxResourceDescriptorBufferRange)
+    {
+        println("Requested descriptor buffer size + buffer device address would overflow max buffer range");
+        return;
+    }
 
     u8 *sampler_ptr;
 

@@ -17,7 +17,6 @@ struct Model_Allocators {
     Descriptor_Allocator descriptor_sampler;
     Descriptor_Allocator descriptor_resource;
 };
-struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
 
 constexpr u32 g_assets_keys_array_tex_len        = 256;
 constexpr u32 g_assets_keys_array_index_len      = 256;
@@ -25,10 +24,14 @@ constexpr u32 g_assets_keys_array_vertex_len     = 256;
 constexpr u32 g_assets_keys_array_sampler_len    = 256;
 constexpr u32 g_assets_keys_array_image_view_len = 256;
 
+constexpr u32 g_model_buffer_size                 = 1024 * 1024;
+constexpr u32 g_model_buffer_allocation_alignment = 16;
+
 struct Model;
 
 struct Assets {
     Model_Allocators model_allocators;
+    u8 *model_buffer;
 
     u32    model_count;
     Model *models;
@@ -260,7 +263,7 @@ struct Model {
     Mesh     *meshes;
 };
 
-Model model_from_gltf(String *gltf_file);
+Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buffer, u64 *ret_size_used);
 
 struct Model_Storage_Info {
     u64 offset;

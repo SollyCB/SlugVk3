@@ -11,6 +11,112 @@
 static Assets s_Assets;
 Assets* get_assets_instance() { return &s_Assets; }
 
+struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
+
+static Model_Allocators init_model_allocators(Model_Allocators_Config *config);
+static void             shutdown_model_allocators();
+
+void init_assets() {
+    Model_Allocators_Config config = {};
+    init_model_allocators(&config);
+
+    Assets           *g_assets = get_assets_instance();
+    Model_Allocators *allocs   = &g_assets->model_allocators;
+
+    g_assets->model_buffer =    (u8*)malloc_h(g_model_buffer_size, 16);
+    g_assets->models       = (Model*)malloc_h(sizeof(Model) * g_model_count, 16);
+
+    u64 model_buffer_size_used      = 0;
+    u64 model_buffer_size_available = g_model_buffer_size;
+
+    u64 tmp_size;
+    for(u32 i = 0; i < g_model_count; ++i) {
+        g_assets->models[i] = model_from_gltf(&g_model_file_names[i], model_buffer_size_available,
+                                              g_assets->model_buffer, &tmp_size);
+
+        assert(model_buffer_size_available >= model_buffer_size_used)
+        model_buffer_size_used      += tmp_size;
+        model_buffer_size_available -= model_buffer_size_used;
+
+        g_assets->model_count++;
+    }
+
+    bool growable_array = true;
+    bool temp_array     = false;
+
+    g_assets->keys_tex           = new_array<u32>(g_assets_keys_array_tex_len,        growable_array, temp_array);
+    g_assets->keys_index         = new_array<u32>(g_assets_keys_array_index_len,      growable_array, temp_array);
+    g_assets->keys_vertex        = new_array<u32>(g_assets_keys_array_vertex_len,     growable_array, temp_array);
+    g_assets->keys_sampler       = new_array<u64>(g_assets_keys_array_sampler_len,    growable_array, temp_array);
+    g_assets->keys_image_view    = new_array<u64>(g_assets_keys_array_image_view_len, growable_array, temp_array);
+
+    g_assets->results_tex        = new_array<bool>(g_assets_keys_array_tex_len,        growable_array, temp_array);
+    g_assets->results_index      = new_array<bool>(g_assets_keys_array_index_len,      growable_array, temp_array);
+    g_assets->results_vertex     = new_array<bool>(g_assets_keys_array_vertex_len,     growable_array, temp_array);
+    g_assets->results_sampler    = new_array<bool>(g_assets_keys_array_sampler_len,    growable_array, temp_array);
+    g_assets->results_image_view = new_array<bool>(g_assets_keys_array_image_view_len, growable_array, temp_array);
+
+    g_assets->pipelines          = new_array<VkPipeline>(256, true, false);
+
+    g_assets->model_count = g_model_count;
+    g_assets->models      = (Model*)malloc_h(sizeof(Model) * g_model_count, 8);
+
+    g_assets->semaphores[0] = create_semaphore();
+    g_assets->semaphores[1] = create_semaphore();
+    g_assets->fences[0]     = create_fence(false);
+    g_assets->fences[1]     = create_fence(false);
+
+    Gpu *gpu        = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pool_info.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = gpu->transfer_queue_index;
+
+    auto check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[0]);
+    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
+    check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[1]);
+    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
+
+    VkCommandBufferAllocateInfo cmd_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    cmd_info.commandPool        = g_assets->cmd_pools[0];
+    cmd_info.commandBufferCount = 1;
+
+    check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[0]);
+    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+
+    cmd_info.commandPool = g_assets->cmd_pools[1];
+    check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[1]);
+    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+}
+
+void kill_assets() {
+    Assets *g_assets = get_assets_instance();
+
+    free_h(g_assets->models);
+    shutdown_model_allocators();
+
+    free_array<u32>(&g_assets->keys_tex       );
+    free_array<u32>(&g_assets->keys_index     );
+    free_array<u32>(&g_assets->keys_vertex    );
+    free_array<u64>(&g_assets->keys_sampler   );
+    free_array<u64>(&g_assets->keys_image_view);
+
+    free_array<bool>(&g_assets->results_tex       );
+    free_array<bool>(&g_assets->results_index     );
+    free_array<bool>(&g_assets->results_vertex    );
+    free_array<bool>(&g_assets->results_sampler   );
+    free_array<bool>(&g_assets->results_image_view);
+
+    free_array<VkPipeline>(&g_assets->pipelines);
+
+
+    destroy_semaphore(g_assets->semaphores[0]);
+    destroy_semaphore(g_assets->semaphores[1]);
+    destroy_fence(g_assets->fences[0]);
+    destroy_fence(g_assets->fences[1]);
+}
+
 static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
     Gpu *gpu = get_gpu_instance();
 
@@ -116,88 +222,6 @@ static void shutdown_model_allocators() {
     destroy_allocator(&allocs->vertex);
     destroy_tex_allocator(&allocs->tex);
     destroy_sampler_allocator(&allocs->sampler);
-}
-
-void init_assets() {
-    Model_Allocators_Config config = {};
-    init_model_allocators(&config);
-
-    Assets           *g_assets = get_assets_instance();
-    Model_Allocators *allocs   = &g_assets->model_allocators;
-
-    bool growable_array = true;
-    bool temp_array     = false;
-
-    g_assets->keys_tex           = new_array<u32>(g_assets_keys_array_tex_len,        growable_array, temp_array);
-    g_assets->keys_index         = new_array<u32>(g_assets_keys_array_index_len,      growable_array, temp_array);
-    g_assets->keys_vertex        = new_array<u32>(g_assets_keys_array_vertex_len,     growable_array, temp_array);
-    g_assets->keys_sampler       = new_array<u64>(g_assets_keys_array_sampler_len,    growable_array, temp_array);
-    g_assets->keys_image_view    = new_array<u64>(g_assets_keys_array_image_view_len, growable_array, temp_array);
-
-    g_assets->results_tex        = new_array<bool>(g_assets_keys_array_tex_len,        growable_array, temp_array);
-    g_assets->results_index      = new_array<bool>(g_assets_keys_array_index_len,      growable_array, temp_array);
-    g_assets->results_vertex     = new_array<bool>(g_assets_keys_array_vertex_len,     growable_array, temp_array);
-    g_assets->results_sampler    = new_array<bool>(g_assets_keys_array_sampler_len,    growable_array, temp_array);
-    g_assets->results_image_view = new_array<bool>(g_assets_keys_array_image_view_len, growable_array, temp_array);
-
-    g_assets->pipelines          = new_array<VkPipeline>(256, true, false);
-
-    g_assets->model_count = g_model_count;
-    g_assets->models      = (Model*)malloc_h(sizeof(Model) * g_model_count, 8);
-
-    g_assets->semaphores[0] = create_semaphore();
-    g_assets->semaphores[1] = create_semaphore();
-    g_assets->fences[0]     = create_fence(false);
-    g_assets->fences[1]     = create_fence(false);
-
-    Gpu *gpu        = get_gpu_instance();
-    VkDevice device = gpu->device;
-
-    VkCommandPoolCreateInfo pool_info = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-    pool_info.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pool_info.queueFamilyIndex = gpu->transfer_queue_index;
-
-    auto check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[0]);
-    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
-    check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[1]);
-    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
-
-    VkCommandBufferAllocateInfo cmd_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cmd_info.commandPool        = g_assets->cmd_pools[0];
-    cmd_info.commandBufferCount = 1;
-
-    check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[0]);
-    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
-
-    cmd_info.commandPool = g_assets->cmd_pools[1];
-    check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[1]);
-    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
-}
-void kill_assets() {
-    Assets *g_assets = get_assets_instance();
-
-    free_h(g_assets->models);
-    shutdown_model_allocators();
-
-    free_array<u32>(&g_assets->keys_tex       );
-    free_array<u32>(&g_assets->keys_index     );
-    free_array<u32>(&g_assets->keys_vertex    );
-    free_array<u64>(&g_assets->keys_sampler   );
-    free_array<u64>(&g_assets->keys_image_view);
-
-    free_array<bool>(&g_assets->results_tex       );
-    free_array<bool>(&g_assets->results_index     );
-    free_array<bool>(&g_assets->results_vertex    );
-    free_array<bool>(&g_assets->results_sampler   );
-    free_array<bool>(&g_assets->results_image_view);
-
-    free_array<VkPipeline>(&g_assets->pipelines);
-
-
-    destroy_semaphore(g_assets->semaphores[0]);
-    destroy_semaphore(g_assets->semaphores[1]);
-    destroy_fence(g_assets->fences[0]);
-    destroy_fence(g_assets->fences[1]);
 }
 
 static u64 model_get_required_size_from_gltf(Gltf *gltf) {
@@ -612,6 +636,9 @@ Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buff
     return ret;
 }
 
+// These will be implemented when I run into a bottle neck on model structures taking up too much space:
+// the plan is to write these 'Model' structs to disk, and then avoid using gltf all together. Better load times
+// not having to parse the text files, just have to reset pointers.
 Model_Storage_Info store_model(Model *model) { // @Unimplemented
     return {};
 }
