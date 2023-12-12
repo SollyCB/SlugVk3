@@ -369,8 +369,9 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
 
         accessors[i].flags |= ACCESSOR_NORMALIZED_BIT  & max32_if_true(gltf_accessor->normalized);
 
-        accessors[i].byte_stride  = gltf_accessor->byte_stride;
-        accessors[i].count        = gltf_accessor->count;
+        accessors[i].allocation_key = gltf_accessor->buffer_view;
+        accessors[i].byte_stride    = gltf_accessor->byte_stride;
+        accessors[i].count          = gltf_accessor->count;
 
         if (gltf_accessor->max) {
             accessors[i].max_min = (Accessor_Max_Min*)(model_buffer + *size_used);
@@ -574,13 +575,21 @@ enum View_Type {
     VIEW_TYPE_VERTEX,
 };
 struct Buffer_View {
-    View_Type type;
     u64 offset;
-    u64 byte_stride;
+    u64 size;
 };
 
+//
+// @Note This implementation looks a little weird, as lots of sections seem naively split apart (for
+// instance, the gltf struct is looped a few different times) but this is intentional, as eventually
+// I will split this thing into jobs for threading, like reading the gltf struct into the model struct,
+// and dipatching work to the allocators.
+//
 // @Todo Skins, Animations, Cameras.
-Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buffer, u64 *ret_size_used) {
+//
+Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name, u64 size_available,
+                      u8 *model_buffer, u64 *ret_size_used)
+{
     Gltf gltf = parse_gltf(gltf_file_name->str);
 
     // Get required bytes
@@ -598,7 +607,6 @@ Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buff
     }
 
     Model ret = {};
-    ret.mesh_count = gltf_mesh_get_count(&gltf);
 
     u64 size_used = 0;
     ret.accessor_count = gltf_accessor_get_count(&gltf);
@@ -631,8 +639,143 @@ Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buff
     model_load_gltf_meshes(ret.mesh_count, gltf.meshes, ret.meshes, model_buffer, &size_used);
 
     assert(size_used == req_size);
-
     *ret_size_used = size_used;
+
+    // @TODO CURRENT TASK!! Allocate the model resources.
+
+    // Each texture/buffer view becomes an allocation.
+    // @Note One day I will join buffer views together, so that an allocation
+    // is the data referenced by a primitive.
+
+    u32  index_accessor_count  = 0;
+    u32  vertex_accessor_count = 0;
+    u32 *index_accessor_indices  = (u32*)malloc_t(sizeof(u32) * ret.accessor_count, 8);
+    u32 *vertex_accessor_indices = (u32*)malloc_t(sizeof(u32) * ret.accessor_count, 8);
+
+    // The below method is inefficient, as it relies on the primitives to be done parsing, but this
+    // not a performance critical area, or an interesting area, so I will not be threading it for a long
+    // time if ever (plus it already has the dependency on the gltf struct so whatever, for now).
+    // The reason I am doing this less efficient way is I cannot stand my gltf interface, and it is a
+    // waste of time atm to update it.
+    //
+    // @Note I want duplicate accessor indices here, as then I can loop them and match them to their
+    // respective buffer view allocation later.
+    //
+
+    Mesh_Primitive *primitive;
+    Morph_Target   *target;
+    for(u32 i = 0; i < ret.mesh_count; ++i) {
+        for(u32 j = 0; j < ret.meshes[i].primitive_count; ++j) {
+            primitive = &ret.meshes[i].primitives[j];
+
+            index_accessor_indices[index_accessor_count] = primitive->indices;
+            index_accessor_count++;
+
+            for(u32 k = 0; k < primitive->attribute_count; ++k) {
+                vertex_accessor_indices[vertex_accessor_count] = primitive->attributes[k].accessor;
+                vertex_accessor_count++;
+            }
+
+            for(u32 k = 0; k < primitive->target_count; ++k) {
+                target = &primitive->targets[k];
+                for(u32 l = 0; l < target->attribute_count; ++l) {
+                    vertex_accessor_indices[vertex_accessor_count] = target->attributes[l].accessor;
+                    vertex_accessor_count++;
+                }
+            }
+        }
+    }
+
+
+    u32  buffer_view_count          = gltf_buffer_view_get_count(&gltf);
+    u32  index_buffer_view_count    = 0;
+    u32  vertex_buffer_view_count   = 0;
+    u32 *index_buffer_view_indices  = (u32*)malloc_t(sizeof(Buffer_View) * buffer_view_count, 8);
+    u32 *vertex_buffer_view_indices = (u32*)malloc_t(sizeof(Buffer_View) * buffer_view_count, 8);
+
+    // Assume fewer than 8 * 64 (512) buffer views
+    u32 mask_count = 8;
+    u64 masks[mask_count];
+    memset(masks, 0, sizeof(u64) * mask_count);
+    assert(buffer_view_count < 512 && "Increase mask count");
+
+    u32  mask_idx = 0;
+    u32  tmp;
+    bool seen;
+    Accessor *accessor;
+
+    // I think this is pretty clean, track seen buffer view indices branchless, lots of indexing
+    // off the stack.
+
+    // Find all buffer views containing index data
+    for(u32 i = 0; i < index_accessor_count; ++i) {
+        accessor = ret.accessors[index_accessor_indices[i]];
+
+        // allocation_key equals its buffer view index before allocation stage
+        mask_idx = accessor->allocation_key >> 6;
+
+        seen           = mask[mask_idx] & (1 << (accessor->allocation_key & 63));
+        mask[mask_idx] = mask[mask_idx] | (1 << (accessor->allocation_key & 63));
+
+        index_buffer_view_indices[index_buffer_view_count] = accessor->allocation_key;
+        index_buffer_view_count += !seen;
+    }
+
+    memset(masks, 0, sizeof(u64) * mask_count);
+
+    // Find all buffer views containing vertex data
+    for(u32 i = 0; i < vertex_accessor_count; ++i) {
+        accessor = ret.accessors[vertex_accessor_indices[i]];
+
+        // allocation_key equals its buffer view index before allocation stage
+        mask_idx = accessor->allocation_key >> 6;
+
+        seen           = mask[mask_idx] & (1 << (accessor->allocation_key & 63));
+        mask[mask_idx] = mask[mask_idx] | (1 << (accessor->allocation_key & 63));
+
+        vertex_buffer_view_indices[vertex_buffer_view_count] = accessor->allocation_key;
+        vertex_buffer_view_count += !seen;
+    }
+
+    Gltf_Buffer *gltf_buffer = gltf.buffers;
+    u8 *buffer = file_read_bin_temp_large(gltf_buffer->uri, gltf_buffer->byte_length);
+
+    u32 *buffer_view_allocation_keys = (u32*)malloc_t(sizeof(u32) * buffer_view_count, 8);
+
+    // The above code is so nice, now this... I am glad I have found a way to move
+    // away from my gltf interface.
+    Gltf_Buffer_view *gltf_buffer_view;
+    Gpu_Allocator_Result result;
+    for(u32 i = 0; i < index_buffer_view_count; ++i) {
+        result = begin_allocation(&model_allocators->index);
+        CHECK_GPU_ALLOCATOR_RESULT(result);
+
+        tmp = index_buffer_view_indices[i];
+        gltf_buffer_view = gltf_buffer_view_by_index(&gltf, tmp);
+
+        result = continue_allocation(&model_allocators->index, gltf_buffer_view->byte_length,
+                                     gltf_buffer + gltf_buffer_view->byte_offset);
+        CHECK_GPU_ALLOCATOR_RESULT(result);
+
+        result = submit_allocation(&model_allocators->index, &buffer_view_allocation_keys[tmp]);
+        CHECK_GPU_ALLOCATOR_RESULT(result);
+    }
+
+    for(u32 i = 0; i < vertex_buffer_view_count; ++i) {
+        result = begin_allocation(&model_allocators->vertex);
+        CHECK_GPU_ALLOCATOR_RESULT(result);
+
+        tmp = vertex_buffer_view_indices[i];
+        gltf_buffer_view = gltf_buffer_view_by_index(&gltf, tmp);
+
+        result = continue_allocation(&model_allocators->vertex, gltf_buffer_view->byte_length,
+                                     gltf_buffer + gltf_buffer_view->byte_offset);
+        CHECK_GPU_ALLOCATOR_RESULT(result);
+
+        result = submit_allocation(&model_allocators->vertex, &buffer_view_allocation_keys[tmp]);
+        CHECK_GPU_ALLOCATOR_RESULT(result);
+    }
+    
     return ret;
 }
 
@@ -647,7 +790,7 @@ Model load_model(Model_Storage_Info *strorage_info) { // @Unimplemented
     return ret;
 }
 
-#if TEST
+#if TEST // 300 lines of tests
 static void test_model_from_gltf();
 
 void test_asset() {
