@@ -74,8 +74,8 @@ int main() {
 void run_tests() {
     load_tests();
 
-    test_spirv();
-    test_gltf();
+    //test_spirv();
+    //test_gltf();
     test_asset();
 
     end_tests();

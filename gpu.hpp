@@ -405,10 +405,10 @@ Gpu_Allocator_Result begin_allocation    (Gpu_Allocator *alloc);
 Gpu_Allocator_Result continue_allocation (Gpu_Allocator *alloc, u64 size, void *ptr);
 Gpu_Allocator_Result submit_allocation   (Gpu_Allocator *alloc, u32 *key);
 
-Gpu_Allocator_Result staging_queue_begin     (Gpu_Allocator *alloc);
-Gpu_Allocator_Result staging_queue_add       (Gpu_Allocator *alloc, u32 key, bool adjust_weights);
-Gpu_Allocator_Result staging_queue_submit    (Gpu_Allocator *alloc);
-void                 staging_queue_remove    (Gpu_Allocator *alloc, u32 key);
+Gpu_Allocator_Result staging_queue_begin (Gpu_Allocator *alloc);
+Gpu_Allocator_Result staging_queue_add   (Gpu_Allocator *alloc, u32 key, bool adjust_weights);
+Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc);
+void                 staging_queue_remove(Gpu_Allocator *alloc, u32 key);
 
 inline static void staging_queue_make_empty(Gpu_Allocator *alloc) {
     /*

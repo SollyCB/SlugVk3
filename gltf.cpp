@@ -365,7 +365,7 @@ Gltf parse_gltf(const char *filename) {
             (Gltf_Buffer_View*)((u8*)gltf.buffer_views +
                 gltf.buffer_view_count[accessor->buffer_view]);
 
-        if (buffer_view->byte_stride)
+        if (gltf.buffer_view_count[-1] && buffer_view->byte_stride)
             accessor->byte_stride = buffer_view->byte_stride;
 
         accessor = (Gltf_Accessor*)((u8*)accessor + accessor->stride);

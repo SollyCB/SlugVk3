@@ -80,32 +80,37 @@ void kill_assets();
 // @Todo Animations, Skins, Cameras
 // @Todo store more of the Gpu_Tex_Allocation data on the model
 
+struct Texture { // Allocation keys
+    u32 texture_key;
+    u64 sampler_key;
+};
+
 struct Pbr_Metallic_Roughness { // 40 bytes
-    float base_color_factor[4] = {1,1,1,1};
-    float metallic_factor      = 1;
-    float roughness_factor     = 1;
-    u32   base_color_texture;
-    u32   base_color_tex_coord;
-    u32   metallic_roughness_texture;
-    u32   metallic_roughness_tex_coord;
+    float   base_color_factor[4] = {1,1,1,1};
+    float   metallic_factor      = 1;
+    float   roughness_factor     = 1;
+    u32     base_color_tex_coord;
+    u32     metallic_roughness_tex_coord;
+    Texture base_color_texture;
+    Texture metallic_roughness_texture;
 };
 
-struct Normal_Texture { // 12 bytes
-    float scale = 1;
-    u32   texture;
-    u32   tex_coord;
+struct Normal_Texture {
+    float   scale = 1;
+    Texture texture;
+    u32     tex_coord;
 };
 
-struct Occlusion_Texture { // 12 bytes
-    float strength = 1;
-    u32   texture;
-    u32   tex_coord;
+struct Occlusion_Texture {
+    float   strength = 1;
+    Texture texture;
+    u32     tex_coord;
 };
 
-struct Emissive_Texture { // 20 bytes
-    float factor[3] = {0,0,0};
-    u32   texture;
-    u32   tex_coord;
+struct Emissive_Texture {
+    float   factor[3] = {0,0,0};
+    Texture texture;
+    u32     tex_coord;
 };
 
 enum Material_Flag_Bits {
@@ -136,45 +141,6 @@ struct Material { // 92 bytes
     Emissive_Texture       emissive;     // 20
 
     char pad[128 - 92]; // 4 + 4 + 40 + 12 + 12 + 20
-};
-
-enum Mesh_Primitive_Attribute_Type {
-    MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION   = 1,
-    MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL     = 2,
-    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT    = 3,
-    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS = 4,
-    MESH_PRIMITIVE_ATTRIBUTE_TYPE_COLOR      = 5,
-    MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS     = 6,
-    MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS    = 7,
-};
-
-struct Mesh_Primitive_Attribute {
-    u32 n;
-    u32 accessor;
-    Mesh_Primitive_Attribute_Type type;
-};
-
-struct Morph_Target {
-    u32 attribute_count;
-    Mesh_Primitive_Attribute *attributes;
-};
-
-struct Mesh_Primitive {
-    VkPrimitiveTopology topology;
-
-    u32 indices;
-    u32 material;
-    u32 attribute_count;
-    u32 target_count;
-    Mesh_Primitive_Attribute *attributes;
-    Morph_Target             *targets;
-};
-
-struct Mesh {
-    u32 primitive_count;
-    u32 weight_count;
-    Mesh_Primitive *primitives;
-    float          *weights;
 };
 
 enum Accessor_Component_Type {
@@ -225,6 +191,7 @@ struct Accessor_Max_Min {
     float max[16];
     float min[16];
 };
+
 struct Accessor_Sparse {
     Accessor_Flag_Bits indices_component_type;
     u32 count;
@@ -246,24 +213,53 @@ struct Accessor { // 44 bytes
     Accessor_Sparse  *sparse;
 };
 
-struct Texture { // Allocation keys
-    u64 sampler;
-    u32 texture;
+enum Mesh_Primitive_Attribute_Type {
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION   = 1,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL     = 2,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT    = 3,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS = 4,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_COLOR      = 5,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS     = 6,
+    MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS    = 7,
+};
+
+struct Mesh_Primitive_Attribute {
+    u32 n;
+    Accessor accessor;
+    Mesh_Primitive_Attribute_Type type;
+};
+
+struct Morph_Target {
+    u32 attribute_count;
+    Mesh_Primitive_Attribute *attributes;
+};
+
+struct Mesh_Primitive {
+    VkPrimitiveTopology topology;
+
+    u32 attribute_count;
+    u32 target_count;
+    Accessor indices;
+    Material material;
+    Mesh_Primitive_Attribute *attributes;
+    Morph_Target             *targets;
+};
+
+struct Mesh {
+    u32 primitive_count;
+    u32 weight_count;
+    Mesh_Primitive *primitives;
+    float          *weights;
 };
 
 struct Model {
-    u64       size; // size required in model buffer
-    u32       accessor_count;
-    u32       material_count;
-    u32       texture_count;
-    u32       mesh_count;
-    Accessor *accessors;
-    Material *materials;
-    Texture  *textures;
-    Mesh     *meshes;
+    u64   size; // size required in model buffer
+    u32   mesh_count;
+    Mesh *meshes;
 };
 
-Model model_from_gltf(String *gltf_file_name, u64 size_available, u8 *model_buffer, u64 *ret_size_used);
+Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name, u64 size_available,
+                      u8 *model_buffer, u64 *ret_req_size);
 
 struct Model_Storage_Info {
     u64 offset;

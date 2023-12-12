@@ -31,7 +31,7 @@ void init_assets() {
 
     u64 tmp_size;
     for(u32 i = 0; i < g_model_count; ++i) {
-        g_assets->models[i] = model_from_gltf(&g_model_file_names[i], model_buffer_size_available,
+        g_assets->models[i] = model_from_gltf(allocs, &g_model_file_names[i], model_buffer_size_available,
                                               g_assets->model_buffer, &tmp_size);
 
         assert(model_buffer_size_available >= model_buffer_size_used)
@@ -224,14 +224,18 @@ static void shutdown_model_allocators() {
     destroy_sampler_allocator(&allocs->sampler);
 }
 
-static u64 model_get_required_size_from_gltf(Gltf *gltf) {
+struct Model_Req_Size_Info {
+    u32 total;
+    u32 accessors;
+    u32 primitives;
+    u32 weights;
+};
+static Model_Req_Size_Info model_get_required_size_from_gltf(Gltf *gltf) {
     assert(gltf_buffer_get_count(gltf) == 1 && "Ugh, need to make buffers an array");
 
     // @Todo Animations, Skins, Cameras
 
     u32 accessor_count    = gltf_accessor_get_count(gltf);
-    u32 material_count    = gltf_material_get_count(gltf);
-    u32 texture_count     = gltf_texture_get_count(gltf);
     u32 mesh_count        = gltf_mesh_get_count(gltf);
 
     // Accessors: min/max and sparse
@@ -272,9 +276,9 @@ static u64 model_get_required_size_from_gltf(Gltf *gltf) {
 
             attribute_count += gltf_primitive->extra_attribute_count;
 
-            target_count    += gltf_primitive->target_count;
+            target_count      += gltf_primitive->target_count;
+            gltf_morph_target  = gltf_primitive->targets;
 
-            gltf_morph_target = gltf_primitive->targets;
             for(u32 k = 0; k < gltf_primitive->target_count; ++k) {
                 target_attribute_count += gltf_morph_target->attribute_count;
 
@@ -287,23 +291,35 @@ static u64 model_get_required_size_from_gltf(Gltf *gltf) {
         gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 
-    u64 req_size = 0;
 
-    req_size += sparse_count  * sizeof(Accessor_Sparse);
-    req_size += max_min_count * sizeof(Accessor_Max_Min);
+    u32 req_size_accessors  = 0;
+    req_size_accessors     += sparse_count  * sizeof(Accessor_Sparse);
+    req_size_accessors     += max_min_count * sizeof(Accessor_Max_Min);
 
-    req_size +=  weight_count           * sizeof(float);
-    req_size +=  primitive_count        * sizeof(Mesh_Primitive);
-    req_size +=  attribute_count        * sizeof(Mesh_Primitive_Attribute);
-    req_size +=  target_count           * sizeof(Morph_Target);
-    req_size +=  target_attribute_count * sizeof(Mesh_Primitive_Attribute);
+    u32 req_size_weights  = 0;
+    req_size_weights     += weight_count * sizeof(float);
 
-    req_size += sizeof(Accessor) * accessor_count;
-    req_size += sizeof(Material) * material_count;
-    req_size += sizeof(Texture)  * texture_count;
-    req_size += sizeof(Mesh)     * mesh_count;
+    u32 req_size_primitives  = 0;
+    req_size_primitives     +=  primitive_count        * sizeof(Mesh_Primitive);
+    req_size_primitives     +=  attribute_count        * sizeof(Mesh_Primitive_Attribute);
+    req_size_primitives     +=  target_count           * sizeof(Morph_Target);
+    req_size_primitives     +=  target_attribute_count * sizeof(Mesh_Primitive_Attribute);
 
-    return req_size;
+    u32 req_size  = 0;
+    req_size     += req_size_accessors;
+    req_size     += req_size_weights;
+    req_size     += req_size_primitives;
+
+    req_size += sizeof(Mesh) * mesh_count;
+
+    Model_Req_Size_Info ret = {
+        .total      = req_size,
+        .accessors  = req_size_accessors,
+        .primitives = req_size_primitives,
+        .weights    = req_size_weights,
+    };
+
+    return ret;
 }
 
 inline static Accessor_Flag_Bits translate_gltf_accessor_type_to_bits(Gltf_Accessor_Type type, u32 *ret_size) {
@@ -353,14 +369,14 @@ inline static Accessor_Flag_Bits translate_gltf_accessor_type_to_bits(Gltf_Acces
     return (Accessor_Flag_Bits)ret;
 }
 
-static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, Accessor *accessors, u8 *model_buffer, u64 *size_used) {
+static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, Accessor *accessors, u8 *buffer) {
     u32 tmp_component_count;
     u32 tmp_component_width;
     u32 tmp;
 
-    *size_used += sizeof(Accessor) * count;
-
     Gltf_Accessor *gltf_accessor = gltf_accessors;
+
+    u32 size_used = 0;
     for(u32 i = 0; i < count; ++i) {
         accessors[i] = {};
 
@@ -374,18 +390,17 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
         accessors[i].count          = gltf_accessor->count;
 
         if (gltf_accessor->max) {
-            accessors[i].max_min = (Accessor_Max_Min*)(model_buffer + *size_used);
-            *size_used += sizeof(Accessor_Max_Min);
+            accessors[i].max_min  = (Accessor_Max_Min*)(buffer + size_used);
+            size_used            += sizeof(Accessor_Max_Min);
 
-            tmp = sizeof(float) * tmp_component_count;
-
+            tmp = tmp_component_count * sizeof(float);
             memcpy(accessors[i].max_min->max, gltf_accessor->max, tmp);
             memcpy(accessors[i].max_min->min, gltf_accessor->min, tmp);
         }
 
         if (gltf_accessor->sparse_count) {
-            accessors[i].sparse = (Accessor_Sparse*)(model_buffer + *size_used);
-            *size_used += sizeof(Accessor_Sparse);
+            accessors[i].sparse  = (Accessor_Sparse*)(buffer + size_used);
+            size_used           += sizeof(Accessor_Sparse);
 
             accessors[i].sparse->indices_component_type = translate_gltf_accessor_type_to_bits(gltf_accessor->indices_component_type, &tmp);
             accessors[i].sparse->count                  = gltf_accessor->sparse_count;
@@ -399,11 +414,10 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
     }
 }
 
-static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, Material *materials, u8 *model_buffer, u64 *size_used) {
-
-    *size_used += sizeof(Material) * count;
+static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, Material *materials) {
 
     Gltf_Material *gltf_material = gltf_materials;
+
     for(u32 i = 0; i < count; ++i) {
         materials[i] = {};
 
@@ -438,42 +452,52 @@ static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, 
         materials[i].pbr.metallic_factor  = gltf_material->metallic_factor;
         materials[i].pbr.roughness_factor = gltf_material->roughness_factor;
 
-        materials[i].pbr.base_color_texture           = gltf_material->base_color_texture_index;
+        materials[i].pbr.base_color_texture           = {.texture_key = (u32)gltf_material->base_color_texture_index};
         materials[i].pbr.base_color_tex_coord         = gltf_material->base_color_tex_coord;
-        materials[i].pbr.metallic_roughness_texture   = gltf_material->metallic_roughness_texture_index;
+        materials[i].pbr.metallic_roughness_texture   = {.texture_key = (u32)gltf_material->metallic_roughness_texture_index};
         materials[i].pbr.metallic_roughness_tex_coord = gltf_material->metallic_roughness_tex_coord;
 
         // Normal
         materials[i].normal.scale     = gltf_material->normal_scale;
-        materials[i].normal.texture   = gltf_material->normal_texture_index;
+        materials[i].normal.texture   = {.texture_key = (u32)gltf_material->normal_texture_index};
         materials[i].normal.tex_coord = gltf_material->normal_tex_coord;
 
         // Occlusion
         materials[i].occlusion.strength  = gltf_material->occlusion_strength;
-        materials[i].occlusion.texture   = gltf_material->occlusion_texture_index;
+        materials[i].occlusion.texture   = {.texture_key = (u32)gltf_material->occlusion_texture_index};
         materials[i].occlusion.tex_coord = gltf_material->occlusion_tex_coord;
 
         // Emissive
         materials[i].emissive.factor[0] = gltf_material->emissive_factor[0];
         materials[i].emissive.factor[1] = gltf_material->emissive_factor[1];
         materials[i].emissive.factor[2] = gltf_material->emissive_factor[2];
-        materials[i].emissive.texture   = gltf_material->emissive_texture_index;
+        materials[i].emissive.texture   = {.texture_key = (u32)gltf_material->emissive_texture_index};
         materials[i].emissive.tex_coord = gltf_material->emissive_tex_coord;
 
         gltf_material = (Gltf_Material*)((u8*)gltf_material + gltf_material->stride);
     }
 }
 
-inline static void model_load_gltf_textures(u32 count, Gltf_Texture *gltf_textures, Texture *textures, u8 *model_buffer, u64 *size_used) {
-    // Just reserve space for now. Actual allocation work done later.
-    *size_used += sizeof(Texture) * count;
+struct Load_Mesh_Info {
+    Accessor *accessors;
+    Material *materials;
+};
+
+inline static void add_buffer_view_index(Accessor *accessor, u32 *count, u32 *indices, u32 mask_count, u64 *masks) {
+    // allocation_key equals its buffer view index before allocation stage
+    u32 mask_idx = accessor->allocation_key >> 6;
+
+    bool seen       = masks[mask_idx] & (1 << (accessor->allocation_key & 63));
+    masks[mask_idx] = masks[mask_idx] | (1 << (accessor->allocation_key & 63));
+
+    indices[*count] = accessor->allocation_key;
+    *count += !seen;
 }
-
-static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *meshes, u8 *model_buffer, u64 *size_used) {
-
-    *size_used += sizeof(Mesh) * count;
-
+static void model_load_gltf_meshes(Load_Mesh_Info *info, u32 count, Gltf_Mesh *gltf_meshes, Mesh *meshes,
+                                   u8 *primitives_buffer, u8 *weights_buffer)
+{
     u32 tmp;
+    u32 idx;
 
     Gltf_Mesh           *gltf_mesh = gltf_meshes;
     Gltf_Mesh_Primitive *gltf_primitive;
@@ -485,20 +509,26 @@ static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *mesh
     Mesh_Primitive_Attribute *attribute;
     Morph_Target             *target;
 
+    Accessor *accessors = info->accessors;
+    Material *materials = info->materials;
+
+    u32 size_used_primitives = 0;
+    u32 size_used_weights    = 0;
+
     for(u32 i = 0; i < count; ++i) {
         primitive_count           = gltf_mesh->primitive_count;
         meshes[i].primitive_count = primitive_count;
 
-        meshes[i].primitives = (Mesh_Primitive*)(model_buffer + *size_used);
-        *size_used          += sizeof(Mesh_Primitive) * primitive_count;
+        meshes[i].primitives  = (Mesh_Primitive*)(primitives_buffer + size_used_primitives);
+        size_used_primitives  += sizeof(Mesh_Primitive) * primitive_count;
 
         gltf_primitive = gltf_mesh->primitives;
         for(u32 j = 0; j < primitive_count; ++j) {
             primitive = &meshes[i].primitives[j];
 
             primitive->topology     = (VkPrimitiveTopology)gltf_primitive->topology;
-            primitive->indices      = gltf_primitive->indices;
-            primitive->material     = gltf_primitive->material;
+            primitive->indices      = accessors[gltf_primitive->indices];
+            primitive->material     = materials[gltf_primitive->material];
 
             primitive->attribute_count  = gltf_primitive->extra_attribute_count;
             primitive->attribute_count += (u32)(gltf_primitive->position    != -1);
@@ -506,51 +536,66 @@ static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *mesh
             primitive->attribute_count += (u32)(gltf_primitive->tangent     != -1);
             primitive->attribute_count += (u32)(gltf_primitive->tex_coord_0 != -1);
 
-            primitive->attributes  = (Mesh_Primitive_Attribute*)(model_buffer + *size_used);
-
-            *size_used += sizeof(Mesh_Primitive_Attribute) * primitive->attribute_count;
+            primitive->attributes  = (Mesh_Primitive_Attribute*)(primitives_buffer + size_used_primitives);
+            size_used_primitives   += sizeof(Mesh_Primitive_Attribute) * primitive->attribute_count;
 
             // When I set up this api in the gltf file, I had no idea how annoying it would be later...
             // If an attribute is not set, rather than branch, we just overwrite it by not incrementing the index.
             tmp = 0;
 
-            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->normal,      .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL};
+            idx = gltf_primitive->normal & max32_if_true(gltf_primitive->normal != -1);
+            primitive->attributes[tmp] = {
+                .accessor = accessors[idx],
+                .type     = MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL,
+            };
             tmp += (u32)(gltf_primitive->normal != -1);
 
-            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->position,    .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION};
+            idx = gltf_primitive->position & max32_if_true(gltf_primitive->position != -1);
+            primitive->attributes[tmp] = {
+                .accessor = accessors[idx],
+                .type     = MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION,
+            };
             tmp += (u32)(gltf_primitive->position != -1);
 
-            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->tangent,     .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT};
+            idx = gltf_primitive->tangent & max32_if_true(gltf_primitive->tangent != -1);
+            primitive->attributes[tmp] = {
+                .accessor = accessors[idx],
+                .type     = MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT,
+            };
             tmp += (u32)(gltf_primitive->tangent != -1);
 
-            primitive->attributes[tmp] = {.accessor = (u32)gltf_primitive->tex_coord_0, .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS};
+            idx = gltf_primitive->tex_coord_0 & max32_if_true(gltf_primitive->tex_coord_0 != -1);
+            primitive->attributes[tmp] = {
+                .accessor = accessors[idx],
+                .type     = MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS,
+            };
             tmp += (u32)(gltf_primitive->tex_coord_0 != -1);
 
             for(u32 k = 0; k < gltf_primitive->extra_attribute_count; ++k) {
                 attribute = &primitive->attributes[tmp + k];
+
                 attribute->n        = gltf_primitive->extra_attributes[k].n;
-                attribute->accessor = gltf_primitive->extra_attributes[k].accessor_index;
+                attribute->accessor = accessors[gltf_primitive->extra_attributes[k].accessor_index];
                 attribute->type     = (Mesh_Primitive_Attribute_Type)gltf_primitive->extra_attributes[k].type;
             }
 
             primitive->target_count = gltf_primitive->target_count;
-            primitive->targets      = (Morph_Target*)(model_buffer + *size_used);
-
-            *size_used += sizeof(Morph_Target) * primitive->target_count;
+            primitive->targets      = (Morph_Target*)(primitives_buffer + size_used_primitives);
+            size_used_primitives   += sizeof(Morph_Target) * primitive->target_count;
 
             gltf_morph_target = gltf_primitive->targets;
             for(u32 k = 0; k < gltf_primitive->target_count; ++k) {
                 target = &primitive->targets[k];
 
-                target->attribute_count = gltf_morph_target->attribute_count;
-                target->attributes      = (Mesh_Primitive_Attribute*)(model_buffer + *size_used);
-
-                *size_used += sizeof(Mesh_Primitive_Attribute) * gltf_morph_target->attribute_count;
+                target->attribute_count  = gltf_morph_target->attribute_count;
+                target->attributes       = (Mesh_Primitive_Attribute*)(primitives_buffer + size_used_primitives);
+                size_used_primitives    += sizeof(Mesh_Primitive_Attribute) * gltf_morph_target->attribute_count;
 
                 for(u32 l = 0; l < gltf_morph_target->attribute_count; ++l) {
                     attribute = &target->attributes[l];
+
                     attribute->n        = gltf_morph_target->attributes[l].n;
-                    attribute->accessor = gltf_morph_target->attributes[l].accessor_index;
+                    attribute->accessor = accessors[gltf_morph_target->attributes[l].accessor_index];
                     attribute->type     = (Mesh_Primitive_Attribute_Type)gltf_morph_target->attributes[l].type;
                 }
 
@@ -560,9 +605,9 @@ static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *mesh
             gltf_primitive = (Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
         }
 
-        meshes[i].weights      = (float*)(model_buffer + *size_used);
         meshes[i].weight_count = gltf_mesh->weight_count;
-        *size_used += sizeof(float) * meshes[i].weight_count;
+        meshes[i].weights      = (float*)(weights_buffer + size_used_weights);
+        size_used_weights     += sizeof(float) * meshes[i].weight_count;
 
         memcpy(meshes[i].weights, gltf_mesh->weights, sizeof(float) * meshes[i].weight_count);
 
@@ -570,10 +615,6 @@ static void model_load_gltf_meshes(u32 count, Gltf_Mesh *gltf_meshes, Mesh *mesh
     }
 }
 
-enum View_Type {
-    VIEW_TYPE_INDEX,
-    VIEW_TYPE_VERTEX,
-};
 struct Buffer_View {
     u64 offset;
     u64 size;
@@ -588,104 +629,65 @@ struct Buffer_View {
 // @Todo Skins, Animations, Cameras.
 //
 Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name, u64 size_available,
-                      u8 *model_buffer, u64 *ret_size_used)
+                      u8 *model_buffer, u64 *ret_req_size)
 {
     Gltf gltf = parse_gltf(gltf_file_name->str);
 
     // Get required bytes
-    u64 req_size = model_get_required_size_from_gltf(&gltf);
+    Model_Req_Size_Info req_size = model_get_required_size_from_gltf(&gltf);
 
-    println("Size required for model %s: %u, Bytes remaining in buffer: %u", gltf_file_name->str, req_size, size_available);
+    println("Size required for model %s: %u, Bytes remaining in buffer: %u", gltf_file_name->str, req_size.total, size_available);
 
-    if (req_size > size_available) {
-        *ret_size_used = req_size;
+    *ret_req_size = req_size.total;
+    if (req_size.total > size_available) {
         println("Insufficient size remaining in buffer!");
         return {};
-    } else {
-        println("Loading Model...");
-        println("Size remaining after load: %u", size_available - req_size);
     }
 
     Model ret = {};
 
     u64 size_used = 0;
-    ret.accessor_count = gltf_accessor_get_count(&gltf);
-    ret.material_count = gltf_material_get_count(&gltf);
-    ret.texture_count  = gltf_texture_get_count(&gltf);
-    ret.mesh_count     = gltf_mesh_get_count(&gltf);
+    u32 accessor_count = gltf_accessor_get_count(&gltf);
+    u32 material_count = gltf_material_get_count(&gltf);
 
-    ret.textures       = (Texture*) (ret.materials + ret.material_count);
-    ret.meshes         = (Mesh*)    (ret.textures  + ret.texture_count);
+    ret.mesh_count     = gltf_mesh_get_count(&gltf);
 
     u64 tmp_size;
 
-    // model_buffer layout:
-    // | Accessor * count | extra accessor data | Material * count | extra material data | ... | Mesh * count | Primitive * count | extra primitive data | weights | ...
+    // model_buffer layout: (@Todo This will change when I add skins, animations, etc.)
+    // | meshes | primitives | extra primitive data | extra accessor data | mesh weights |
+
+    u32 buffer_offset_primitives    = sizeof(Mesh) * ret.mesh_count;
+    u32 buffer_offset_accessor_data = buffer_offset_primitives    + req_size.primitives;
+    u32 buffer_offset_weights       = buffer_offset_accessor_data + req_size.accessors;
+
+    // @Multithreading each model_load_<> can be a job
 
     // Accessor
-    ret.accessors = (Accessor*)(model_buffer + size_used);
-    model_load_gltf_accessors(ret.accessor_count, gltf.accessors, ret.accessors, model_buffer, &size_used);
+    Accessor *accessors = (Accessor*)malloc_t(sizeof(Accessor) * accessor_count, 8);
+    model_load_gltf_accessors(accessor_count, gltf.accessors, accessors, model_buffer + buffer_offset_accessor_data);
 
-    // Material
-    ret.materials = (Material*)(model_buffer + size_used);
-    model_load_gltf_materials(ret.material_count, gltf.materials, ret.materials, model_buffer, &size_used);
+    // Material - no extra data, so no buffer argument
+    Material *materials = (Material*)malloc_t(sizeof(Material) * material_count, 8);
+    model_load_gltf_materials(material_count, gltf.materials, materials);
 
-    // Texture
-    ret.textures = (Texture*)(model_buffer + size_used);
-    model_load_gltf_textures(ret.texture_count, gltf.textures, ret.textures, model_buffer, &size_used);
+    Load_Mesh_Info load_mesh_info = {
+        .accessors = accessors,
+        .materials = materials,
+    };
 
     // Mesh
-    ret.meshes = (Mesh*)(model_buffer + size_used);
-    model_load_gltf_meshes(ret.mesh_count, gltf.meshes, ret.meshes, model_buffer, &size_used);
-
-    assert(size_used == req_size);
-    *ret_size_used = size_used;
-
-    // @TODO CURRENT TASK!! Allocate the model resources.
+    ret.meshes = (Mesh*)(model_buffer);
+    model_load_gltf_meshes(&load_mesh_info, ret.mesh_count, gltf.meshes, ret.meshes,
+                           model_buffer + buffer_offset_primitives, model_buffer + buffer_offset_weights);
 
     // Each texture/buffer view becomes an allocation.
     // @Note One day I will join buffer views together, so that an allocation
     // is the data referenced by a primitive.
 
-    u32  index_accessor_count  = 0;
-    u32  vertex_accessor_count = 0;
-    u32 *index_accessor_indices  = (u32*)malloc_t(sizeof(u32) * ret.accessor_count, 8);
-    u32 *vertex_accessor_indices = (u32*)malloc_t(sizeof(u32) * ret.accessor_count, 8);
 
-    // The below method is inefficient, as it relies on the primitives to be done parsing, but this
-    // not a performance critical area, or an interesting area, so I will not be threading it for a long
-    // time if ever (plus it already has the dependency on the gltf struct so whatever, for now).
-    // The reason I am doing this less efficient way is I cannot stand my gltf interface, and it is a
-    // waste of time atm to update it.
-    //
-    // @Note I want duplicate accessor indices here, as then I can loop them and match them to their
-    // respective buffer view allocation later.
-    //
-
-    Mesh_Primitive *primitive;
-    Morph_Target   *target;
-    for(u32 i = 0; i < ret.mesh_count; ++i) {
-        for(u32 j = 0; j < ret.meshes[i].primitive_count; ++j) {
-            primitive = &ret.meshes[i].primitives[j];
-
-            index_accessor_indices[index_accessor_count] = primitive->indices;
-            index_accessor_count++;
-
-            for(u32 k = 0; k < primitive->attribute_count; ++k) {
-                vertex_accessor_indices[vertex_accessor_count] = primitive->attributes[k].accessor;
-                vertex_accessor_count++;
-            }
-
-            for(u32 k = 0; k < primitive->target_count; ++k) {
-                target = &primitive->targets[k];
-                for(u32 l = 0; l < target->attribute_count; ++l) {
-                    vertex_accessor_indices[vertex_accessor_count] = target->attributes[l].accessor;
-                    vertex_accessor_count++;
-                }
-            }
-        }
-    }
-
+    #if !TEST
+                                    /* Buffer View Allocations */
 
     u32  buffer_view_count          = gltf_buffer_view_get_count(&gltf);
     u32  index_buffer_view_count    = 0;
@@ -707,51 +709,42 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name
     // I think this is pretty clean, track seen buffer view indices branchless, lots of indexing
     // off the stack.
 
-    // Find all buffer views containing index data
-    for(u32 i = 0; i < index_accessor_count; ++i) {
-        accessor = ret.accessors[index_accessor_indices[i]];
+    // Separate buffer views into vertex and index data; track dupes
+    Mesh_Primitive *primitive;
+    Morph_Target   *target;
+    for(u32 i = 0; i < ret.mesh_count; ++i) {
+        for(u32 j = 0; j < ret.meshes[i].primitive_count; ++j) {
+            primitive = &ret.meshes[i].primitives[j];
 
-        // allocation_key equals its buffer view index before allocation stage
-        mask_idx = accessor->allocation_key >> 6;
+            add_buffer_view_index(&primitive->indices, &index_buffer_view_count,
+                                  index_buffer_view_indices, mask_count, masks);
 
-        seen           = mask[mask_idx] & (1 << (accessor->allocation_key & 63));
-        mask[mask_idx] = mask[mask_idx] | (1 << (accessor->allocation_key & 63));
+            for(u32 k = 0; k < primitive->attribute_count; ++k)
+                add_buffer_view_index(&primitive->attributes[k].accessor, &vertex_buffer_view_count,
+                                      vertex_buffer_view_indices, mask_count, masks);
 
-        index_buffer_view_indices[index_buffer_view_count] = accessor->allocation_key;
-        index_buffer_view_count += !seen;
-    }
-
-    memset(masks, 0, sizeof(u64) * mask_count);
-
-    // Find all buffer views containing vertex data
-    for(u32 i = 0; i < vertex_accessor_count; ++i) {
-        accessor = ret.accessors[vertex_accessor_indices[i]];
-
-        // allocation_key equals its buffer view index before allocation stage
-        mask_idx = accessor->allocation_key >> 6;
-
-        seen           = mask[mask_idx] & (1 << (accessor->allocation_key & 63));
-        mask[mask_idx] = mask[mask_idx] | (1 << (accessor->allocation_key & 63));
-
-        vertex_buffer_view_indices[vertex_buffer_view_count] = accessor->allocation_key;
-        vertex_buffer_view_count += !seen;
+            for(u32 k = 0; k < primitive->target_count; ++k) {
+                target = &primitive->targets[k];
+                for(u32 l = 0; l < target->attribute_count; ++l)
+                    add_buffer_view_index(&target->attributes[l].accessor, &vertex_buffer_view_count,
+                                          vertex_buffer_view_indices, mask_count, masks);
+            }
+        }
     }
 
     Gltf_Buffer *gltf_buffer = gltf.buffers;
-    u8 *buffer = file_read_bin_temp_large(gltf_buffer->uri, gltf_buffer->byte_length);
+    const u8 *buffer = file_read_bin_temp_large(gltf_buffer->uri, gltf_buffer->byte_length);
 
     u32 *buffer_view_allocation_keys = (u32*)malloc_t(sizeof(u32) * buffer_view_count, 8);
 
-    // The above code is so nice, now this... I am glad I have found a way to move
-    // away from my gltf interface.
-    Gltf_Buffer_view *gltf_buffer_view;
+    Gltf_Buffer_View *gltf_buffer_view;
     Gpu_Allocator_Result result;
     for(u32 i = 0; i < index_buffer_view_count; ++i) {
         result = begin_allocation(&model_allocators->index);
         CHECK_GPU_ALLOCATOR_RESULT(result);
 
         tmp = index_buffer_view_indices[i];
-        gltf_buffer_view = gltf_buffer_view_by_index(&gltf, tmp);
+        gltf_buffer_view = gltf_buffer_view_by_index(&gltf, tmp); // Lame
 
         result = continue_allocation(&model_allocators->index, gltf_buffer_view->byte_length,
                                      gltf_buffer + gltf_buffer_view->byte_offset);
@@ -766,7 +759,7 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name
         CHECK_GPU_ALLOCATOR_RESULT(result);
 
         tmp = vertex_buffer_view_indices[i];
-        gltf_buffer_view = gltf_buffer_view_by_index(&gltf, tmp);
+        gltf_buffer_view = gltf_buffer_view_by_index(&gltf, tmp); // Lame
 
         result = continue_allocation(&model_allocators->vertex, gltf_buffer_view->byte_length,
                                      gltf_buffer + gltf_buffer_view->byte_offset);
@@ -775,6 +768,9 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name
         result = submit_allocation(&model_allocators->vertex, &buffer_view_allocation_keys[tmp]);
         CHECK_GPU_ALLOCATOR_RESULT(result);
     }
+
+                                        /* Texture Allocations */
+    #endif // if !TEST
     
     return ret;
 }
@@ -799,360 +795,209 @@ void test_asset() {
 
 void test_model_from_gltf() {
     BEGIN_TEST_MODULE("Model_From_Gltf", true, false);
-
-    u64 size = 1024 * 8;
-    u8 *model_buffer = malloc_h(size, 16);
-
-    u64 size_used = 0;
-    String file_name = cstr_to_string("test/test_gltf.gltf");
-    Model model = model_from_gltf(&file_name, size, model_buffer, &size_used);
-
-    // Accessors
-    Accessor *accessors = model.accessors;
-    TEST_EQ("accessor_count", model.accessor_count, 3, false);
-
-    TEST_EQ("accessors[0].type",      (accessors[0].flags & ACCESSOR_TYPE_BITS),           ACCESSOR_TYPE_SCALAR_BIT, false);
-    TEST_EQ("accessors[0].comp_type", (accessors[0].flags & ACCESSOR_COMPONENT_TYPE_BITS), ACCESSOR_COMPONENT_TYPE_U16_BIT,    false);
-
-    TEST_EQ("accessors[0].count",  accessors[0].count,             12636, false);
-    TEST_EQ("accessors[0].max[0]", accessors[0].max_min->max[0],    4212, false);
-    TEST_EQ("accessors[0].min[0]", accessors[0].max_min->min[0],       0, false);
-
-    TEST_EQ("accessors[1].type",      accessors[1].flags & ACCESSOR_TYPE_BITS,           ACCESSOR_TYPE_MAT4_BIT,  false);
-    TEST_EQ("accessors[1].comp_type", accessors[1].flags & ACCESSOR_COMPONENT_TYPE_BITS, ACCESSOR_COMPONENT_TYPE_FLOAT_BIT, false);
-    TEST_EQ("accessors[1].count",     accessors[1].count, 2399, false);
-
-    TEST_FEQ("accessors[1].max[0]",  accessors[1].max_min->max[0],  0.9971418380737304    , false);
-    TEST_FEQ("accessors[1].max[1]",  accessors[1].max_min->max[1],  -4.371139894487897e-8 , false);
-    TEST_FEQ("accessors[1].max[2]",  accessors[1].max_min->max[2],  0.9996265172958374    , false);
-    TEST_FEQ("accessors[1].max[3]",  accessors[1].max_min->max[3],  0                     , false);
-    TEST_FEQ("accessors[1].max[4]",  accessors[1].max_min->max[4],  4.3586464215650273e-8 , false);
-    TEST_FEQ("accessors[1].max[5]",  accessors[1].max_min->max[5],  1                     , false);
-    TEST_FEQ("accessors[1].max[6]",  accessors[1].max_min->max[6],  4.3695074225524884e-8 , false);
-    TEST_FEQ("accessors[1].max[7]",  accessors[1].max_min->max[7],  0                     , false);
-    TEST_FEQ("accessors[1].max[8]",  accessors[1].max_min->max[8],  0.9999366402626038    , false);
-    TEST_FEQ("accessors[1].max[9]",  accessors[1].max_min->max[9],  0                     , false);
-    TEST_FEQ("accessors[1].max[10]", accessors[1].max_min->max[10], 0.9971418380737304    , false);
-    TEST_FEQ("accessors[1].max[11]", accessors[1].max_min->max[11], 0                     , false);
-    TEST_FEQ("accessors[1].max[12]", accessors[1].max_min->max[12], 1.1374080181121828    , false);
-    TEST_FEQ("accessors[1].max[13]", accessors[1].max_min->max[13], 0.44450080394744873   , false);
-    TEST_FEQ("accessors[1].max[14]", accessors[1].max_min->max[14], 1.0739599466323853    , false);
-    TEST_FEQ("accessors[1].max[15]", accessors[1].max_min->max[15], 1                     , false);
-
-    TEST_FEQ("accessors[1].min[0]",  accessors[1].max_min->min[0],  -0.9999089241027832    , false);
-    TEST_FEQ("accessors[1].min[1]",  accessors[1].max_min->min[1],  -4.371139894487897e-8  , false);
-    TEST_FEQ("accessors[1].min[2]",  accessors[1].max_min->min[2],  -0.9999366402626038    , false);
-    TEST_FEQ("accessors[1].min[3]",  accessors[1].max_min->min[3],  0                      , false);
-    TEST_FEQ("accessors[1].min[4]",  accessors[1].max_min->min[4],  -4.3707416352845037e-8 , false);
-    TEST_FEQ("accessors[1].min[5]",  accessors[1].max_min->min[5],  1                      , false);
-    TEST_FEQ("accessors[1].min[6]",  accessors[1].max_min->min[6],  -4.37086278282095e-8   , false);
-    TEST_FEQ("accessors[1].min[7]",  accessors[1].max_min->min[7],  0                      , false);
-    TEST_FEQ("accessors[1].min[8]",  accessors[1].max_min->min[8],  -0.9996265172958374    , false);
-    TEST_FEQ("accessors[1].min[9]",  accessors[1].max_min->min[9],  0                      , false);
-    TEST_FEQ("accessors[1].min[10]", accessors[1].max_min->min[10], -0.9999089241027832    , false);
-    TEST_FEQ("accessors[1].min[11]", accessors[1].max_min->min[11], 0                      , false);
-    TEST_FEQ("accessors[1].min[12]", accessors[1].max_min->min[12], -1.189831018447876     , false);
-    TEST_FEQ("accessors[1].min[13]", accessors[1].max_min->min[13], -0.45450031757354736   , false);
-    TEST_FEQ("accessors[1].min[14]", accessors[1].max_min->min[14], -1.058603048324585     , false);
-    TEST_FEQ("accessors[1].min[15]", accessors[1].max_min->min[15], 1                      , false);
-
-    TEST_EQ("accessors[2].type",      accessors[2].flags & ACCESSOR_TYPE_BITS,           ACCESSOR_TYPE_VEC3_BIT,  false);
-    TEST_EQ("accessors[2].comp_type", accessors[2].flags & ACCESSOR_COMPONENT_TYPE_BITS, ACCESSOR_COMPONENT_TYPE_U32_BIT, false);
-    TEST_EQ("accessors[2].count",     accessors[2].count, 12001, false);
-
-    TEST_EQ("accessors[2].sparse.indices_comp_type", accessors[2].sparse->indices_component_type, ACCESSOR_COMPONENT_TYPE_U16_BIT, false);
-    TEST_EQ("accessors[2].sparse.count",             accessors[2].sparse->count, 10, false);
-
-    // Materials
-    Material *materials = model.materials;
-    TEST_EQ("model.material_count", model.material_count, 2, false);
-
-    TEST_EQ("materials[0].base_bit",         materials[0].flags & MATERIAL_BASE_BIT,        MATERIAL_BASE_BIT,   false);
-    TEST_EQ("materials[0].pbr_bit",          materials[0].flags & MATERIAL_PBR_BIT,         MATERIAL_PBR_BIT,    false);
-    TEST_EQ("materials[0].normal_bit",       materials[0].flags & MATERIAL_NORMAL_BIT,      MATERIAL_NORMAL_BIT, false);
-    TEST_EQ("materials[0].occlusion_bit",    materials[0].flags & MATERIAL_OCCLUSION_BIT,              0x0, false);
-    TEST_EQ("materials[0].emissive_bit",     materials[0].flags & MATERIAL_EMISSIVE_BIT,               0x0, false);
-    TEST_EQ("materials[0].double_sided_bit", materials[0].flags & MATERIAL_DOUBLE_SIDED_BIT,           0x0, false);
-    TEST_EQ("materials[0].opaque_bit",       materials[0].flags & MATERIAL_OPAQUE_BIT, MATERIAL_OPAQUE_BIT, false);
-    TEST_EQ("materials[0].opaque_bit",       materials[0].flags & MATERIAL_MASK_BIT,                   0x0, false);
-    TEST_EQ("materials[0].opaque_bit",       materials[0].flags & MATERIAL_BLEND_BIT,                  0x0, false);
-
-    TEST_EQ("materials[1].base_bit",         materials[1].flags & MATERIAL_BASE_BIT,         MATERIAL_BASE_BIT,   false);
-    TEST_EQ("materials[1].pbr_bit",          materials[1].flags & MATERIAL_PBR_BIT,          MATERIAL_PBR_BIT,    false);
-    TEST_EQ("materials[1].normal_bit",       materials[1].flags & MATERIAL_NORMAL_BIT,       MATERIAL_NORMAL_BIT, false);
-    TEST_EQ("materials[1].occlusion_bit",    materials[1].flags & MATERIAL_OCCLUSION_BIT,    MATERIAL_OCCLUSION_BIT, false);
-    TEST_EQ("materials[1].emissive_bit",     materials[1].flags & MATERIAL_EMISSIVE_BIT,     MATERIAL_EMISSIVE_BIT, false);
-    TEST_EQ("materials[1].double_sided_bit", materials[1].flags & MATERIAL_DOUBLE_SIDED_BIT,           0x0, false);
-    TEST_EQ("materials[1].opaque_bit",       materials[1].flags & MATERIAL_OPAQUE_BIT,       MATERIAL_OPAQUE_BIT, false);
-    TEST_EQ("materials[1].opaque_bit",       materials[1].flags & MATERIAL_MASK_BIT,                   0x0, false);
-    TEST_EQ("materials[1].opaque_bit",       materials[1].flags & MATERIAL_BLEND_BIT,                  0x0, false);
-
-
-    TEST_EQ("materials[0].base_color_texture_index",         materials[0].pbr.base_color_texture,          1, false);
-    TEST_EQ("materials[0].base_color_tex_coord",             materials[0].pbr.base_color_tex_coord,        1, false);
-    TEST_EQ("materials[0].metallic_roughness_texture_index", materials[0].pbr.metallic_roughness_texture,  2, false);
-    TEST_EQ("materials[0].metallic_roughness_tex_coord",     materials[0].pbr.metallic_roughness_tex_coord,1, false);
-
-    TEST_EQ("materials[0].normal_texture_index",             materials[0].normal.texture,                   3, false);
-    TEST_EQ("materials[0].normal_tex_coord",                 materials[0].normal.tex_coord,                 1, false);
-
-    TEST_EQ("materials[1].base_color_texture_index",         materials[1].pbr.base_color_texture,           3, false);
-    TEST_EQ("materials[1].base_color_tex_coord",             materials[1].pbr.base_color_tex_coord,         4, false);
-    TEST_EQ("materials[1].metallic_roughness_texture_index", materials[1].pbr.metallic_roughness_texture,   8, false);
-    TEST_EQ("materials[1].metallic_roughness_tex_coord",     materials[1].pbr.metallic_roughness_tex_coord, 8, false);
-
-    TEST_EQ("materials[1].normal_texture_index",             materials[1].normal.texture,                   12, false);
-    TEST_EQ("materials[1].normal_tex_coord",                 materials[1].normal.tex_coord,                 11, false);
-
-    TEST_EQ("materials[1].emissive_texture_index",           materials[1].emissive.texture,                  3, false);
-    TEST_EQ("materials[1].emissive_tex_coord",               materials[1].emissive.tex_coord,            56070, false);
-
-    TEST_EQ("materials[1].occlusion_texture_index",          materials[1].occlusion.texture,                79, false);
-    TEST_EQ("materials[1].occlusion_tex_coord",              materials[1].occlusion.tex_coord,            9906, false);
-
-    TEST_FEQ("materials[0].metallic_factor",      materials[0].pbr.metallic_factor , 1   , false);
-    TEST_FEQ("materials[0].roughness_factor",     materials[0].pbr.roughness_factor, 1   , false);
-    TEST_FEQ("materials[0].normal_scale",         materials[0].normal.scale        , 2   , false);
-
-    TEST_FEQ("materials[0].base_color_factor[0]", materials[0].pbr.base_color_factor[0],  0.5, false);
-    TEST_FEQ("materials[0].base_color_factor[1]", materials[0].pbr.base_color_factor[1],  0.5, false);
-    TEST_FEQ("materials[0].base_color_factor[2]", materials[0].pbr.base_color_factor[2],  0.5, false);
-    TEST_FEQ("materials[0].base_color_factor[3]", materials[0].pbr.base_color_factor[3],  1.0, false);
-
-    TEST_FEQ("materials[0].emissive_factor[0]",   materials[0].emissive.factor[0],  0.2, false);
-    TEST_FEQ("materials[0].emissive_factor[1]",   materials[0].emissive.factor[1],  0.1, false);
-    TEST_FEQ("materials[0].emissive_factor[2]",   materials[0].emissive.factor[2],  0.0, false);
-
-    TEST_FEQ("materials[1].metallic_factor",      materials[1].pbr.metallic_factor , 5.0  , false);
-    TEST_FEQ("materials[1].roughness_factor",     materials[1].pbr.roughness_factor, 6.0  , false);
-    TEST_FEQ("materials[1].normal_scale",         materials[1].normal.scale        , 1.0  , false);
-    TEST_FEQ("materials[1].occlusion_strength",   materials[1].occlusion.strength  , 0.679, false);
-
-    TEST_FEQ("materials[1].base_color_factor[0]", materials[1].pbr.base_color_factor[0] ,  2.5, false);
-    TEST_FEQ("materials[1].base_color_factor[1]", materials[1].pbr.base_color_factor[1] ,  4.5, false);
-    TEST_FEQ("materials[1].base_color_factor[2]", materials[1].pbr.base_color_factor[2] ,  2.5, false);
-    TEST_FEQ("materials[1].base_color_factor[3]", materials[1].pbr.base_color_factor[3] ,  1.0, false);
-
-    TEST_FEQ("materials[1].emissive_factor[0]", materials[1].emissive.factor[0] , 11.2, false);
-    TEST_FEQ("materials[1].emissive_factor[1]", materials[1].emissive.factor[1] ,  0.1, false);
-    TEST_FEQ("materials[1].emissive_factor[2]", materials[1].emissive.factor[2] ,  0.0, false);
-
-    // Meshes
-    TEST_EQ("model.mesh_count", model.mesh_count, 2, false);
-
-    Mesh *meshes = &model.meshes[0];
-
-    TEST_EQ("meshes[0].primitive_count", meshes[0].primitive_count, 2, false);
-    TEST_EQ("meshes[0].weight_count"   , meshes[0].weight_count   , 2, false);
-    TEST_EQ("meshes[1].primitive_count", meshes[1].primitive_count, 3, false);
-    TEST_EQ("meshes[1].weight_count"   , meshes[1].weight_count   , 2, false);
-
-    TEST_FEQ("meshes[0].weights[0]"   , meshes[0].weights[0], 0,   false);
-    TEST_FEQ("meshes[0].weights[1]"   , meshes[0].weights[1], 0.5, false);
-
-    TEST_FEQ("meshes[1].weights[0]"   , meshes[1].weights[0], 0,   false);
-    TEST_FEQ("meshes[1].weights[1]"   , meshes[1].weights[1], 0.5, false);
-
-    TEST_EQ("meshes[0].primitives[0].indices",  meshes[0].primitives[0].indices, 21, false);
-    TEST_EQ("meshes[0].primitives[1].indices",  meshes[0].primitives[1].indices, 31, false);
-    TEST_EQ("meshes[0].primitives[0].material", meshes[0].primitives[0].material, 3, false);
-
-    TEST_EQ("meshes[0].primitives[1].material", meshes[0].primitives[1].material, 33, false);
-    TEST_EQ("meshes[0].primitives[0].topology", meshes[0].primitives[0].topology, (VkPrimitiveTopology)1, false);
-    TEST_EQ("meshes[0].primitives[1].topology", meshes[0].primitives[1].topology, (VkPrimitiveTopology)3, false);
-
-    TEST_EQ("meshes[1].primitives[0].indices",  meshes[1].primitives[0].indices, 11, false);
-    TEST_EQ("meshes[1].primitives[1].indices",  meshes[1].primitives[1].indices, 11, false);
-    TEST_EQ("meshes[1].primitives[2].indices",  meshes[1].primitives[2].indices,  1, false);
-
-    TEST_EQ("meshes[1].primitives[0].material", meshes[1].primitives[0].material, 13, false);
-    TEST_EQ("meshes[1].primitives[1].material", meshes[1].primitives[1].material, 13, false);
-    TEST_EQ("meshes[1].primitives[2].material", meshes[1].primitives[2].material,  3, false);
-
-    TEST_EQ("meshes[1].primitives[0].topology", meshes[1].primitives[0].topology, (VkPrimitiveTopology)2, false);
-    TEST_EQ("meshes[1].primitives[1].topology", meshes[1].primitives[1].topology, (VkPrimitiveTopology)3, false);
-    TEST_EQ("meshes[1].primitives[2].topology", meshes[1].primitives[2].topology, (VkPrimitiveTopology)0, false);
-
-    // Attributes, targets
-    Mesh_Primitive *primitives = meshes[0].primitives;
-    TEST_EQ("meshes[0].primitives[0].attribute_count", primitives[0].attribute_count, 4, false);
-
-    TEST_EQ("meshes[0].primitives[0].attributes[0]", primitives[0].attributes[0].n,         0, false);
-    TEST_EQ("meshes[0].primitives[0].attributes[0]", primitives[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[0].primitives[0].attributes[0]", primitives[0].attributes[0].accessor, 23, false);
-
-    TEST_EQ("meshes[0].primitives[0].attributes[1]", primitives[0].attributes[1].n,         0, false);
-    TEST_EQ("meshes[0].primitives[0].attributes[1]", primitives[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[0].primitives[0].attributes[1]", primitives[0].attributes[1].accessor, 22, false);
-
-    TEST_EQ("meshes[0].primitives[0].attributes[2]", primitives[0].attributes[2].n,         0, false);
-    TEST_EQ("meshes[0].primitives[0].attributes[2]", primitives[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[0].primitives[0].attributes[2]", primitives[0].attributes[2].accessor, 24, false);
-
-    TEST_EQ("meshes[0].primitives[0].attributes[3]", primitives[0].attributes[3].n,         0, false);
-    TEST_EQ("meshes[0].primitives[0].attributes[3]", primitives[0].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS, false);
-    TEST_EQ("meshes[0].primitives[0].attributes[3]", primitives[0].attributes[3].accessor, 25, false);
-
-    TEST_EQ("meshes[0].primitives[1].attribute_count", primitives[1].attribute_count, 4, false);
-
-    TEST_EQ("meshes[0].primitives[1].attributes[0]", primitives[1].attributes[0].n,         0, false);
-    TEST_EQ("meshes[0].primitives[1].attributes[0]", primitives[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[0].primitives[1].attributes[0]", primitives[1].attributes[0].accessor, 33, false);
-
-    TEST_EQ("meshes[0].primitives[1].attributes[1]", primitives[1].attributes[1].n,         0, false);
-    TEST_EQ("meshes[0].primitives[1].attributes[1]", primitives[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[0].primitives[1].attributes[1]", primitives[1].attributes[1].accessor, 32, false);
-
-    TEST_EQ("meshes[0].primitives[1].attributes[2]", primitives[1].attributes[2].n,         0, false);
-    TEST_EQ("meshes[0].primitives[1].attributes[2]", primitives[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[0].primitives[1].attributes[2]", primitives[1].attributes[2].accessor, 34, false);
-
-    TEST_EQ("meshes[0].primitives[1].attributes[3]", primitives[1].attributes[3].n,         0, false);
-    TEST_EQ("meshes[0].primitives[1].attributes[3]", primitives[1].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS, false);
-    TEST_EQ("meshes[0].primitives[1].attributes[3]", primitives[1].attributes[3].accessor, 35, false);
-
-    Morph_Target *targets = primitives[1].targets;
-    TEST_EQ("meshes[0].primitives[0].target_count", primitives[0].target_count, 0, false);
-    TEST_EQ("meshes[0].primitives[1].target_count", primitives[1].target_count, 2, false);
-
-    TEST_EQ("meshes[0].targets[0].attributes[0]", targets[0].attributes[0].n,         0, false);
-    TEST_EQ("meshes[0].targets[0].attributes[0]", targets[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[0].targets[0].attributes[0]", targets[0].attributes[0].accessor, 33, false);
-
-    TEST_EQ("meshes[0].targets[0].attributes[1]", targets[0].attributes[1].n,         0, false);
-    TEST_EQ("meshes[0].targets[0].attributes[1]", targets[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[0].targets[0].attributes[1]", targets[0].attributes[1].accessor, 32, false);
-
-    TEST_EQ("meshes[0].targets[0].attributes[2]", targets[0].attributes[2].n,         0, false);
-    TEST_EQ("meshes[0].targets[0].attributes[2]", targets[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[0].targets[0].attributes[2]", targets[0].attributes[2].accessor, 34, false);
-
-    TEST_EQ("meshes[0].targets[1].attributes[0]", targets[1].attributes[0].n,         0, false);
-    TEST_EQ("meshes[0].targets[1].attributes[0]", targets[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[0].targets[1].attributes[0]", targets[1].attributes[0].accessor, 43, false);
-
-    TEST_EQ("meshes[0].targets[1].attributes[1]", targets[1].attributes[1].n,         0, false);
-    TEST_EQ("meshes[0].targets[1].attributes[1]", targets[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[0].targets[1].attributes[1]", targets[1].attributes[1].accessor, 42, false);
-
-    TEST_EQ("meshes[0].targets[1].attributes[2]", targets[1].attributes[2].n,         0, false);
-    TEST_EQ("meshes[0].targets[1].attributes[2]", targets[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[0].targets[1].attributes[2]", targets[1].attributes[2].accessor, 44, false);
-
-    primitives = meshes[1].primitives;
-    TEST_EQ("meshes[1].primitives[0].attribute_count", primitives[0].attribute_count, 4, false);
-
-    TEST_EQ("meshes[1].primitives[0].attributes[0]", primitives[0].attributes[0].n,         0, false);
-    TEST_EQ("meshes[1].primitives[0].attributes[0]", primitives[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[1].primitives[0].attributes[0]", primitives[0].attributes[0].accessor, 13, false);
-
-    TEST_EQ("meshes[1].primitives[0].attributes[1]", primitives[0].attributes[1].n,         0, false);
-    TEST_EQ("meshes[1].primitives[0].attributes[1]", primitives[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[1].primitives[0].attributes[1]", primitives[0].attributes[1].accessor, 12, false);
-
-    TEST_EQ("meshes[1].primitives[0].attributes[2]", primitives[0].attributes[2].n,         0, false);
-    TEST_EQ("meshes[1].primitives[0].attributes[2]", primitives[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[1].primitives[0].attributes[2]", primitives[0].attributes[2].accessor, 14, false);
-
-    TEST_EQ("meshes[1].primitives[0].attributes[3]", primitives[0].attributes[3].n,         0, false);
-    TEST_EQ("meshes[1].primitives[0].attributes[3]", primitives[0].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS, false);
-    TEST_EQ("meshes[1].primitives[0].attributes[3]", primitives[0].attributes[3].accessor, 15, false);
-
-    TEST_EQ("meshes[1].primitives[1].attribute_count", primitives[1].attribute_count, 4, false);
-
-    TEST_EQ("meshes[1].primitives[1].attributes[0]", primitives[1].attributes[0].n,         0, false);
-    TEST_EQ("meshes[1].primitives[1].attributes[0]", primitives[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[1].primitives[1].attributes[0]", primitives[1].attributes[0].accessor, 13, false);
-
-    TEST_EQ("meshes[1].primitives[1].attributes[1]", primitives[1].attributes[1].n,         0, false);
-    TEST_EQ("meshes[1].primitives[1].attributes[1]", primitives[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[1].primitives[1].attributes[1]", primitives[1].attributes[1].accessor, 12, false);
-
-    TEST_EQ("meshes[1].primitives[1].attributes[2]", primitives[1].attributes[2].n,         1, false);
-    TEST_EQ("meshes[1].primitives[1].attributes[2]", primitives[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS, false);
-    TEST_EQ("meshes[1].primitives[1].attributes[2]", primitives[1].attributes[2].accessor, 14, false);
-
-    TEST_EQ("meshes[1].primitives[1].attributes[3]", primitives[1].attributes[3].n,         1, false);
-    TEST_EQ("meshes[1].primitives[1].attributes[3]", primitives[1].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS, false);
-    TEST_EQ("meshes[1].primitives[1].attributes[3]", primitives[1].attributes[3].accessor, 15, false);
-
-    TEST_EQ("meshes[1].primitives[2].attributes[0]", primitives[2].attributes[0].n,         0, false);
-    TEST_EQ("meshes[1].primitives[2].attributes[0]", primitives[2].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[1].primitives[2].attributes[0]", primitives[2].attributes[0].accessor,  3, false);
-
-    TEST_EQ("meshes[1].primitives[2].attributes[1]", primitives[2].attributes[1].n,         0, false);
-    TEST_EQ("meshes[1].primitives[2].attributes[1]", primitives[2].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[1].primitives[2].attributes[1]", primitives[2].attributes[1].accessor,  2, false);
-
-    TEST_EQ("meshes[1].primitives[2].attributes[2]", primitives[2].attributes[2].n,         0, false);
-    TEST_EQ("meshes[1].primitives[2].attributes[2]", primitives[2].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[1].primitives[2].attributes[2]", primitives[2].attributes[2].accessor,  4, false);
-
-    TEST_EQ("meshes[1].primitives[2].attributes[3]", primitives[2].attributes[3].n,         1, false);
-    TEST_EQ("meshes[1].primitives[2].attributes[3]", primitives[2].attributes[3].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS, false);
-    TEST_EQ("meshes[1].primitives[2].attributes[3]", primitives[2].attributes[3].accessor,  5, false);
-
-    // Targets
-    TEST_EQ("meshes[1].primitives[0].attributes[2]", primitives[1].target_count, 2, false);
-
-    targets = primitives[1].targets;
-    TEST_EQ("meshes[1].primitives[0].target_count", primitives[0].target_count, 0, false);
-    TEST_EQ("meshes[1].primitives[1].target_count", primitives[1].target_count, 2, false);
-
-    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].n,         0, false);
-    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].accessor, 13, false);
-
-    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].n,         0, false);
-    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].accessor, 12, false);
-
-    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].n,         0, false);
-    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].accessor, 14, false);
-
-    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].n,         0, false);
-    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].accessor, 23, false);
-
-    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].n,         0, false);
-    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].accessor, 22, false);
-
-    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].n,         0, false);
-    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].accessor, 24, false);
-
-    targets = primitives[2].targets;
-    TEST_EQ("meshes[1].primitives[0].target_count", primitives[0].target_count, 0, false);
-    TEST_EQ("meshes[1].primitives[1].target_count", primitives[1].target_count, 2, false);
-    TEST_EQ("meshes[1].primitives[2].target_count", primitives[2].target_count, 2, false);
-
-    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].n,         0, false);
-    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[1].targets[0].attributes[0]", targets[0].attributes[0].accessor,  3, false);
-
-    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].n,         0, false);
-    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[1].targets[0].attributes[1]", targets[0].attributes[1].accessor,  2, false);
-
-    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].n,         0, false);
-    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[1].targets[0].attributes[2]", targets[0].attributes[2].accessor,  4, false);
-
-    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].n,         0, false);
-    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL, false);
-    TEST_EQ("meshes[1].targets[1].attributes[0]", targets[1].attributes[0].accessor, 9, false);
-
-    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].n,         0, false);
-    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION, false);
-    TEST_EQ("meshes[1].targets[1].attributes[1]", targets[1].attributes[1].accessor,  7, false);
-
-    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].n,         0, false);
-    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].type,     MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT, false);
-    TEST_EQ("meshes[1].targets[1].attributes[2]", targets[1].attributes[2].accessor,  6, false);
-
-
-    END_TEST_MODULE();
+    u32 size = 1024 * 16;
+    u8 *model_buffer = malloc_t(size, 16);
+
+    u64 req_size;
+    String model_name = cstr_to_string("test/test_gltf2.gltf");
+    Model model = model_from_gltf(NULL, &model_name, size, model_buffer, &req_size);
+
+    float weights[][2] = {
+        {2, 1},
+        {1, 2},
+    };
+
+    float min[16] = {
+        -0.9999089241027832,
+        -4.371139894487897e-8,
+        -0.9999366402626038,
+        0,
+        -4.3707416352845037e-8,
+        1,
+        -4.37086278282095e-8,
+        0,
+        -0.9996265172958374,
+        0,
+        -0.9999089241027832,
+        0,
+        -1.189831018447876,
+        -0.45450031757354736,
+        -1.058603048324585,
+        1,
+    };
+    float max[16] = {
+        0.9971418380737304,
+        -4.371139894487897e-8,
+        0.9996265172958374,
+        0,
+        4.3586464215650273e-8,
+        1,
+        4.3695074225524884e-8,
+        0,
+        0.9999366402626038,
+        0,
+        0.9971418380737304,
+        0,
+        1.1374080181121828,
+        0.44450080394744873,
+        1.0739599466323853,
+        1
+    };
+
+    Accessor_Max_Min max_min[2];
+    max_min[0].max[0] = 0;
+    max_min[0].min[0] = 0;
+    for(u32 i = 0; i < 16; ++i) {
+        max_min[1].max[i] = max[i];
+        max_min[1].min[i] = min[i];
+    }
+
+    Accessor_Sparse sparse = {
+        .indices_component_type = ACCESSOR_COMPONENT_TYPE_U16_BIT,
+        .count = 10,
+        .indices_buffer_view = 7,
+        .values_buffer_view = 4,
+        .indices_byte_offset = 8888,
+        .values_byte_offset = 9999,
+    };
+
+    Accessor accessors[3] = {
+        {
+            .flags = ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT,
+            .allocation_key = 1,
+            .byte_offset = 100,
+            .count = 2399,
+            .max_min = &max_min[0]
+        },
+        {
+            .flags = ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT,
+            .allocation_key = 1,
+            .byte_offset = 100,
+            .count = 12636,
+            .max_min = &max_min[1]
+        },
+        {
+            .flags = ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT,
+            .allocation_key = 1,
+            .byte_offset = 100,
+            .count = 12001,
+            .max_min = &max_min[1]
+        },
+    };
+
+    Material materials[2] = {
+        {
+            .pbr = {
+                .base_color_factor = {0.5,0.5,0.5,1.0},
+                .metallic_factor = 1,
+                .roughness_factor = 1,
+                .base_color_tex_coord = 1,
+                .metallic_roughness_tex_coord = 1,
+                .base_color_texture = {.texture_key = 1},
+                .metallic_roughness_texture = {.texture_key = 2},
+            },
+            .normal = {
+                .scale = 2,
+                .texture = {.texture_key = 1},
+                .tex_coord = 1,
+            },
+            .emissive = {.factor = {0.2, 0.1, 0.0}},
+        },
+        {
+            .pbr = {
+                .base_color_factor = {2.5,4.5,2.5,1.0},
+                .metallic_factor = 5,
+                .roughness_factor = 6,
+                .base_color_tex_coord = 0,
+                .metallic_roughness_tex_coord = 1,
+                .base_color_texture = {.texture_key = 2},
+                .metallic_roughness_texture = {.texture_key = 1},
+            },
+            .normal = {
+                .scale = 1,
+                .texture = {.texture_key = 0},
+                .tex_coord = 1,
+            },
+            .occlusion = {
+                .strength = 0.679,
+                .texture = {.texture_key = 0},
+                .tex_coord = 1,
+            },
+            .emissive = {
+                .factor = {0.2, 0.1, 0.0},
+                .texture = {.texture_key = 2},
+                .tex_coord = 0,
+            },
+        },
+    };
+    
+    char weight_buf[128];
+    char mesh_buf[128];
+    char prim_buf[128];
+    char attrib_buf[128];
+
+    u32 mat_idx      = 0;
+    u32 index_idx    = 0;
+    u32 accessor_idx = 0;
+    u32 weights_idx  = 0;
+
+    Accessor *accessor1;
+    Accessor *accessor2;
+    Material *material1;
+    Material *material2;
+    Mesh_Primitive *prim;
+    for(u32 i = 0; i < model.mesh_count; ++i) {
+        string_format(mesh_buf, "meshes[%u]", i);
+
+        for(u32 j = 0; j < model.meshes[i].weight_count; ++j) {
+            string_format(weight_buf, "%s.weights[%u]", mesh_buf, j);
+            TEST_FEQ(weight_buf, model.meshes[i].weights[j], weights[weights_idx][j], false);
+        }
+        weights_idx++;
+        weights_idx %= 2;
+
+        for(u32 j = 0; j < model.meshes[i].primitive_count; ++j) {
+            string_format(prim_buf, "%s.primitives[%u]", mesh_buf, j);
+
+
+            prim = &model.meshes[i].primitives[j];
+            switch(i) {
+            case 0:
+                accessor1 = &prim->indices;
+                accessor2 = &accessors[index_idx];
+
+                TEST_EQ(prim_buf, accessor1->flags, accessor2->flags, false);
+                TEST_EQ(prim_buf, accessor1->flags, accessor2->flags, false);
+
+                material1 = &prim->material;
+                material2 = &materials[mat_idx];
+
+                TEST_EQ(prim_buf, material1->pbr.base_color_factor[0], material2->pbr.base_color_factor[0], false);
+                TEST_EQ(prim_buf, material1->pbr.base_color_factor[1], material2->pbr.base_color_factor[1], false);
+                TEST_EQ(prim_buf, material1->pbr.base_color_factor[2], material2->pbr.base_color_factor[2], false);
+                TEST_EQ(prim_buf, material1->pbr.base_color_factor[3], material2->pbr.base_color_factor[3], false);
+
+                TEST_EQ(prim_buf, material1->pbr.metallic_factor,  material2->pbr.metallic_factor, false);
+                TEST_EQ(prim_buf, material1->pbr.roughness_factor, material2->pbr.roughness_factor, false);
+
+                TEST_EQ(prim_buf, material1->pbr.base_color_tex_coord, material2->pbr.base_color_tex_coord, false);
+                TEST_EQ(prim_buf, material1->pbr.metallic_roughness_tex_coord, material2->pbr.metallic_roughness_tex_coord, false);
+
+                index_idx++;
+                break;
+            case 1:
+                break;
+            }
+
+            index_idx++;
+            mat_idx++;
+            index_idx %= 3;
+            mat_idx %= 2;
+        }
+    }
+
+    
+    END_TEST_MODULE()
 }
-#endif
+
+#endif // if TEST
