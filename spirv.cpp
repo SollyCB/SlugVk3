@@ -302,7 +302,7 @@ void test_spirv() {
 }
 
 void test_parser() {
-    BEGIN_TEST_MODULE("Parsed_Spirv", true, false);
+    BEGIN_TEST_MODULE("Parsed_Spirv", false, false);
 
     u64 byte_count;
     const u32 *spirv_blob = (const u32*)file_read_bin_temp("test/test.spv", &byte_count);

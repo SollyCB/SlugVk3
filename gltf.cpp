@@ -2039,7 +2039,7 @@ void test_gltf() {
     test_textures(gltf.textures);
     assert(gltf.texture_count[-1] == 4 && "Incorrect Texture Count");
 
-    BEGIN_TEST_MODULE("Gltf_Indexing", true, false);
+    BEGIN_TEST_MODULE("Gltf_Indexing", false, false);
 
     Gltf_Accessor *accessor = gltf_accessor_by_index(&gltf, 2);
     TEST_EQ("accessor[2].format", accessor->format, GLTF_ACCESSOR_FORMAT_VEC3_U32, false);
@@ -2112,7 +2112,7 @@ void test_gltf() {
 }
 
 static void test_accessors(Gltf_Accessor *accessor) {
-    BEGIN_TEST_MODULE("Gltf_Accessor", true, false);
+    BEGIN_TEST_MODULE("Gltf_Accessor", false, false);
 
     TEST_EQ("accessor[0].format", accessor->format, GLTF_ACCESSOR_FORMAT_SCALAR_U16, false);
     TEST_EQ("accessor[0].buffer_view", accessor->buffer_view, 1, false);
@@ -2178,7 +2178,7 @@ static void test_accessors(Gltf_Accessor *accessor) {
 }
 
 static void test_animations(Gltf_Animation *animation) {
-    BEGIN_TEST_MODULE("Gltf_Accessor", true, false);
+    BEGIN_TEST_MODULE("Gltf_Accessor", false, false);
 
     TEST_EQ("animation[0].channels[0].sampler", animation->channels    [0].sampler,     0, false);
     TEST_EQ("animation[0].channels[0].target_node", animation->channels[0].target_node, 1, false);
@@ -2241,7 +2241,7 @@ static void test_animations(Gltf_Animation *animation) {
     END_TEST_MODULE();
 }
 static void test_buffers(Gltf_Buffer *buffers) {
-    BEGIN_TEST_MODULE("Gltf_Buffer", true, false);
+    BEGIN_TEST_MODULE("Gltf_Buffer", false, false);
 
     Gltf_Buffer *buffer = buffers;
        TEST_EQ("buffers[0].byteLength", buffer->byte_length, (u64)10001, false);
@@ -2266,7 +2266,7 @@ static void test_buffers(Gltf_Buffer *buffers) {
     END_TEST_MODULE();
 }
 static void test_buffer_views(Gltf_Buffer_View *buffer_views) {
-    BEGIN_TEST_MODULE("Gltf_Buffer_Views", true, false);
+    BEGIN_TEST_MODULE("Gltf_Buffer_Views", false, false);
 
     Gltf_Buffer_View *view = buffer_views;
     TEST_EQ("buffer_views[0].buffer",           view->buffer, 1, false);
@@ -2299,7 +2299,7 @@ static void test_buffer_views(Gltf_Buffer_View *buffer_views) {
     END_TEST_MODULE();
 }
 static void test_cameras(Gltf_Camera *cameras) {
-    BEGIN_TEST_MODULE("Gltf_Camera", true, false);
+    BEGIN_TEST_MODULE("Gltf_Camera", false, false);
 
     float inaccuracy = 0.0000001;
 
@@ -2325,7 +2325,7 @@ static void test_cameras(Gltf_Camera *cameras) {
     END_TEST_MODULE();
 }
 static void test_images(Gltf_Image *images) {
-    BEGIN_TEST_MODULE("Gltf_Image", true, false);
+    BEGIN_TEST_MODULE("Gltf_Image", false, false);
 
     Gltf_Image *image = images;
     TEST_STREQ("images[0].uri", image->uri, "duckCM.png", false);
@@ -2341,7 +2341,7 @@ static void test_images(Gltf_Image *images) {
     END_TEST_MODULE();
 }
 static void test_materials(Gltf_Material *materials) {
-    BEGIN_TEST_MODULE("Gltf_Image", true, false);
+    BEGIN_TEST_MODULE("Gltf_Image", false, false);
 
     float inaccuracy = 0.0000001;
 
@@ -2398,7 +2398,7 @@ static void test_materials(Gltf_Material *materials) {
     END_TEST_MODULE();
 }
 void test_meshes(Gltf_Mesh *meshes) {
-    BEGIN_TEST_MODULE("Gltf_Mesh", true, false);
+    BEGIN_TEST_MODULE("Gltf_Mesh", false, false);
 
     Gltf_Mesh *mesh = meshes;
     TEST_EQ("meshes[0].primitive_count", mesh->primitive_count, 2, false);
@@ -2542,7 +2542,7 @@ void test_meshes(Gltf_Mesh *meshes) {
     END_TEST_MODULE();
 }
 void test_nodes(Gltf_Node *nodes) {
-    BEGIN_TEST_MODULE("Gltf_Node", true, false);
+    BEGIN_TEST_MODULE("Gltf_Node", false, false);
 
     // @Todo shuffle the nodes around in the test file
 
@@ -2596,7 +2596,7 @@ void test_nodes(Gltf_Node *nodes) {
     END_TEST_MODULE();
 }
 void test_samplers(Gltf_Sampler *samplers) {
-    BEGIN_TEST_MODULE("Gltf_Sampler", true, false);
+    BEGIN_TEST_MODULE("Gltf_Sampler", false, false);
 
     Gltf_Sampler *sampler = samplers;
     TEST_EQ("samplers[0].mag_filter", sampler->mag_filter, 1, false);
@@ -2619,7 +2619,7 @@ void test_samplers(Gltf_Sampler *samplers) {
     END_TEST_MODULE();
 }
 void test_scenes(Gltf_Scene *scenes) {
-    BEGIN_TEST_MODULE("Gltf_Scene", true, false);
+    BEGIN_TEST_MODULE("Gltf_Scene", false, false);
 
     Gltf_Scene *scene = scenes;
     TEST_EQ("scenes[0].nodes[0]", scene->nodes[0], 0, false);
@@ -2645,7 +2645,7 @@ void test_scenes(Gltf_Scene *scenes) {
     END_TEST_MODULE();
 }
 void test_skins(Gltf_Skin *skins) {
-    BEGIN_TEST_MODULE("Gltf_Skin", true, false);
+    BEGIN_TEST_MODULE("Gltf_Skin", false, false);
 
     Gltf_Skin *skin = skins;
     TEST_EQ("skins[0].inverse_bind_matrices", skin->inverse_bind_matrices, 0, false);
@@ -2678,7 +2678,7 @@ void test_skins(Gltf_Skin *skins) {
     END_TEST_MODULE();
 }
 void test_textures(Gltf_Texture *textures) {
-    BEGIN_TEST_MODULE("Gltf_Texture", true, false);
+    BEGIN_TEST_MODULE("Gltf_Texture", false, false);
 
     Gltf_Texture *texture = textures;
     TEST_EQ("textures[0].sampler", texture->sampler,       0, false);
