@@ -1570,7 +1570,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     tmp    |= Max_u8 + (tmp >= w);
     w       = (w + args->inc) | tmp;
 
-    // @Note Dont remove this
+    // @Note Do not remove this! cmp ops use sign so w > 127 is negative
     w     &= 0b0111'1111;
 
     args->weights[idx] = Max_u8; // prevent matching itself
@@ -1607,7 +1607,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
         // Therefore I will do the work in more instructions, and on every iteration to avoid these costs as the
         // work is so so cheap.
         //
-        // Find new position
+
         d     = _mm_cmplt_epi8(a, c);
         mask  = _mm_movemask_epi8(d);
 
@@ -1657,7 +1657,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     tmp    |= Max_u8 + (tmp >= w);
     w       = (w + args->inc) | tmp;
 
-    // @Note Do not remove this.
+    // @Note Do not remove this! cmp ops use sign so w > 127 is negative
     w      &= 0b0111'1111;
 
     args->weights[idx] = Max_u8; // prevent matching itself
@@ -1735,83 +1735,79 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     indices[args->idx] = pos;
     return pos;
 }
-void adjust_sampler_weights(u32 count, u8 *weights, u8 *flags, u64 *hashes, u32 idx, u32 inc, u32 dec) {
-    //
-    // Sampler weights: first 6 bits are the weight, top two are flags:
-    // 7 bit = active sampler
-    // 6 bit = in use sampler
-    //
 
-    //
-    // Find incremented weight
-    // If w + inc wraps bottom 6 bits, w = Max, else w = w + inc
-    //
-    u8 w    = weights[idx];
-    u8 tmp  = w + inc;
+void adjust_weights(u32 count, u8 *weights, u32 idx, s8 inc, s8 dec) {
+    // Use signed bytes as cmp ops use signs
+    s8 *s_weights = (s8*)weights;
+
+    inc |= max8_if_true(inc > 127);
+    dec |= max8_if_true(dec > 127);
+    inc &= 127;
+    dec &= 127;
+    
+    s8 w    = s_weights[idx];
+    s8 tmp  = w + inc;
     tmp    |= Max_u8 + (tmp >= w);
     w       = (w + inc) | tmp;
 
     // @Note Dont remove this
     w     &= 0b0111'1111;
 
-    weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
     __m128i b = _mm_set1_epi8(dec);
-    __m128i c = _mm_set1_epi8(w);
+    __m128i c;
+
+    // dont loop if nothing will change
+    count &= max32_if_true(inc || dec);
+
+    for(u32 i = 0; i < count; i += 16) {
+        a = _mm_load_si128((__m128i*)(s_weights + i));
+        c = _mm_cmpgt_epi8(a, b);
+        a = _mm_and_si128(a, c);
+        c = _mm_and_si128(b, c);
+        a = _mm_sub_epi8(a, c);
+        _mm_store_si128((__m128i*)(s_weights + i), a);
+    }
+    s_weights[idx] = w; // revert loop decrement
+}
+
+u32 find_lowest_weight_with_without_flags(u32 count, u8 *weights, u8 *flags, u8 with_flags, u8 without_flags) {
+    // Use signed bytes as cmp ops use sign
+    s8 *s_weights = (s8*)weights;
+
+    __m128i a;
+    __m128i b = _mm_set1_epi8(with_flags);
+    __m128i c = _mm_set1_epi8(with_flags | without_flags);
     __m128i d;
     __m128i e;
-    u32 offset = 0;
-    u32 tmp32;
+
+    s8 lowest = 0b0111'1111; // lol I had this set to Max_u8, comparing negatives
+    u32 ret   = Max_u32;
     u16 mask;
+    u32 tz;
+    u32 pc;
+    for(u32 i = 0; i < count; i += 16) {
+        a = _mm_load_si128((__m128i*)(s_weights + i));
+        d = _mm_load_si128((__m128i*)(flags     + i));
+        d = _mm_and_si128(d, c);
+        d = _mm_cmpeq_epi8(d, b);
 
-    // if weights didnt change, dont loop
-    count &= ~(Max_u32 + (u32)(inc || dec));
+        mask = 1; // ensure we loop
+        while(mask) {
+            e = _mm_set1_epi8(lowest);
+            e = _mm_cmplt_epi8(a, e);
+            e = _mm_and_si128(e, d);
+            mask = _mm_movemask_epi8(e);
 
-    // if weights didnt change, pos = idx
-    u32 pos = idx | ~(Max_u32 + (u32)(dec || inc));
+            tz = count_trailing_zeros_u16(mask);
+            pc = max32_if_true(pop_count16(mask));
 
-    for(offset = 0; offset < count; offset += 16) {
-        // Decrement values
-        a = _mm_load_si128((__m128i*)(weights + offset));
-        d = _mm_cmpgt_epi8(a, b);
-        e = _mm_and_si128(b, d);
-        a = _mm_sub_epi8(a, e);
-        a = _mm_and_si128(a, d);
-        _mm_store_si128((__m128i*)(weights + offset), a);
-
-        // @Note Finding position could be moved into its own loop, where there would be fewer instructions and
-        // fewer iterations. However we would be looping the same data again *and* and having to index into
-        // the data rather than starting from beginning *and* finishing the loop on an unpredictable condition.
-        // Therefore I will do the work in more instructions, and on every iteration to avoid these costs as the
-        // work is so so cheap.
-        //
-        // Find new position
-        d     = _mm_cmplt_epi8(a, c);
-        mask  = _mm_movemask_epi8(d);
-
-        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32);
-        pos  -= pos & tmp32;
-        pos  += (count_trailing_zeros_u16(mask) + offset) & tmp32;
+            ret    -= (ret & pc);
+            ret    += (i + tz) & pc;
+            lowest  = s_weights[ret];
+        }
     }
-
-    u64 hash = hashes[idx];
-    u8  f    = flags [idx];
-
-    // @Test This can perhaps be optimised better by checking first for cmpeq between pos and idx, as these
-    // would not need to be memcpyd, just swapped with pos.
-    memmove(weights + pos + 1, weights + pos,  idx - pos);
-    memmove(flags   + pos + 1, flags   + pos,  idx - pos);
-    memmove(hashes  + pos + 1, hashes  + pos, (idx - pos) * 8);
-
-    weights[pos] = w;
-    flags  [pos] = f;
-    hashes [pos] = hash;
-
-    return;
-}
-inline static void adjust_image_view_weights(u32 count, u8 *weights, u8 *flags, u64 *hashes, u32 idx, u32 inc, u32 dec)
-{
-    adjust_sampler_weights(count, weights, flags, hashes, idx, inc, dec);
+    return ret;
 }
 /*
    eject_repeat_indices(..)
@@ -2013,6 +2009,7 @@ static u32 find_contiguous_free(u32 count, u64 *bits, u32 req_count) {
     }
     return Max_u32;
 }
+
 static u32 get_block_size(u32 count, u64 *masks, u32 offset) {
     u32 mask_idx = offset >> 6;
     u32 bit_idx  = offset & 63;
@@ -2036,6 +2033,7 @@ static u32 get_block_size(u32 count, u64 *masks, u32 offset) {
     }
     return tc;
 }
+
 inline static void make_full(u32 count, u64 *bits, u32 offset, u32 range) {
     u64 mask = 0xffffffffffffffff;
     if ((offset & 63) + range < 64) {
@@ -2073,6 +2071,7 @@ inline static void make_full(u32 count, u64 *bits, u32 offset, u32 range) {
 
     bits[offset >> 6] |= mask;
 }
+
 inline static void make_free(u32 count, u64 *bits, u32 offset, u32 range) {
     u64 mask = 0xffffffffffffffff;
     if ((offset & 63) + range < 64) {
@@ -2110,6 +2109,7 @@ inline static void make_free(u32 count, u64 *bits, u32 offset, u32 range) {
 
     bits[offset >> 6] &= ~mask;
 }
+
 static bool is_range_free(u32 count, u64 *bits, u32 offset, u32 range) {
     u64 mask = 0xffffffffffffffff;
     if ((offset & 63) + range < 64) {
@@ -2151,6 +2151,7 @@ static bool is_range_free(u32 count, u64 *bits, u32 offset, u32 range) {
         return false;
     return true;
 }
+
 static u32 find_hash_idx(u32 count, u64 *hashes, u64 hash) {
     __m128i a = _mm_load_si128((__m128i*)hashes);
     __m128i b = _mm_set1_epi64((__m64)hash);
@@ -2170,85 +2171,6 @@ static u32 find_hash_idx(u32 count, u64 *hashes, u64 hash) {
     }
     return (count_trailing_zeros_u16(mask) >> 3) + (inc - 2);
 }
-
-enum Sampler_Allocator_Flag_Bits {
-    SAMPLER_ALLOCATOR_ACTIVE_BIT = 0x01,
-    SAMPLER_ALLOCATOR_IN_USE_BIT = 0x02,
-};
-typedef u8 Sampler_Allocator_Flags;
-
-static u32 sampler_find_lowest_weight_flagged_active_not_in_use(u32 count, u8 *flags) { // 'flags' is in order of weights (high to low)
-    u32 offset = count - (count & 15);
-
-    offset   -= 16 & (Max_u32 + ((count & 15) > 0));
-    __m128i a = _mm_load_si128((__m128i*)(flags + offset));
-
-    __m128i b = _mm_set1_epi8((u8)SAMPLER_ALLOCATOR_ACTIVE_BIT | (u8)SAMPLER_ALLOCATOR_IN_USE_BIT);
-    __m128i c = _mm_set1_epi8((u8)SAMPLER_ALLOCATOR_ACTIVE_BIT);
-
-    a = _mm_and_si128(a, b);
-    u16 mask = _mm_movemask_epi8(a);
-    while(!mask) { // static predict that lowest flagged is not immediate
-        if (offset == 0)
-            return Max_u32;
-        offset -= 16;
-
-        a    = _mm_load_si128((__m128i*)(flags + offset));
-        a    = _mm_and_si128(a, b);
-        a    = _mm_cmpeq_epi8(a, c);
-        mask = _mm_movemask_epi8(a);
-    }
-    return offset + (15 - count_leading_zeros_u16(mask));
-}
-
-enum Image_View_Allocator_Flag_Bits {
-    IMAGE_VIEW_ALLOCATOR_IN_USE_BIT = 0x01,
-};
-static u32 image_view_find_lowest_weight_flagged_not_in_use(u32 count, u8 *flags) { // 'flags' is in order of weights (high to low)
-    u32 offset = count - (count & 15);
-
-    offset   -= 16 & (Max_u32 + ((count & 15) > 0));
-    __m128i a = _mm_load_si128((__m128i*)(flags + offset));
-
-    __m128i b = _mm_set1_epi8((u8)IMAGE_VIEW_ALLOCATOR_IN_USE_BIT);
-    __m128i c = _mm_set1_epi8(0);
-
-    a = _mm_and_si128(a, b);
-    u16 mask = _mm_movemask_epi8(a);
-    while(!mask) { // static predict that lowest flagged is not immediate
-        if (offset == 0)
-            return Max_u32;
-        offset -= 16;
-
-        a    = _mm_load_si128((__m128i*)(flags + offset));
-        a    = _mm_and_si128(a, b);
-        a    = _mm_cmpeq_epi8(a, c);
-        mask = _mm_movemask_epi8(a);
-    }
-    return offset + (15 - count_leading_zeros_u16(mask));
-}
-//
-// Idk what I am going to do about multithreading this thing... It seems dumb to try to circumvent
-// where it is not possible to avoid it: implementations can have a sampler limit, therefore there
-// must be some central point which tracks sampler allocations as such, it seems sensible to collate
-// a list of required resources, then have one thread which controls the allocations chew through
-// the list, then the other worker threads can continue with other things. The draw back to this
-// is you do not know how long the list is, but then it cannot be THAT long because of the sampler
-// cap.
-//
-#if 0
-inline static void mark_sampler_usage_complete(Sampler_Allocator *alloc, u64 key) {
-    u32 idx = find_hash_idx(alloc->count, alloc->hashes, key);
-
-    Sampler *sampler = alloc->map.find_hash(alloc->hashes[idx]);
-    sampler->reference_count -= 1 & (int)(sampler->reference_count > 0);
-
-    // if reference count == 0 then tmp = 0;
-    // else tmp == Max and the 'in use' flag is preserved
-    u8 tmp = Max_u32 + (int)(sampler->reference_count == 0);
-    alloc->flags[idx] &= ~(u8)SAMPLER_ALLOCATOR_IN_USE_BIT | tmp;
-}
-#endif
 
 static void recreate_images(Gpu_Tex_Allocator *alloc, u32 count, u32 *indices) {
     VkDevice device = get_gpu_instance()->device;
@@ -4011,7 +3933,7 @@ Sampler_Allocator create_sampler_allocator(u32 cap) {
         ret.cap = align(device_cap, 16); // malloc'd size must be aligned to 16 for correct_weights() simd
 
     ret.device_cap = device_cap;
-    ret.map = HashMap<u64, Sampler_Info>::get(ret.cap);
+    ret.samplers   = (Sampler_Info*)malloc_h(sizeof(Sampler_Info) * ret.cap, 8);
 
     // Align 16 for SIMD
     u64 aligned_cap = align(ret.cap, 16);
@@ -4027,62 +3949,60 @@ Sampler_Allocator create_sampler_allocator(u32 cap) {
 
     return ret;
 }
+
 void destroy_sampler_allocator(Sampler_Allocator *alloc) {
+    u32 *indices = (u32*)malloc_t(sizeof(u32) * alloc->active, 16);
+    simd_find_flags_u8(alloc->count, alloc->flags, SAMPLER_ACTIVE_BIT, 0x0, indices);
+    for(u32 i = 0; i < alloc->count; ++i)
+        vkDestroySampler(alloc->device, alloc->samplers[indices[i]].sampler, ALLOCATION_CALLBACKS);
+
+    free_h(alloc->samplers);
     free_h(alloc->hashes);
-    alloc->map.kill();
 }
-/*
-   Sampler Map Implementation:
 
-   Keep a list of keys and weights. The weights are sorted from highest to lowest. When a sampler is
-   add to the map, if a sampler which matches it is already in the map, then its weight is increased
-   (in order to reflect how commonly this sampler is referenced by models). When a sampler is called
-   up with get_sampler(), its weight is increased, and all other weights are decreased (prevent all
-   weights slowly becoming max). After these two operations, the weight is moved to its appropriate
-   place in the array. The corresponding key is then also moved to corresponding position in its
-   array.
-
-   If the number of active samplers is equivalent to the device's active sampler capacity, and the
-   sampler being requested is inactive, the sampler with the lowest weight in the weights array
-   which also contains an active sampler has its top bit cleared (the rest of the bits are
-   preserved) to reflect its inactive status. A new sampler can then be created, and this weight is
-   marked as having an active sampler linked to it (its top bit is set).
-
-*/
-u64 add_sampler(Sampler_Allocator *alloc, Sampler_Info *sampler_info) {
+u32 add_sampler(Sampler_Allocator *alloc, Get_Sampler_Info *sampler_info) {
     //
     // @Note Ik that the hash will change when the sampler handle in the 'Sampler' type
     // changes, but calling 'insert_hash()' doesnt actually do a rehash, so the hash that the
     // sampler is inserted with will always be its key.
     //
-    sampler_info->sampler = NULL; // Ensure only type data influences hash, not the handle
 
-    u64 hash = hash_bytes(sampler_info, sizeof(Sampler_Info));
-    u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
-    if (h_idx != Max_u32) {
-        adjust_sampler_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, 1, 0);
-        return hash;
+    u64 hash  = hash_bytes(sampler_info, sizeof(Get_Sampler_Info));
+    u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash); // have we already seen this sampler type
+
+    if (h_idx < alloc->count) {
+        adjust_weights(alloc->count, alloc->weights, h_idx, 1, 0);
+        return h_idx;
     }
 
     assert(alloc->count <= alloc->cap);
-    if (alloc->count >= alloc->cap)
-        return Max_u64;
+    if (alloc->count >= alloc->cap) {
+        println("Sampler Allocator At Capacity");
+        return Max_u32;
+    }
 
-    alloc->map.insert_hash(hash, sampler_info);
-    alloc->hashes[alloc->count] = hash;
+    Sampler_Info info = {
+        .wrap_s      = sampler_info->wrap_s,
+        .wrap_t      = sampler_info->wrap_t,
+        .mipmap_mode = sampler_info->mipmap_mode,
+        .mag_filter  = sampler_info->mag_filter,
+        .min_filter  = sampler_info->min_filter,
+    };
+    alloc->samplers[alloc->count] = info;
+    alloc->hashes  [alloc->count] = hash;
     alloc->count++;
 
-    return hash;
+    return h_idx;
 }
-Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler, bool adjust_weights) {
-    // This is a little lame as a list traversal, but it should be pretty quick in reality.
-    u32 h_idx = find_hash_idx(alloc->count, alloc->hashes, hash);
 
-    assert(h_idx != Max_u32 && "Invalid Sampler Hash");
-    if (h_idx == Max_u32)
+Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u32 key, VkSampler *ret_sampler,
+                                     bool do_weight_adjustment)
+{
+    assert(key < alloc->count && "Invalid Sampler Key");
+    if (key >= alloc->count)
         return SAMPLER_ALLOCATOR_RESULT_INVALID_KEY;
 
-    Sampler_Info *info = alloc->map.find_hash(hash);
+    Sampler_Info *info = &alloc->samplers[key];
 
     Sampler_Allocator_Result ret = SAMPLER_ALLOCATOR_RESULT_CACHED;
 
@@ -4107,11 +4027,13 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
 
         if (alloc->active == alloc->device_cap) {
 
-            u32           evict_idx = sampler_find_lowest_weight_flagged_active_not_in_use(alloc->count, alloc->flags);
-            Sampler_Info *to_evict  = alloc->map.find_hash(alloc->hashes[evict_idx]);
+            u32 evict_idx = find_lowest_weight_with_without_flags(alloc->count, alloc->weights, alloc->flags,
+                                                                  SAMPLER_ACTIVE_BIT, SAMPLER_IN_USE_BIT);
+
+            Sampler_Info *to_evict = &alloc->samplers[evict_idx];
 
             // Clear 'active' flag
-            alloc->flags[evict_idx] &= ~(u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
+            alloc->flags[evict_idx] &= ~(u8)SAMPLER_ACTIVE_BIT;
             vkDestroySampler(alloc->device, to_evict->sampler, ALLOCATION_CALLBACKS);
 
             to_evict->sampler = NULL;
@@ -4120,33 +4042,33 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampl
         auto check = vkCreateSampler(alloc->device, &create_info, ALLOCATION_CALLBACKS, &info->sampler);
         DEBUG_OBJ_CREATION(vkCreateSampler, check);
 
-        alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_ACTIVE_BIT;
+        alloc->flags[key] |= (u8)SAMPLER_ACTIVE_BIT;
         alloc->active++;
     }
 
-    alloc->flags[h_idx] |= (u8)SAMPLER_ALLOCATOR_IN_USE_BIT;
+    alloc->flags[key] |= (u8)SAMPLER_IN_USE_BIT;
 
-    u8 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
-    u8 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 inc = 10 & max8_if_true(do_weight_adjustment);
+    u8 dec =  1 & max8_if_true(do_weight_adjustment);
 
-    // Only adjust weights after all uses of h_idx, as h_idx is invalid after the call.
-    adjust_sampler_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, inc, dec);
+    adjust_weights(alloc->count, alloc->weights, key, inc, dec);
 
    *ret_sampler = info->sampler;
     info->user_count++;
     return ret;
 }
-void done_with_sampler(Sampler_Allocator *alloc, u64 hash) {
-    Sampler_Info *sampler = alloc->map.find_hash(hash);
 
-    assert(sampler && "This is not a valid sampler hash");
-    sampler->user_count -= 1 & (int)(sampler->user_count > 0);
+void done_with_sampler(Sampler_Allocator *alloc, u32 key) {
+    assert(key < alloc->count && "This is not a valid sampler hash");
 
-    if (sampler->user_count == 0) {
-        u32 h_idx            = find_hash_idx(alloc->count, alloc->hashes, hash);
-        alloc->flags[h_idx] &= ~((u8)SAMPLER_ALLOCATOR_IN_USE_BIT);
-        alloc->in_use--;
-    }
+    Sampler_Info *sampler  = &alloc->samplers[key];
+    sampler->user_count   -= (sampler->user_count > 0);
+
+    u32 user_count = sampler->user_count;
+    u8 rm_flag     = ~((u8)SAMPLER_IN_USE_BIT);
+
+    alloc->flags[key] &= rm_flag | max8_if_true(user_count > 0); // if user_count > 0 then flags &= 0xff
+    alloc->in_use     -= (user_count == 0);
 
     return;
 }
@@ -4176,14 +4098,16 @@ Image_View_Allocator create_image_view_allocator(u32 cap) {
     return ret;
 }
 void destroy_image_view_allocator(Image_View_Allocator *alloc) {
-    free_h(alloc->hashes);
+    for(u32 i = 0; i < alloc->count; ++i)
+        vkDestroyImageView(alloc->device, alloc->map.find_hash(alloc->hashes[i])->view, ALLOCATION_CALLBACKS);
     alloc->map.kill();
+    free_h(alloc->hashes);
 }
 /*
    Image View Allocator Implementation is basically identical sampler allocator: a hashmap and some weights
 */
 Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageViewCreateInfo *image_view_info,
-                                           VkImageView *ret_view, u64 *ret_hash, bool adjust_weights)
+                                           VkImageView *ret_view, u64 *ret_hash, bool do_weight_adjustment)
 {
     u64 hash               = hash_bytes(image_view_info, sizeof(VkImageViewCreateInfo));
     Image_View *image_view = alloc->map.find_hash(hash);
@@ -4197,8 +4121,11 @@ Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageV
             if (alloc->in_use == alloc->cap)
                 return IMAGE_VIEW_ALLOCATOR_RESULT_ALL_IN_USE;
 
-            u32 evict_idx  = image_view_find_lowest_weight_flagged_not_in_use(alloc->count, alloc->flags);
-            u64 evict_hash = alloc->hashes[evict_idx];
+            u8 with_flags    = 0x0; // all weights present in the array represent active image views
+            u8 without_flags = IMAGE_VIEW_IN_USE_BIT;
+            h_idx            = find_lowest_weight_with_without_flags(alloc->count, alloc->weights, alloc->flags,
+                                                                     with_flags, without_flags);
+            u64 evict_hash = alloc->hashes[h_idx];
 
             image_view = alloc->map.find_hash(evict_hash);
             assert(ret && "Arrgh broken hash map? Broken alloc->hashes??");
@@ -4208,18 +4135,13 @@ Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageV
             bool del_result = alloc->map.delete_hash(evict_hash);
             assert(del_result && "Arrgh broken hash map? Broken alloc->hashes??");
 
-            // Overwrite the attributes of the lowest weight view which is not in use
-            u32 size_to_move = alloc->count - (evict_idx + 1);
-            memmove(alloc->hashes  + evict_idx, alloc->hashes  + evict_idx + 1, size_to_move * sizeof(u64));
-            memmove(alloc->weights + evict_idx, alloc->weights + evict_idx + 1, size_to_move);
-            memmove(alloc->flags   + evict_idx, alloc->flags   + evict_idx + 1, size_to_move);
+            alloc->in_use--;
+            alloc->count--;
         }
 
-        alloc->flags  [alloc->count - 1] = IMAGE_VIEW_ALLOCATOR_IN_USE_BIT;
-        alloc->weights[alloc->count - 1] = 0;
-        alloc->hashes [alloc->count - 1] = hash;
-
-        h_idx = alloc->count - 1;
+        alloc->flags  [h_idx] = IMAGE_VIEW_IN_USE_BIT;
+        alloc->weights[h_idx] = 0;
+        alloc->hashes [h_idx] = hash;
 
         auto check = vkCreateImageView(alloc->device, image_view_info, ALLOCATION_CALLBACKS, &ret);
         DEBUG_OBJ_CREATION(vkCreateImageView, check);
@@ -4234,31 +4156,36 @@ Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageV
         image_view->user_count++;
     }
 
-    u8 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
-    u8 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
+    u8 inc = 10 & max32_if_true(do_weight_adjustment);
+    u8 dec =  1 & max32_if_true(do_weight_adjustment);
 
-    adjust_image_view_weights(alloc->count, alloc->weights, alloc->flags, alloc->hashes, h_idx, inc, dec);
+    adjust_weights(alloc->count, alloc->weights, h_idx, inc, dec);
 
    *ret_view = ret;
    *ret_hash = hash;
     return IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS;
 }
-Image_View_Allocator_Result done_with_image_view(Image_View_Allocator *alloc, u64 hash) {
+
+void done_with_image_view(Image_View_Allocator *alloc, u64 hash) {
     Image_View *view = alloc->map.find_hash(hash);
 
     assert(view && "This is not a valid view hash");
-    if (!view)
-        return IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY;
-
-    view->user_count -= 1 & (int)(view->user_count > 0);
-
-    if (view->user_count == 0) {
-        u32 h_idx            = find_hash_idx(alloc->count, alloc->hashes, hash);
-        alloc->flags[h_idx] &= ~((u8)IMAGE_VIEW_ALLOCATOR_IN_USE_BIT);
-        alloc->in_use--;
+    if (!view) {
+        // do something dramatic to cause a crash because this should never happen
+        *alloc = {};
+        return;
     }
 
-    return IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS;
+    view->user_count -= (view->user_count > 0);
+
+    u32 user_count = view->user_count;
+    u8  rm_flag    = ~((u8)IMAGE_VIEW_IN_USE_BIT);
+
+    u32 h_idx            = find_hash_idx(alloc->count, alloc->hashes, hash);
+    alloc->flags[h_idx] &= rm_flag | max8_if_true(user_count > 0); // if user_count > 0 then flags &= 0xff
+    alloc->in_use       -= (user_count == 0);
+
+    return;
 }
         /* End Image View Allocator */
 

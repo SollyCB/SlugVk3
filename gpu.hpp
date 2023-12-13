@@ -472,7 +472,7 @@ inline static Gpu_Allocation* gpu_get_allocation(Gpu_Allocator *allocator, u32 a
 //     - Sol 9 Dec 2023
 //
 //
-struct Gpu_Tex_Allocation { // 56 bytes, padded to cache line
+struct Gpu_Tex_Allocation {
     u64     stage_offset;
     u64     upload_offset;
     u64     size; // aligned to bit granularity (no reason to keep it as it is)
@@ -482,8 +482,7 @@ struct Gpu_Tex_Allocation { // 56 bytes, padded to cache line
     VkImage image;
     String  file_name;
 
-    u32  mip_levels;
-    char pad[8]; // pad to cache line
+    char pad[64 - 52]; // pad to cache line
 };
 struct Gpu_Tex_Allocator {
     u32  allocation_cap;
@@ -608,6 +607,14 @@ typedef void                 (*Gpu_Tex_Allocator_Queue_Remove_Func)(Gpu_Tex_Allo
 typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Submit_Func)    (Gpu_Allocator*);
 typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Submit_Func)(Gpu_Tex_Allocator*);
 
+struct Get_Sampler_Info {
+    VkSamplerAddressMode wrap_s;
+    VkSamplerAddressMode wrap_t;
+    VkSamplerMipmapMode  mipmap_mode;
+
+    VkFilter mag_filter;
+    VkFilter min_filter;
+};
 struct Sampler_Info {
     VkSamplerAddressMode wrap_s;
     VkSamplerAddressMode wrap_t;
@@ -625,6 +632,12 @@ enum Sampler_Allocator_Result {
     SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE  = 2,
     SAMPLER_ALLOCATOR_RESULT_INVALID_KEY = 3,
 };
+enum Sampler_Allocation_Flag_Bits {
+    SAMPLER_ACTIVE_BIT = 0x01,
+    SAMPLER_IN_USE_BIT = 0x02,
+};
+typedef u8 Sampler_Allocation_Flags;
+
 struct Sampler_Allocator {
     u32 device_cap;
 
@@ -632,28 +645,34 @@ struct Sampler_Allocator {
     u32 count;
     u32 active;
     u32 in_use;
-    HashMap<u64, Sampler_Info> map;
+    Sampler_Info *samplers;
 
     VkDevice device;
     u64 *hashes;
     u8  *weights;
-    u8  *flags;
+    Sampler_Allocation_Flags  *flags;
 };
 
 // Set cap to zero to let the allocator decide a size
 Sampler_Allocator create_sampler_allocator (u32 cap);
 void              destroy_sampler_allocator(Sampler_Allocator *alloc);
 
-u64                      add_sampler(Sampler_Allocator *alloc, Sampler_Info *sampler_info);
-Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u64 hash, VkSampler *ret_sampler, bool adjust_weights);
+u32                      add_sampler(Sampler_Allocator *alloc, Get_Sampler_Info *sampler_info);
+Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u32 key, VkSampler *ret_sampler, bool adjust_weights);
 
-void done_with_sampler(Sampler_Allocator *alloc, u64 hash);
+void done_with_sampler(Sampler_Allocator *alloc, u32 key);
 
+// Image View Allocator
 enum Image_View_Allocator_Result {
     IMAGE_VIEW_ALLOCATOR_RESULT_SUCCESS     = 0,
     IMAGE_VIEW_ALLOCATOR_RESULT_ALL_IN_USE  = 1,
     IMAGE_VIEW_ALLOCATOR_RESULT_INVALID_KEY = 2,
 };
+enum Image_View_Flag_Bits {
+    IMAGE_VIEW_IN_USE_BIT = 0x01,
+};
+typedef u8 Image_View_Flags;
+
 struct Image_View {
     VkImageView view;
     u32         user_count;
@@ -667,14 +686,15 @@ struct Image_View_Allocator {
     VkDevice device;
     u64 *hashes;
     u8  *weights;
-    u8  *flags;
+    Image_View_Flags *flags;
 };
 Image_View_Allocator create_image_view_allocator (u32 cap);
 void                 destroy_image_view_allocator(Image_View_Allocator *alloc);
 
 Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageViewCreateInfo *view_info,
                                            VkImageView *ret_image_view, u64 *ret_view_hash, bool adjust_weights);
-Image_View_Allocator_Result done_with_image_view(Image_View_Allocator *alloc, u64 hash);
+
+void done_with_image_view(Image_View_Allocator *alloc, u64 hash);
 
 struct Uniform_Allocator {
     u64 cap;
