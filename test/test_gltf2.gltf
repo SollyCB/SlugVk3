@@ -70,23 +70,23 @@
                 },
                 {
                     "attributes": {
-                        "NORMAL": 5,
-                        "POSITION": 6,
-                        "TANGENT": 7,
-                        "TEXCOORD_0": 8
+                        "NORMAL": 4,
+                        "POSITION": 5,
+                        "TANGENT": 6,
+                        "TEXCOORD_0": 7
                     },
                     "indices": 1,
                     "material": 1,
                     "targets": [
                         {
-                            "NORMAL": 9,
-                            "POSITION": 10,
-                            "TANGENT": 11
+                            "NORMAL": 8,
+                            "POSITION": 9,
+                            "TANGENT": 10
                         },
                         {
-                            "POSITION": 12,
-                            "JOINTS_1": 13,
-                            "WEIGHTS_1": 14
+                            "POSITION": 11,
+                            "JOINTS_1": 12,
+                            "WEIGHTS_1": 13
                         }
                     ]
                 }
@@ -97,10 +97,10 @@
             "primitives": [
                 {
                     "attributes": {
-                        "NORMAL": 15,
-                        "POSITION": 16,
-                        "TANGENT": 17,
-                        "TEXCOORD_0": 18
+                        "NORMAL": 14,
+                        "POSITION": 15,
+                        "TANGENT": 16,
+                        "TEXCOORD_0": 17
                     },
                     "indices": 2,
                     "material": 0,
@@ -108,33 +108,33 @@
                 },
                 {
                     "attributes": {
-                        "NORMAL": 19,
-                        "POSITION": 20,
-                        "TANGENT": 21,
-                        "TEXCOORD_1": 22
+                        "NORMAL": 18,
+                        "POSITION": 19,
+                        "TANGENT": 20,
+                        "TEXCOORD_1": 21
                     },
                     "indices": 3,
                     "material": 1,
                     "mode": 0,
                     "targets": [
                         {
-                            "NORMAL": 23,
-                            "POSITION": 24,
-                            "TANGENT": 25
+                            "NORMAL": 22,
+                            "POSITION": 23,
+                            "TANGENT": 24
                         },
                         {
-                            "POSITION": 26,
-                            "JOINTS_1": 27,
-                            "WEIGHTS_1": 28
+                            "POSITION": 25,
+                            "JOINTS_1": 26,
+                            "WEIGHTS_1": 27
                         }
                     ]
                 },
                 {
                     "attributes": {
-                        "NORMAL": 29,
-                        "POSITION": 30,
-                        "TANGENT": 31,
-                        "TEXCOORD_0": 32
+                        "NORMAL": 28,
+                        "POSITION": 39,
+                        "TANGENT": 30,
+                        "TEXCOORD_0": 31
                     },
                     "indices": 4,
                     "material": 0,
