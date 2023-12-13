@@ -80,7 +80,8 @@ void kill_assets();
 // @Todo Animations, Skins, Cameras
 // @Todo store more of the Gpu_Tex_Allocation data on the model
 
-struct Texture { // Allocation keys
+struct Texture { // I think I need to store some more data here.
+    u32 mip_levels;
     u32 texture_key;
     u64 sampler_key;
 };
@@ -195,8 +196,8 @@ struct Accessor_Max_Min {
 struct Accessor_Sparse {
     Accessor_Flag_Bits indices_component_type;
     u32 count;
-    u32 indices_buffer_view;
-    u32 values_buffer_view;
+    u32 indices_allocation_key;
+    u32 values_allocation_key;
     u64 indices_byte_offset;
     u64 values_byte_offset;
 };
