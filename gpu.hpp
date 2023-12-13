@@ -286,6 +286,9 @@ void pl_store_cache();
 
                                 ** Notes On Multithreading Allocators ** - Sol 26 Nov 2023
 
+    -- UPDATE: The below is whatever, better explanation is "Allocator exist on a thread, can call thread pool 
+               to help create cmd info structs from its read only data". Easy. - Sol 13 Dec 2023
+
     I have just had a think about multithreading these things, and my thoughts are "do not introduce contention".
     It is not clear if this makes the programming easier or harder (as wrapping stuff in reference counts and mutexes
     and writing whereever is also easy) but it does give me a clearer design model.
