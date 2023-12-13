@@ -11,10 +11,10 @@ extern "C" {
 #include <stdarg.h>
 #include <stdbool.h>
 
-#include "assert.h"
 #include "builtin_wrappers.h"
 #include "typedef.h"
 
+#define print_assert(x) if (!(x)) {printf("\n    [file: %s, line: %i, fn %s]\n        ** ASSERTION FAILED **: %s\n", __FILE__, __LINE__, __FUNCTION__, #x); asm("int $3");}
 
                         /* Begin Print/Format Functions */
 
@@ -100,6 +100,7 @@ inline static void parse_int_dec(u64 i, int *len, char *buf) {
         i /= 10;
     }
 }
+
 inline static void parse_int_hex(u64 i, int *len, char *buf) {
     if (i == 0) {
         buf[*len] = '0';
@@ -122,6 +123,7 @@ inline static void parse_int_hex(u64 i, int *len, char *buf) {
         i >>= 4;
     }
 }
+
 inline static void parse_int_bin(u64 i, int *len, char *buf) {
     if (i == 0) {
         buf[*len] = '0';
@@ -200,6 +202,7 @@ static void parse_int(Print_Config *config, s64 i, int *buf_pos, char *print_buf
         *buf_pos += 1;
     }
 }
+
 inline static void parse_signed_int(Print_Config *config, s64 i, int *buf_pos, char *print_buffer) {
     if (i < 0) {
         print_buffer[*buf_pos] = '-';
@@ -208,9 +211,11 @@ inline static void parse_signed_int(Print_Config *config, s64 i, int *buf_pos, c
     }
     parse_int(config, (u64)i, buf_pos, print_buffer);
 }
+
 inline static void parse_unsigned_int(Print_Config *config, s64 i, int *buf_pos, char *print_buffer) {
     parse_int(config, i, buf_pos, print_buffer);
 }
+
 typedef enum {
     PRINT_VALUE_STRING,
     PRINT_VALUE_CHAR,
@@ -221,6 +226,7 @@ typedef enum {
     PRINT_VALUE_BIN,
     PRINT_VALUE_LZ,
 } Print_Value;
+
 inline static bool print_check_config_flags(Print_Flags flags, Print_Value value) {
     switch(value) {
     case PRINT_VALUE_STRING:
@@ -241,7 +247,7 @@ inline static bool print_check_config_flags(Print_Flags flags, Print_Value value
         flags &= PRINT_STRING_BIT | PRINT_FLOAT_BIT | PRINT_CHAR_BIT | PRINT_LZ_BIT;
         return flags == 0;
     default:
-        assert(0 && "Invalid Flag Check");
+        print_assert(0 && "Invalid Flag Check");
         return false;
     }
 }

@@ -17,7 +17,9 @@
 #endif // _WIN32 or not
 
 #else
-#define assert(x) x
+
+#define assert(x)
+
 #endif // if DEBUG
 
 #endif // include guard
