@@ -20,6 +20,7 @@ int main() {
     run_tests();
 #endif
 
+    #if 0
     init_glfw();
     Glfw *glfw = get_glfw_instance();
 
@@ -65,6 +66,7 @@ int main() {
     kill_window(gpu, window);
     kill_gpu(gpu);
     kill_glfw(glfw);
+    #endif
 
     kill_allocators();
     return 0;
@@ -74,8 +76,8 @@ int main() {
 void run_tests() {
     load_tests();
 
-    //test_spirv();
-    //test_gltf();
+    test_spirv();
+    test_gltf();
     test_asset();
 
     end_tests();
