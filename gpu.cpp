@@ -1621,9 +1621,9 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u8 *states = args->states;
     u8  state  = states[idx];
 
-    memmove(weights     + pos + 1, weights + pos, idx - pos);
-    memmove(states      + pos + 1, states  + pos, idx - pos);
-    memmove(allocations + pos + 1, states  + pos, idx - pos);
+    memmove(weights     + pos + 1, weights     + pos, idx - pos);
+    memmove(states      + pos + 1, states      + pos, idx - pos);
+    memmove(allocations + pos + 1, allocations + pos, (idx - pos) * sizeof(Gpu_Tex_Allocation));
 
     weights    [pos] = w;
     states     [pos] = state;
@@ -1708,9 +1708,9 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     u8 *states = args->states;
     u8  state  = states[idx];
 
-    memmove(weights     + pos + 1, weights + pos, idx - pos);
-    memmove(states      + pos + 1, states  + pos, idx - pos);
-    memmove(allocations + pos + 1, states  + pos, idx - pos);
+    memmove(weights     + pos + 1, weights     + pos, idx - pos);
+    memmove(states      + pos + 1, states      + pos, idx - pos);
+    memmove(allocations + pos + 1, allocations + pos, (idx - pos) * sizeof(Gpu_Allocation));
 
     weights    [pos] = w;
     states     [pos] = state;
@@ -2559,7 +2559,7 @@ Gpu_Allocator_Result continue_allocation(Gpu_Allocator *alloc, u64 size, void *p
 }
 
 Gpu_Allocator_Result submit_allocation(Gpu_Allocator *alloc, u32 *key) {
-    u32  allocation_count          = alloc->allocation_count;
+    u32  allocation_count              = alloc->allocation_count;
     Gpu_Allocation *allocations        = alloc->allocations;
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
 
