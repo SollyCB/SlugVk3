@@ -6,13 +6,29 @@
 #include "assert.h"
 #include "allocator.hpp"
 
-// @Todo move this to a more sensible file
-inline static int get_str_len(const char *x) {
-    int i = 0;
-    while(x[i] != '\0')
-        i++;
-    return i;
-}
+inline static void sort_backend(int *array, int start, int end) {
+    if (start < end) {
+        int x = start - 1;
+        int tmp;
+        for(int i = start; i <= end; ++i) {
+            if (array[i] < array[end]) {
+                x++;
+                tmp      = array[i];
+                array[i] = array[x];
+                array[x] = tmp;
+            }
+        }
+        x++;
+        tmp        = array[end];
+        array[end] = array[x];
+        array[x]   = tmp;
 
+        sort_backend(array, start, x - 1);
+        sort_backend(array, x + 1, end);
+    }
+}
+inline static void sort_indices(u32 count, u32 *indices) {
+    sort_backend((int*)indices, 0, count - 1);
+}
 
 #endif
