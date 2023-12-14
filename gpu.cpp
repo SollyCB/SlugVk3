@@ -1744,7 +1744,7 @@ void adjust_weights(u32 count, u8 *weights, u32 idx, s8 inc, s8 dec) {
     dec |= max8_if_true(dec > 127);
     inc &= 127;
     dec &= 127;
-    
+ 
     s8 w    = s_weights[idx];
     s8 tmp  = w + inc;
     tmp    |= Max_u8 + (tmp >= w);
@@ -3960,7 +3960,7 @@ void destroy_sampler_allocator(Sampler_Allocator *alloc) {
     free_h(alloc->hashes);
 }
 
-u32 add_sampler(Sampler_Allocator *alloc, Get_Sampler_Info *sampler_info) {
+Sampler_Allocator_Result add_sampler(Sampler_Allocator *alloc, Get_Sampler_Info *sampler_info, u32 *key) {
     //
     // @Note Ik that the hash will change when the sampler handle in the 'Sampler' type
     // changes, but calling 'insert_hash()' doesnt actually do a rehash, so the hash that the
@@ -3972,13 +3972,14 @@ u32 add_sampler(Sampler_Allocator *alloc, Get_Sampler_Info *sampler_info) {
 
     if (h_idx < alloc->count) {
         adjust_weights(alloc->count, alloc->weights, h_idx, 1, 0);
-        return h_idx;
+        *key = h_idx;
+        return SAMPLER_ALLOCATOR_RESULT_SUCCESS;
     }
 
     assert(alloc->count <= alloc->cap);
     if (alloc->count >= alloc->cap) {
-        println("Sampler Allocator At Capacity");
-        return Max_u32;
+        *key = Max_u32;
+        return SAMPLER_ALLOCATOR_RESULT_ALLOCATOR_FULL;
     }
 
     Sampler_Info info = {
@@ -3992,7 +3993,8 @@ u32 add_sampler(Sampler_Allocator *alloc, Get_Sampler_Info *sampler_info) {
     alloc->hashes  [alloc->count] = hash;
     alloc->count++;
 
-    return h_idx;
+    *key = h_idx;
+    return SAMPLER_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u32 key, VkSampler *ret_sampler,
@@ -4004,14 +4006,11 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u32 key, VkSample
 
     Sampler_Info *info = &alloc->samplers[key];
 
-    Sampler_Allocator_Result ret = SAMPLER_ALLOCATOR_RESULT_CACHED;
-
     if (!info->sampler) {
 
         if (alloc->in_use == alloc->device_cap) {
             return SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE;
         } else {
-            ret = SAMPLER_ALLOCATOR_RESULT_NEW;
             alloc->in_use++;
         }
 
@@ -4055,7 +4054,7 @@ Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u32 key, VkSample
 
    *ret_sampler = info->sampler;
     info->user_count++;
-    return ret;
+    return SAMPLER_ALLOCATOR_RESULT_SUCCESS;
 }
 
 void done_with_sampler(Sampler_Allocator *alloc, u32 key) {

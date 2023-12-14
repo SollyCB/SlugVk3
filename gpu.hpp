@@ -630,11 +630,18 @@ struct Sampler_Info {
     u32       user_count;
 };
 enum Sampler_Allocator_Result {
-    SAMPLER_ALLOCATOR_RESULT_CACHED      = 0,
-    SAMPLER_ALLOCATOR_RESULT_NEW         = 1,
-    SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE  = 2,
-    SAMPLER_ALLOCATOR_RESULT_INVALID_KEY = 3,
+    SAMPLER_ALLOCATOR_RESULT_SUCCESS        = 0,
+    SAMPLER_ALLOCATOR_RESULT_ALL_IN_USE     = 1,
+    SAMPLER_ALLOCATOR_RESULT_INVALID_KEY    = 2,
+    SAMPLER_ALLOCATOR_RESULT_ALLOCATOR_FULL = 3,
 };
+
+#define CHECK_SAMPLER_ALLOCATOR_RESULT(res)              \
+    if (res != SAMPLER_ALLOCATOR_RESULT_SUCCESS) {       \
+        assert(res == SAMPLER_ALLOCATOR_RESULT_SUCCESS); \
+        return {};                                       \
+    }
+
 enum Sampler_Allocation_Flag_Bits {
     SAMPLER_ACTIVE_BIT = 0x01,
     SAMPLER_IN_USE_BIT = 0x02,
@@ -660,7 +667,7 @@ struct Sampler_Allocator {
 Sampler_Allocator create_sampler_allocator (u32 cap);
 void              destroy_sampler_allocator(Sampler_Allocator *alloc);
 
-u32                      add_sampler(Sampler_Allocator *alloc, Get_Sampler_Info *sampler_info);
+Sampler_Allocator_Result add_sampler(Sampler_Allocator *alloc, Get_Sampler_Info *sampler_info, u32 *key);
 Sampler_Allocator_Result get_sampler(Sampler_Allocator *alloc, u32 key, VkSampler *ret_sampler, bool adjust_weights);
 
 void done_with_sampler(Sampler_Allocator *alloc, u32 key);
