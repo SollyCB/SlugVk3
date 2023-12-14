@@ -259,8 +259,8 @@ struct Model {
     Mesh *meshes;
 };
 
-Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name, u64 size_available,
-                      u8 *model_buffer, u64 *ret_req_size);
+Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, String *gltf_file_name,
+                      u64 size_available, u8 *model_buffer, u64 *ret_req_size);
 
 struct Model_Storage_Info {
     u64 offset;

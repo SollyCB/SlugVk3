@@ -16,16 +16,15 @@
 int main() {
     init_allocators();
 
-#if TEST
-    run_tests();
-#endif
-
-    #if 0
     init_glfw();
     Glfw *glfw = get_glfw_instance();
 
     init_gpu();
     Gpu *gpu = get_gpu_instance();
+
+#if TEST
+    run_tests();
+#endif
 
     init_window(gpu, glfw);
     Window *window = get_window_instance();
@@ -66,7 +65,6 @@ int main() {
     kill_window(gpu, window);
     kill_gpu(gpu);
     kill_glfw(glfw);
-    #endif
 
     kill_allocators();
     return 0;
@@ -76,9 +74,9 @@ int main() {
 void run_tests() {
     load_tests();
 
+    test_asset();
     test_spirv();
     test_gltf();
-    test_asset();
 
     end_tests();
 }
