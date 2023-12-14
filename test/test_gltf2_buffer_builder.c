@@ -1,5 +1,5 @@
 #define SOL_H_IMPL
-#include "../sol.h"
+#include "sol.h"
 
 int main() {
 
@@ -35,6 +35,10 @@ int main() {
     assert(memcmp(buf16,    file +   0,  100) == 0);
     assert(memcmp(buf_mat,  file + 128, 2076) == 0);
     assert(memcmp(buf_vec3, file + 2176, 384) == 0);
+
+    printf("%f", *(float*)(file + 2176 + 0));
+    printf("%f", *(float*)(file + 2176 + 4));
+    printf("%f", *(float*)(file + 2176 + 8));
 
     return 0;
 }

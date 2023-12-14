@@ -5,19 +5,19 @@
             "pbrMetallicRoughness": {
                 "baseColorFactor": [ 0.5, 0.5, 0.5, 1.0 ],
                 "baseColorTexture": {
-                    "index": 1,
+                    "index": 0,
                     "texCoord": 1
                 },
                 "metallicFactor": 1,
                 "roughnessFactor": 1,
                 "metallicRoughnessTexture": {
-                    "index": 2,
+                    "index": 1,
                     "texCoord": 0
                 }
             },
             "normalTexture": {
                 "scale": 2,
-                "index": 1,
+                "index": 2,
                 "texCoord": 1
             },
             "emissiveFactor": [ 0.2, 0.1, 0.0 ]
@@ -27,28 +27,28 @@
             "pbrMetallicRoughness": {
                 "baseColorFactor": [ 2.5, 4.5, 2.5, 1.0 ],
                 "baseColorTexture": {
-                    "index": 2,
+                    "index": 5,
                     "texCoord": 0
                 },
                 "metallicFactor": 5.0,
                 "roughnessFactor": 6.0,
                 "metallicRoughnessTexture": {
-                    "index": 1,
+                    "index": 6,
                     "texCoord": 1
                 }
             },
             "normalTexture": {
                 "scale": 1.0,
-                "index": 0,
+                "index": 7,
                 "texCoord": 1
             },
             "occlusionTexture": {
-                "index": 0,
+                "index": 8,
                 "texCoord": 1,
                 "strength": 0.679
             },
             "emissiveTexture": {
-                "index": 2,
+                "index": 9,
                 "texCoord": 0
             },
             "emissiveFactor": [ 11.2, 0.1, 0.0 ]
@@ -59,10 +59,10 @@
             "primitives": [
                 {
                     "attributes": {
-                        "NORMAL": 0,
-                        "POSITION": 1,
-                        "TANGENT": 2,
-                        "TEXCOORD_0": 3
+                        "NORMAL": 4,
+                        "POSITION": 5,
+                        "TANGENT": 4,
+                        "TEXCOORD_0": 5
                     },
                     "indices": 0,
                     "material": 0,
@@ -70,23 +70,23 @@
                 },
                 {
                     "attributes": {
-                        "NORMAL": 4,
-                        "POSITION": 5,
-                        "TANGENT": 6,
-                        "TEXCOORD_0": 7
+                        "NORMAL": 5,
+                        "POSITION": 4,
+                        "TANGENT": 5,
+                        "TEXCOORD_0": 4
                     },
                     "indices": 1,
                     "material": 1,
                     "targets": [
                         {
-                            "NORMAL": 8,
-                            "POSITION": 9,
-                            "TANGENT": 10
+                            "NORMAL": 4,
+                            "POSITION": 5,
+                            "TANGENT": 4
                         },
                         {
-                            "POSITION": 11,
-                            "JOINTS_1": 12,
-                            "WEIGHTS_1": 13
+                            "POSITION": 4,
+                            "JOINTS_1": 5,
+                            "WEIGHTS_1": 4
                         }
                     ]
                 }
@@ -99,8 +99,8 @@
                     "attributes": {
                         "NORMAL": 4,
                         "POSITION": 5,
-                        "TANGENT": 6,
-                        "TEXCOORD_0": 7
+                        "TANGENT": 4,
+                        "TEXCOORD_0": 5
                     },
                     "indices": 1,
                     "material": 0,
@@ -108,33 +108,33 @@
                 },
                 {
                     "attributes": {
-                        "NORMAL": 0,
-                        "POSITION": 1,
-                        "TANGENT": 2,
-                        "TEXCOORD_0": 3
+                        "NORMAL": 5,
+                        "POSITION": 4,
+                        "TANGENT": 5,
+                        "TEXCOORD_0": 4
                     },
                     "indices": 0,
                     "material": 1,
                     "mode": 0,
                     "targets": [
                         {
-                            "POSITION": 11,
-                            "JOINTS_1": 12,
-                            "WEIGHTS_1": 13
-                        }
-                        {
-                            "NORMAL": 8,
-                            "POSITION": 9,
-                            "TANGENT": 10
+                            "POSITION": 4,
+                            "JOINTS_1": 5,
+                            "WEIGHTS_1": 4
                         },
+                        {
+                            "NORMAL": 4,
+                            "POSITION": 5,
+                            "TANGENT": 4
+                        }
                     ]
                 },
                 {
                     "attributes": {
-                        "NORMAL": 0,
-                        "POSITION": 1,
-                        "TANGENT": 2,
-                        "TEXCOORD_0": 3
+                        "NORMAL": 4,
+                        "POSITION": 5,
+                        "TANGENT": 4,
+                        "TEXCOORD_0": 5
                     },
                     "indices": 1,
                     "material": 0,
@@ -146,20 +146,43 @@
     ],
     "images": [
         {
-            "uri": "base",
+            "uri": "test/images/base1",
         },  
         {
-            "uri": "pbr",
+            "uri": "test/images/pbr1",
         },  
         {
-            "uri": "normal",
+            "uri": "test/images/normal1",
         },  
         {
-            "uri": "occlusion",
+            "uri": "test/images/occlusion1",
         },  
         {
-            "uri": "emissive",
+            "uri": "test/images/emissive1",
+        },
+        {
+            "uri": "test/images/base2",
+        },  
+        {
+            "uri": "test/images/pbr2",
+        },  
+        {
+            "uri": "test/images/normal2",
+        },  
+        {
+            "uri": "test/images/occlusion2",
+        },  
+        {
+            "uri": "test/images/emissive2",
         }  
+    ],
+    "samplers": [
+        {
+            "magFilter": 9729,
+            "minFilter": 9987,
+            "wrapS": 10497,
+            "wrapT": 10497
+        },
     ],
     "textures": [
         {
@@ -171,16 +194,36 @@
             "source":  1
         },
         {
-            "sampler": 1,
+            "sampler": 0,
             "source":  2
         },
         {
-            "sampler": 1,
-            "source":  2
+            "sampler": 0,
+            "source":  3
         },
         {
-            "sampler": 1,
+            "sampler": 0,
             "source":  4
+        },
+        {
+            "sampler": 0,
+            "source":  5
+        },
+        {
+            "sampler": 0,
+            "source":  6
+        },
+        {
+            "sampler": 0,
+            "source":  7
+        },
+        {
+            "sampler": 0,
+            "source":  7
+        },
+        {
+            "sampler": 0,
+            "source":  9
         },
     ],
     "buffers": [
@@ -193,17 +236,32 @@
          {
            "buffer": 0,
            "byteOffset": 0,
-           "byteLength": 100,
+           "byteLength": 100
+         }, 
+         {
+           "buffer": 0,
+           "byteOffset": 0,
+           "byteLength": 100
          }, 
          {
            "buffer": 0,
            "byteOffset": 128,
-           "byteLength": 2076,
+           "byteLength": 2076
+         }, 
+         {
+           "buffer": 0,
+           "byteOffset": 128,
+           "byteLength": 2076
          }, 
          {
            "buffer": 0,
            "byteOffset": 2176,
-           "byteLength": 384,
+           "byteLength": 384
+         },
+         {
+           "buffer": 0,
+           "byteOffset": 2176,
+           "byteLength": 384
          }  
       ],
       "accessors": [
@@ -221,7 +279,7 @@
            "type": "SCALAR"
        },
        {
-           "bufferView": 0,
+           "bufferView": 1,
            "byteOffset": 50,
            "componentType": 5123,
            "count": 25,
@@ -234,7 +292,7 @@
            "type": "SCALAR"
        },
        {
-           "bufferView": 1,
+           "bufferView": 2,
            "byteOffset": 0,
            "componentType": 5126,
            "count": 16,
@@ -277,7 +335,7 @@
            "type": "MAT4"
        },
        {
-           "bufferView": 1,
+           "bufferView": 3,
            "byteOffset": 1024,
            "componentType": 5126,
            "count": 16,
@@ -320,17 +378,17 @@
            "type": "MAT4"
        },
        {
-           "bufferView": 2,
+           "bufferView": 4,
            "byteOffset": 0, 
            "componentType": 5125,
            "count": 16,
            "type": "VEC3",
            "sparse": {
                "values": {
-                   "bufferView": 2,
-                   "byteOffset": 64
+                   "bufferView": 4,
+                   "byteOffset": 0
                },
-               "count": 9,
+               "count": 25,
                "indices": {
                    "bufferView": 0,
                    "byteOffset": 0,
@@ -339,19 +397,19 @@
            }
        },
        {
-           "bufferView": 2,
+           "bufferView": 5,
            "byteOffset": 192, 
            "componentType": 5125,
            "count": 16,
            "type": "VEC3",
            "sparse": {
                "values": {
-                   "bufferView": 2,
+                   "bufferView": 5,
                    "byteOffset": 192
                },
-               "count": 8,
+               "count": 25,
                "indices": {
-                   "bufferView": 0,
+                   "bufferView": 1,
                    "byteOffset": 50,
                    "componentType": 5123
                }
