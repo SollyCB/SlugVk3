@@ -17,4 +17,4 @@ external/glfw-win64-bin/tests/
 external/glfw-win64-bin/build/examples/
 external/glfw-win64-bin/build/tests/
 
-test/buf.bin
+touch_images.sh
