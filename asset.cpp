@@ -483,16 +483,6 @@ struct Load_Mesh_Info {
     Material *materials;
 };
 
-inline static void add_buffer_view_index(Accessor *accessor, u32 *count, u32 *indices, u32 mask_count, u64 *masks) {
-    // allocation_key equals its buffer view index before allocation stage
-    u32 mask_idx = accessor->allocation_key >> 6;
-
-    bool seen       = masks[mask_idx] & (1 << (accessor->allocation_key & 63));
-    masks[mask_idx] = masks[mask_idx] | (1 << (accessor->allocation_key & 63));
-
-    indices[*count] = accessor->allocation_key;
-    *count += !seen;
-}
 static void model_load_gltf_meshes(Load_Mesh_Info *info, u32 count, Gltf_Mesh *gltf_meshes, Mesh *meshes,
                                    u8 *primitives_buffer, u8 *weights_buffer)
 {
@@ -620,6 +610,25 @@ struct Buffer_View {
     u64 size;
 };
 
+inline static void check_dupe_index_and_insert(u32 idx, u32 *count, u32 *indices, u32 mask_count, u64 *masks) {
+    u32 mask_idx = idx >> 6;
+
+    bool seen       = masks[mask_idx] & (1 << (idx & 63));
+    masks[mask_idx] = masks[mask_idx] | (1 << (idx & 63));
+
+    indices[*count] = idx;
+    *count += !seen;
+}
+inline static void add_buffer_view_index(Accessor *accessor, u32 *count, u32 *indices, u32 mask_count, u64 *masks) {
+    // accessor.allocation_key equals its buffer view index before allocation stage
+    check_dupe_and_insert(accessor->allocation_key, count, indices, mask_count, masks);
+
+    if (accessor->sparse) {
+        check_dupe_and_insert(accessor->sparse.indices_allocation_key, count, indices, mask_count, masks);
+        check_dupe_and_insert(accessor->sparse.values_allocation_key,  count, indices, mask_count, masks);
+    }
+}
+
 //
 // @Note This implementation looks a little weird, as lots of sections seem naively split apart (for
 // instance, the gltf struct is looped a few different times) but this is intentional, as eventually
@@ -686,9 +695,8 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name
     // is the data referenced by a primitive.
 
 
-    #if !TEST
                                     /* Buffer View Allocations */
-
+    #if !TEST // @TODO CURRENT TASK!! Read through everything below.
     u32  buffer_view_count          = gltf_buffer_view_get_count(&gltf);
     u32  index_buffer_view_count    = 0;
     u32  vertex_buffer_view_count   = 0;
@@ -735,47 +743,145 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *gltf_file_name
     Gltf_Buffer *gltf_buffer = gltf.buffers;
     const u8 *buffer = file_read_bin_temp_large(gltf_buffer->uri, gltf_buffer->byte_length);
 
-    u32 *buffer_view_allocation_keys = (u32*)malloc_t(sizeof(u32) * buffer_view_count, 8);
+    u32 *allocation_keys = (u32*)malloc_t(sizeof(u32) * buffer_view_count, 8);
 
     Gltf_Buffer_View *gltf_buffer_view;
-    Gpu_Allocator_Result result;
+    Gpu_Allocator_Result allocator_result;
     for(u32 i = 0; i < index_buffer_view_count; ++i) {
-        result = begin_allocation(&model_allocators->index);
-        CHECK_GPU_ALLOCATOR_RESULT(result);
+        allocator_result = begin_allocation(&model_allocators->index);
+        CHECK_GPU_ALLOCATOR_RESULT(allocator_result);
 
         tmp = index_buffer_view_indices[i];
         gltf_buffer_view = gltf_buffer_view_by_index(&gltf, tmp); // Lame
 
-        result = continue_allocation(&model_allocators->index, gltf_buffer_view->byte_length,
+        allocator_result = continue_allocation(&model_allocators->index, gltf_buffer_view->byte_length,
                                      gltf_buffer + gltf_buffer_view->byte_offset);
-        CHECK_GPU_ALLOCATOR_RESULT(result);
+        CHECK_GPU_ALLOCATOR_RESULT(allocator_result);
 
-        result = submit_allocation(&model_allocators->index, &buffer_view_allocation_keys[tmp]);
-        CHECK_GPU_ALLOCATOR_RESULT(result);
+        allocator_result = submit_allocation(&model_allocators->index, &allocation_keys[tmp]);
+        CHECK_GPU_ALLOCATOR_RESULT(allocator_result);
     }
 
     for(u32 i = 0; i < vertex_buffer_view_count; ++i) {
-        result = begin_allocation(&model_allocators->vertex);
-        CHECK_GPU_ALLOCATOR_RESULT(result);
+        allocator_result = begin_allocation(&model_allocators->vertex);
+        CHECK_GPU_ALLOCATOR_RESULT(allocator_result);
 
         tmp = vertex_buffer_view_indices[i];
         gltf_buffer_view = gltf_buffer_view_by_index(&gltf, tmp); // Lame
 
-        result = continue_allocation(&model_allocators->vertex, gltf_buffer_view->byte_length,
+        allocator_result = continue_allocation(&model_allocators->vertex, gltf_buffer_view->byte_length,
                                      gltf_buffer + gltf_buffer_view->byte_offset);
-        CHECK_GPU_ALLOCATOR_RESULT(result);
+        CHECK_GPU_ALLOCATOR_RESULT(allocator_result);
 
-        result = submit_allocation(&model_allocators->vertex, &buffer_view_allocation_keys[tmp]);
-        CHECK_GPU_ALLOCATOR_RESULT(result);
+        allocator_result = submit_allocation(&model_allocators->vertex, &allocation_keys[tmp]);
+        CHECK_GPU_ALLOCATOR_RESULT(allocator_result);
     }
 
                                         /* Texture Allocations */
 
-    //
-    // @TODO CURRENT TASK!!
-    // Setup texture allocations, add buffer view allocation keys to accessors.
-    //
+    u32 texture_count   = gltf_texture_get_count(&gltf);
 
+    u32 *sampler_indices = (u32*)malloc_t(sizeof(u32) * texture_count);
+    u32 *image_indices   = (u32*)malloc_t(sizeof(u32) * texture_count);
+
+    Gltf_Texture *gltf_texture = gltf.textures;
+    for(u32 i = 0; i < texture_count; ++i) {
+        sampler_indices[i] = gltf_texture->sampler;
+        image_indices  [i] = gltf_texture->source_image;
+
+        gltf_texture = (Gltf_Texture*)((u8*)gltf_texture + gltf_texture->stride);
+    }
+
+    u32  image_count              = gltf_image_get_count(&gltf);
+    u32 *texture_allocation_keys  = (u32*)malloc_t(sizeof(u32) * image_count);
+
+    String texture_file_name;
+    Gltf_Image *gltf_image = gltf.images;
+    for(u32 i = 0; i < image_count; ++i) {
+        assert(image->uri && "@Todo @Unimplemented Support reading textures from buffer views");
+
+        texture_file_name = cstr_to_string(image->uri);
+
+        // replace indices into images array with texture allocation keys
+        allocator_result = tex_add_texture(&model_allocators->tex, &texture_file_name, &texture_allocation_keys[i]);
+        CHECK_GPU_ALLOCATOR_RESULT(allocator_result);
+
+        gltf_image = (Gltf_Image*)((u8*)gltf_image + gltf_image.stride);
+    }
+
+    u32  sampler_count = gltf_sampler_get_count(&gltf);
+    u32 *sampler_keys  = (u32*)malloc_t(sizeof(u32) * sampler_count);
+
+    Get_Sampler_Info         get_sampler_info;
+    Sampler_Allocator_Result sampler_result;
+
+    Gltf_Sampler *gltf_sampler = gltf->samplers;
+    for(u32 i = 0; i < sampler_count; ++i) {
+        get_sampler_info = {};
+        get_sampler_info.wrap_s = gltf_sampler->wrap_u;
+        get_sampler_info.wrap_t = gltf_sampler->wrap_v;
+        get_sampler_info.filter_mag = gltf_sampler->filter_mag;
+        get_sampler_info.filter_min = gltf_sampler->filter_min;
+
+        sampler_result = add_sampler(&model_allocators->sampler, &get_sampler_info, &sampler_keys[i]);
+        assert(sampler_result == SAMPLER_ALLOCATOR_RESULT_SUCCESS);
+        CHECK_SAMPLER_ALLOCATOR_RESULT(sampler_result);
+
+        gltf_sampler = (Gltf_Sampler*)((u8*)gltf_sampler + gltf_sampler->stride);
+    }
+
+    // Point model back at the allocation keys
+    Accessor       *accessor;
+    Mesh_Primitive *primitive;
+    for(u32 i = 0; i < ret.mesh_count; ++i) {
+        for(u32 j = 0; j < ret.meshes[i].primitive_count; ++j) {
+            primitive = &ret.meshes[i].primitives[j];
+
+            // Indices
+            primitive->indices.allocation_key = allocation_keys[primitive->indices.allocation_key];
+
+            // Material
+            primitive->material.pbr.base_color_texture.texture_key         = texture_allocation_keys[primitive->material.pbr.base_color_texture.texture_key];
+            primitive->material.pbr.base_color_texture.sampler_key         = sampler_keys           [primitive->material.pbr.base_color_texture.sampler_key];
+            primitive->material.pbr.metallic_roughness_texture.texture_key = texture_allocation_keys[primitive->material.pbr.metallic_roughness_texture.texture_key];
+            primitive->material.pbr.metallic_roughness_texture.sampler_key = sampler_keys           [primitive->material.pbr.metallic_roughness_texture.sampler_key];
+
+            primitive->material.normal.texture_texture.texture_key         = texture_allocation_keys[primitive->material.normal.texture_texture.texture_key];
+            primitive->material.normal.texture_texture.sampler_key         = sampler_keys           [primitive->material.normal.texture_texture.sampler_key];
+
+            primitive->material.occlusion.texture.texture_key              = texture_allocation_keys[primitive->material.occlusion.texture.texture_key];
+            primitive->material.occlusion.texture.sampler_key              = sampler_keys           [primitive->material.occlusion.texture.sampler_key];
+
+            primitive->material.emissive.texture.texture_key               = texture_allocation_keys[primitive->material.emissive.texture.texture_key];
+            primitive->material.emissive.texture.sampler_key               = sampler_keys           [primitive->material.emissive.texture.sampler_key];
+
+            // Attributes
+            for(u32 k = 0; k < primitive->attribute_count; ++k) {
+                accessor = &primitive->attributes[k].accessor;
+
+                accessor->allocation_key = allocation_keys[accessor->allocation_key];
+
+                if (accessor->sparse) {
+                    accessor->sparse.indices_allocation_key = allocation_keys[accessor->sparse.indices_allocation_key];
+                    accessor->sparse.values_allocation_key  = allocation_keys[accessor->sparse.values_allocation_key];
+                }
+            }
+
+            // Targets
+            for(u32 k = 0; k < primitive->target_count; ++k) {
+                for(u32 l = 0; l < primitive->targets[k].attribute_count; ++l) {
+                    accessor = &primitive->targets[k].attributes[l].accessor;
+
+                    accessor->allocation_key = allocation_keys[accessor->allocation_key];
+
+                    if (accessor->sparse) {
+                        accessor->sparse.indices_allocation_key = allocation_keys[accessor->sparse.indices_allocation_key];
+                        accessor->sparse.values_allocation_key  = allocation_keys[accessor->sparse.values_allocation_key];
+                    }
+                }
+            }
+        }
+    }
     #endif // if !TEST
     
     return ret;

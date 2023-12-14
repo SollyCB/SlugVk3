@@ -80,13 +80,13 @@ void kill_assets();
 // @Todo Animations, Skins, Cameras
 // @Todo store more of the Gpu_Tex_Allocation data on the model
 
-struct Texture { // I think I need to store some more data here.
+struct Texture { // I think I need to store some more data here, e.g. array layers
     u32 mip_levels;
     u32 texture_key;
-    u64 sampler_key;
+    u32 sampler_key;
 };
 
-struct Pbr_Metallic_Roughness { // 40 bytes
+struct Pbr_Metallic_Roughness { // 56 bytes
     float   base_color_factor[4] = {1,1,1,1};
     float   metallic_factor      = 1;
     float   roughness_factor     = 1;
@@ -96,19 +96,19 @@ struct Pbr_Metallic_Roughness { // 40 bytes
     Texture metallic_roughness_texture;
 };
 
-struct Normal_Texture {
+struct Normal_Texture { // 20 bytes
     float   scale = 1;
     Texture texture;
     u32     tex_coord;
 };
 
-struct Occlusion_Texture {
+struct Occlusion_Texture { // 20 bytes
     float   strength = 1;
     Texture texture;
     u32     tex_coord;
 };
 
-struct Emissive_Texture {
+struct Emissive_Texture { // 28 bytes
     float   factor[3] = {0,0,0};
     Texture texture;
     u32     tex_coord;
@@ -132,16 +132,16 @@ enum Material_Flag_Bits {
 };
 typedef u32 Material_Flags;
 
-struct Material { // 92 bytes
-    Material_Flags         flags;              // 4
-    float                  alpha_cutoff = 0.5; // 4
+struct Material { // 132 bytes
+    Material_Flags         flags;
+    float                  alpha_cutoff = 0.5;
 
-    Pbr_Metallic_Roughness pbr;          // 40
-    Normal_Texture         normal;       // 12
-    Occlusion_Texture      occlusion;    // 12
-    Emissive_Texture       emissive;     // 20
+    Pbr_Metallic_Roughness pbr;
+    Normal_Texture         normal;
+    Occlusion_Texture      occlusion;
+    Emissive_Texture       emissive;
 
-    char pad[128 - 92]; // 4 + 4 + 40 + 12 + 12 + 20
+    // char pad[192 - 132]; is there any point in padding across cache lines?
 };
 
 enum Accessor_Component_Type {
