@@ -2687,7 +2687,7 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
     // the staging buffer, allocations can be evicted and reloaded from the allocator's disk storage
     // (see implementation above - grep '~MAID').
     if (alloc->to_stage_count == 0) {
-        println("All Data Cached On Queue Submission");
+        // println("All Data Cached On Queue Submission");
         alloc->to_stage_count = Max_u32;
         return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
