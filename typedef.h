@@ -27,9 +27,9 @@ typedef u32 bool32;
 #define Max_s16  INT16_MAX
 #define Max_s8   INT8_MAX
 
-#define max32_if_true(eval)  (~(Max_u32 + (u32)((eval) != 0)))
-#define max8_if_true(eval)   (~(Max_u8  +  (u8)((eval) != 0)))
-#define max32_if_false(eval)   (Max_u32 + (u32)((eval) != 0))
-#define max8_if_false(eval)    (Max_u8  +  (u8)((eval) != 0))
+#define max32_if_true(eval)  (Max_u32 + (u32)((eval) == 0))
+#define max8_if_true(eval)   (Max_u8  +  (u8)((eval) == 0))
+#define max32_if_false(eval) (Max_u32 + (u32)((eval) != 0))
+#define max8_if_false(eval)  (Max_u8  +  (u8)((eval) != 0))
 
 #endif

@@ -105,4 +105,5 @@ u8 *malloc_t(u64 size, u64 alignment) {
 u8 *realloc_t(void *ptr, u64 new_size, u64 old_size, u64 alignment) {
     u8 *ret = malloc_t(new_size, alignment);
     memcpy(ret, ptr, old_size);
+    return ret;
 }
