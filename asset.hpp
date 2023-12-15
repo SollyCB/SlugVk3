@@ -3,6 +3,7 @@
 
 #include "gpu.hpp"
 #include "model.hpp"
+#include "array.hpp"
 
 #if TEST
 void test_asset();

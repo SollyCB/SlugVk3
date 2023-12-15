@@ -17,15 +17,16 @@ Assets* get_assets_instance() { return &s_Assets; }
 
 struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
 
-static Model_Allocators init_model_allocators(Model_Allocators_Config *config);
-static void             shutdown_model_allocators();
+static Model_Allocators create_model_allocators(Model_Allocators_Config *config);
+static void             destroy_model_allocators(Model_Allocators *model_allocators);
 
 void init_assets() {
-    Model_Allocators_Config config = {};
-    init_model_allocators(&config);
+    Assets *g_assets = get_assets_instance();
 
-    Assets           *g_assets = get_assets_instance();
-    Model_Allocators *allocs   = &g_assets->model_allocators;
+    Model_Allocators_Config config = {}; // All defaults, see creation function
+    g_assets->model_allocators     = create_model_allocators(&config);
+
+    Model_Allocators *allocs = &g_assets->model_allocators;
 
     g_assets->model_buffer =    (u8*)malloc_h(g_model_buffer_size, 16);
     g_assets->models       = (Model*)malloc_h(sizeof(Model) * g_model_count, 16);
@@ -33,14 +34,18 @@ void init_assets() {
     u64 model_buffer_size_used      = 0;
     u64 model_buffer_size_available = g_model_buffer_size;
 
+    #if MODEL_LOAD_INFO
+    println("Loading %u models; model buffer size %u", g_model_count, g_model_buffer_size);
+    #endif
+
     u64 tmp_size;
     for(u32 i = 0; i < g_model_count; ++i) {
-        g_assets->models[i] = model_from_gltf(allocs, &g_model_dir_names[i], &g_model_file_names[i], model_buffer_size_available,
-                                              g_assets->model_buffer, &tmp_size);
+        g_assets->models[i] = model_from_gltf(allocs, &g_model_dir_names[i], &g_model_file_names[i],
+                                              model_buffer_size_available, g_assets->model_buffer, &tmp_size);
 
-        assert(model_buffer_size_available >= model_buffer_size_used)
         model_buffer_size_used      += tmp_size;
         model_buffer_size_available -= model_buffer_size_used;
+        assert(g_model_buffer_size  >= model_buffer_size_used)
 
         g_assets->model_count++;
     }
@@ -62,9 +67,6 @@ void init_assets() {
 
     g_assets->pipelines          = new_array<VkPipeline>(256, true, false);
 
-    g_assets->model_count = g_model_count;
-    g_assets->models      = (Model*)malloc_h(sizeof(Model) * g_model_count, 8);
-
     g_assets->semaphores[0] = create_semaphore();
     g_assets->semaphores[1] = create_semaphore();
     g_assets->fences[0]     = create_fence(false);
@@ -77,28 +79,26 @@ void init_assets() {
     pool_info.flags            = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
     pool_info.queueFamilyIndex = gpu->transfer_queue_index;
 
-    auto check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[0]);
-    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
-    check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[1]);
-    DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
-
     VkCommandBufferAllocateInfo cmd_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cmd_info.commandPool        = g_assets->cmd_pools[0];
     cmd_info.commandBufferCount = 1;
 
-    check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[0]);
-    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+    VkResult check;
+    for(u32 i = 0; i < g_frame_count; ++i) {
+        check = vkCreateCommandPool(device, &pool_info, ALLOCATION_CALLBACKS, &g_assets->cmd_pools[i]);
+        DEBUG_OBJ_CREATION(vkCreateCommandPool, check);
 
-    cmd_info.commandPool = g_assets->cmd_pools[1];
-    check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[1]);
-    DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+        cmd_info.commandPool = g_assets->cmd_pools[i];
+        check = vkAllocateCommandBuffers(device, &cmd_info, &g_assets->cmd_buffers[i]);
+        DEBUG_OBJ_CREATION(vkAllocateCommandBuffers, check);
+    }
 }
 
 void kill_assets() {
     Assets *g_assets = get_assets_instance();
 
+    free_h(g_assets->model_buffer);
     free_h(g_assets->models);
-    shutdown_model_allocators();
+    destroy_model_allocators(&g_assets->model_allocators);
 
     free_array<u32>(&g_assets->keys_tex       );
     free_array<u32>(&g_assets->keys_index     );
@@ -114,14 +114,17 @@ void kill_assets() {
 
     free_array<VkPipeline>(&g_assets->pipelines);
 
-
     destroy_semaphore(g_assets->semaphores[0]);
     destroy_semaphore(g_assets->semaphores[1]);
     destroy_fence(g_assets->fences[0]);
     destroy_fence(g_assets->fences[1]);
+
+    VkDevice device = get_gpu_instance()->device;
+    for(u32 i = 0; i < g_frame_count; ++i)
+        vkDestroyCommandPool(device, g_assets->cmd_pools[i], ALLOCATION_CALLBACKS);
 }
 
-static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
+static Model_Allocators create_model_allocators(Model_Allocators_Config *config) {
     Gpu *gpu = get_gpu_instance();
 
     // Vertex allocator
@@ -213,18 +216,14 @@ static Model_Allocators init_model_allocators(Model_Allocators_Config *config) {
         .descriptor_resource = descriptor_resource,
     };
 
-    Model_Allocators *model_allocators = &get_assets_instance()->model_allocators;
-    *model_allocators = ret;
-
     return ret;
 }
-static void shutdown_model_allocators() {
-    Model_Allocators *allocs = &get_assets_instance()->model_allocators;
-
+static void destroy_model_allocators(Model_Allocators *allocs) {
     destroy_allocator(&allocs->index);
     destroy_allocator(&allocs->vertex);
     destroy_tex_allocator(&allocs->tex);
     destroy_sampler_allocator(&allocs->sampler);
+    destroy_image_view_allocator(&allocs->image_view);
 }
 
 struct Model_Req_Size_Info {
@@ -295,6 +294,11 @@ static Model_Req_Size_Info model_get_required_size_from_gltf(Gltf *gltf) {
     }
 
 
+    //
+    // @Todo This count may not be completely accurate. Idk if there will the stuff counted that I will not
+    // use?? Idk... need to check at some point. It is not a huge deal as I cannot see anything being counted
+    // here that would be catastrophic.
+    //
     u32 req_size_accessors  = 0;
     req_size_accessors     += sparse_count  * sizeof(Accessor_Sparse);
     req_size_accessors     += max_min_count * sizeof(Accessor_Max_Min);
@@ -656,11 +660,20 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
     // Get required bytes
     Model_Req_Size_Info req_size = model_get_required_size_from_gltf(&gltf);
 
+    #if MODEL_LOAD_INFO
     println("Size required for model %s: %u, Bytes remaining in buffer: %u", gltf_file_name->str, req_size.total, size_available);
+    #endif
 
     *ret_req_size = req_size.total;
     if (req_size.total > size_available) {
-        println("Insufficient size remaining in buffer!");
+
+        #if !MODEL_LOAD_INFO
+        println("Size required for model %s: %u, Bytes remaining in buffer: %u", gltf_file_name->str, req_size.total, size_available);
+        #endif
+
+        println("Insufficient size remaining in model buffer. Failed to load models.");
+        assert(false && "See above...");
+
         return {};
     }
 
@@ -767,7 +780,8 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
 
     Gltf_Buffer *gltf_buffer = gltf.buffers;
 
-    memcpy(uri_buf + model_dir->len, gltf_buffer->uri, strlen(gltf_buffer->uri) + 1);
+    u32 model_dir_len = model_dir->len;
+    strcpy(uri_buf + model_dir_len, gltf_buffer->uri); // Build the buffer uri.
 
     u8 *buffer = (u8*)file_read_bin_temp_large(uri_buf, gltf_buffer->byte_length);
 
@@ -818,7 +832,11 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
         // when it actually fires.
         assert(gltf_image->uri && "@Todo @Unimplemented Support reading textures from buffer views");
 
-        image_file_name = cstr_to_string(gltf_image->uri);
+        // Idk about strlens and cstrs. It seems to compile to an avx intrinsic, so worries about speed is
+        // whatever, its just robustness (I am just debating in my head converting the gltf parser to use
+        // a real string type...)
+        strcpy(uri_buf + model_dir_len, gltf_image->uri); // Build the image uri
+        image_file_name = cstr_to_string(uri_buf);
 
         // replace indices into images array with texture allocation keys
         allocator_result = tex_add_texture(&model_allocators->tex, &image_file_name, &tex_allocation_keys[i]);
@@ -926,6 +944,19 @@ Model load_model(Model_Storage_Info *strorage_info) { // @Unimplemented
     return ret;
 }
 
+enum Asset_Draw_Prep_Result {
+    ASSET_DRAW_PREP_RESULT_SUCCESS = 0,
+};
+
+Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, Mesh_Primitive *primitive) {
+
+    for(u32 i = 0; i < count; ++i) {
+        // @TODO CURRENT TASK!!
+    }
+
+    return ASSET_DRAW_PREP_RESULT_SUCCESS;
+}
+
 #if TEST // 300 lines of tests
 static void test_model_from_gltf();
 
@@ -934,7 +965,6 @@ void test_asset() {
 }
 
 static void test_accessor(Gpu_Allocator *allocator, u8 *buf, char *name, Accessor *accessor0, Accessor *accessor1, bool index) {
-    BEGIN_TEST_MODULE(name, false, false);
 
     TEST_EQ(name, accessor0->allocation_key, accessor1->allocation_key, false);
     TEST_EQ(name, accessor0->byte_offset,    accessor1->byte_offset,    false);
@@ -965,12 +995,9 @@ static void test_accessor(Gpu_Allocator *allocator, u8 *buf, char *name, Accesso
         TEST_EQ(name, accessor0->sparse->values_allocation_key,  accessor1->sparse->values_allocation_key,  false);
         TEST_EQ(name, accessor0->sparse->values_byte_offset,     accessor1->sparse->values_byte_offset,     false);
     }
-    
-    END_TEST_MODULE();
 }
 
 static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *material0, Material *material1) {
-    BEGIN_TEST_MODULE(name, false, false);
 
     TEST_EQ(name, material0->flags, material1->flags, false);
 
@@ -1047,8 +1074,6 @@ static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *ma
 
     result = tex_staging_queue_submit(allocator);
     TEST_EQ("tex_staging_queue_submit_result", result, GPU_ALLOCATOR_RESULT_SUCCESS, false);
-
-    END_TEST_MODULE();
 }
 
 static void test_model_from_gltf() {
@@ -1316,7 +1341,7 @@ static void test_model_from_gltf() {
     };
 
     Model_Allocators_Config model_allocators_config = {};
-    Model_Allocators model_allocators = init_model_allocators(&model_allocators_config);
+    Model_Allocators model_allocators = create_model_allocators(&model_allocators_config);
     
     u32 size = 1024 * 16;
     u8 *model_buffer = malloc_t(size);
@@ -1409,11 +1434,13 @@ static void test_model_from_gltf() {
 
     for(u32 i = 0; i < 4; ++i) {
         string_format(name_buf, "meshes[1].primitives[0].attributes[%u]", i);
-        TEST_EQ(name_buf, meshes[1].primitives[0].attributes[i].n,    attributes0[i].n, false);
+        TEST_EQ(name_buf, meshes[1].primitives[0].attributes[i].n,    attributes0[i].n,    false);
         TEST_EQ(name_buf, meshes[1].primitives[0].attributes[i].type, attributes0[i].type, false);
 
         test_accessor(vertex_allocator, buf, name_buf, &meshes[0].primitives[0].attributes[i].accessor, &attributes0[i].accessor, false);
     }
+
+    destroy_model_allocators(&model_allocators);
 
     END_TEST_MODULE();
 }
