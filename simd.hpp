@@ -90,16 +90,11 @@ inline static void simd_update_flags_u8(u32 count, u8 *flags, u8 with, u8 withou
     __m128i c = _mm_set1_epi8(with);
     __m128i d;
     __m128i e;
-    u16 mask;
-    u32 pc;
     u32 tz;
-    u32 cnt = 0;
-    u32 inc = 0;
-    while(inc < count) {
-        a = _mm_load_si128((__m128i*)(flags + inc));
+    for(u32 i = 0; i < count; i += 16) {
+        a = _mm_load_si128((__m128i*)(flags + i));
         d = _mm_and_si128(a, b);
         d = _mm_cmpeq_epi8(d, c);
-        mask = _mm_movemask_epi8(d);
 
         // Can this be done in fewer instructions? Seems this seems like a few too many...
         e = _mm_set1_epi8(clear);
@@ -108,9 +103,7 @@ inline static void simd_update_flags_u8(u32 count, u8 *flags, u8 with, u8 withou
         e = _mm_set1_epi8(set);
         e = _mm_and_si128(e, d);
         a = _mm_or_si128(a, e);
-        _mm_store_si128((__m128i*)(flags + inc), a);
-
-        inc += 16;
+        _mm_store_si128((__m128i*)(flags + i), a);
     }
     tz = (16 - (count & 15)) & (Max_u32 + (u32)((count & 15) == 0));
     memset(flags + count, 0, tz);
