@@ -10,6 +10,8 @@ struct Glfw {
     GLFWwindow *window;
     u32 width;
     u32 height;
+
+    // @Todo cursor pos
 };
 
 Glfw* get_glfw_instance();
@@ -19,9 +21,9 @@ static void error_callback_glfw(int error, const char *description) {
 }
 
 void init_glfw(); 
-void kill_glfw(Glfw *glfw);
+void kill_glfw();
 
-void poll_and_get_input(Glfw *glfw);
+void glfw_poll_and_get_input();
 
 // inlines
 inline void poll_glfw() {

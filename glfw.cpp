@@ -1,9 +1,9 @@
 #include "glfw.hpp"
 #include "camera.hpp"
 
-static Glfw *s_Glfw;
+static Glfw s_Glfw;
 Glfw* get_glfw_instance() {
-    return s_Glfw;
+    return &s_Glfw;
 }
 
 void mouse_callback(GLFWwindow *window, double x, double y) {
@@ -20,6 +20,15 @@ void mouse_callback(GLFWwindow *window, double x, double y) {
     camera_turn(cam, dx, dy);
 }
 
+void cursor_enter_callback(GLFWwindow* window, int entered)
+{
+    if (entered) {
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    } else {
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    }
+}
+
 void init_glfw() {
     glfwInit();
 
@@ -28,22 +37,20 @@ void init_glfw() {
 
     glfwSetErrorCallback(error_callback_glfw);
 
-    s_Glfw = (Glfw*)malloc_h(sizeof(Glfw), 8);
-
     Glfw *glfw = get_glfw_instance();
     glfw->window = glfwCreateWindow(640, 480, "GLFW Window", NULL, NULL);
     assert(glfw->window && "GLFW Fail To Create Window");
 
     // @Todo window resizing
 
-    glfwSetInputMode(glfw->window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwSetCursorEnterCallback(glfw->window, cursor_enter_callback);
     glfwSetCursorPosCallback(glfw->window, mouse_callback);
 }
 
-void kill_glfw(Glfw *glfw) {
+void kill_glfw() {
+    Glfw *glfw = get_glfw_instance();
     glfwDestroyWindow(glfw->window);
     glfwTerminate();
-    free_h(glfw);
 }
 
 enum InputValues {
@@ -55,8 +62,10 @@ enum InputValues {
     INPUT_JUMP          = GLFW_KEY_SPACE,
 };
 
-void poll_and_get_input(Glfw *glfw) {
+void glfw_poll_and_get_input() {
     glfwPollEvents();
+
+    Glfw *glfw = get_glfw_instance();
 
     int right = 0;
     int forward = 0;
