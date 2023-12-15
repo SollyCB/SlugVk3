@@ -8,6 +8,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED true)
 set(CMAKE_BUILD_PARALLEL_LEVEL 4)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+set(CMAKE_CXX_FLAGS_RELEASE -O2)
+
 option(EXTRA_WARNINGS OFF)
 set(EXTRA_WARNINGS OFF)
 if (EXTRA_WARNINGS)
@@ -54,7 +56,7 @@ if (BUILD_DEBUG)
     add_compile_definitions(DEBUG=true)
 else()
     message("Building RELEASE...\n")
-    set(CMAKE_BUILD_TYPE Release)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo)
     add_compile_definitions(DEBUG=false)
 endif()
 
