@@ -419,7 +419,11 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
 }
 
 static void model_load_gltf_textures(u32 count, Gltf_Texture *gltf_textures, Texture *textures) {
-    Gltf_Texture *gltf_texture = gltf_texture;
+    // Bro wtf are the C compiler spec writers doing!! How is this not a compilation error!!
+    // Gltf_Texture *gltf_texture = gltf_texture;
+
+    Gltf_Texture *gltf_texture = gltf_textures;
+
     for(u32 i = 0; i < count; ++i) {
         // @Todo ktx2 textures for ready to go mipmaps
         textures[i] = {.texture_key = (u32)gltf_texture->source_image, .sampler_key = (u32)gltf_texture->sampler};
@@ -440,12 +444,6 @@ static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, 
         materials[i].flags |= MATERIAL_NORMAL_BIT    & max32_if_true(gltf_material->normal_texture_index             != -1);
         materials[i].flags |= MATERIAL_OCCLUSION_BIT & max32_if_true(gltf_material->occlusion_texture_index          != -1);
         materials[i].flags |= MATERIAL_EMISSIVE_BIT  & max32_if_true(gltf_material->emissive_texture_index           != -1);
-
-        materials[i].flags |= MATERIAL_BASE_TEX_COORD_BIT      & max32_if_true(gltf_material->base_color_tex_coord         != -1);
-        materials[i].flags |= MATERIAL_PBR_TEX_COORD_BIT       & max32_if_true(gltf_material->metallic_roughness_tex_coord != -1);
-        materials[i].flags |= MATERIAL_NORMAL_TEX_COORD_BIT    & max32_if_true(gltf_material->normal_tex_coord             != -1);
-        materials[i].flags |= MATERIAL_OCCLUSION_TEX_COORD_BIT & max32_if_true(gltf_material->occlusion_tex_coord          != -1);
-        materials[i].flags |= MATERIAL_EMISSIVE_TEX_COORD_BIT  & max32_if_true(gltf_material->emissive_tex_coord           != -1);
 
         materials[i].flags |= MATERIAL_OPAQUE_BIT & max32_if_true(gltf_material->alpha_mode == GLTF_ALPHA_MODE_OPAQUE);
         materials[i].flags |= MATERIAL_MASK_BIT   & max32_if_true(gltf_material->alpha_mode == GLTF_ALPHA_MODE_MASK);
@@ -704,9 +702,7 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
                            model_buffer + buffer_offset_primitives, model_buffer + buffer_offset_weights);
 
     // Each texture/buffer view becomes an allocation.
-    // @Note One day I will join buffer views together, so that an allocation
-    // is the data referenced by a primitive.
-
+    // @Note One day I will join buffer views together, so that an allocation is the data referenced by a primitive.
 
                                     /* Buffer View Allocations */
     u32  buffer_view_count          = gltf_buffer_view_get_count(&gltf);
@@ -973,8 +969,86 @@ static void test_accessor(Gpu_Allocator *allocator, u8 *buf, char *name, Accesso
     END_TEST_MODULE();
 }
 
-static void test_material(Gpu_Tex_Allocator *allocator, Material *material1, Material *material2) {
-    // @TODO CURRENT TASK!!
+static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *material0, Material *material1) {
+    BEGIN_TEST_MODULE(name, false, false);
+
+    TEST_EQ(name, material0->flags, material1->flags, false);
+
+    for(u32 i = 0; i < 4; ++i) {
+        TEST_FEQ(name, material0->pbr.base_color_factor[i], material1->pbr.base_color_factor[i], false);
+    }
+    for(u32 i = 0; i < 3; ++i) {
+        TEST_FEQ(name, material0->emissive.factor[i], material1->emissive.factor[i], false);
+    }
+
+    TEST_FEQ(name, material0->pbr.metallic_factor,  material1->pbr.metallic_factor,  false);
+    TEST_FEQ(name, material0->pbr.roughness_factor, material1->pbr.roughness_factor, false);
+    TEST_FEQ(name, material0->normal.scale,         material1->normal.scale,         false);
+    TEST_FEQ(name, material0->occlusion.strength,   material1->occlusion.strength,   false);
+
+    Gpu_Allocator_Result result = tex_staging_queue_begin(allocator);
+    TEST_EQ("tex_staging_queue_begin_result", result, GPU_ALLOCATOR_RESULT_SUCCESS, false);
+
+    if (material0->flags & MATERIAL_BASE_BIT) {
+        TEST_EQ(name, material0->pbr.base_color_tex_coord,           material1->pbr.base_color_tex_coord,           false);
+        TEST_EQ(name, material0->pbr.base_color_texture.texture_key, material1->pbr.base_color_texture.texture_key, false);
+
+        result = tex_staging_queue_add(allocator, material0->pbr.base_color_texture.texture_key, true);
+
+        if (result != GPU_ALLOCATOR_RESULT_SUCCESS)
+            println("Failed to queue base texture");
+        // else
+        //     println("Queued base texture");
+    }
+    if (material0->flags & MATERIAL_PBR_BIT) {
+        TEST_EQ(name, material0->pbr.metallic_roughness_tex_coord,           material1->pbr.metallic_roughness_tex_coord,           false);
+        TEST_EQ(name, material0->pbr.metallic_roughness_texture.texture_key, material1->pbr.metallic_roughness_texture.texture_key, false);
+
+        result = tex_staging_queue_add(allocator, material0->pbr.metallic_roughness_texture.texture_key, true);
+
+        if (result != GPU_ALLOCATOR_RESULT_SUCCESS)
+            println("Failed to queue metallic roughness texture");
+        // else
+        //     println("Queued metallic roughness texture");
+    }
+    if (material0->flags & MATERIAL_NORMAL_BIT) {
+        TEST_EQ(name, material0->normal.tex_coord,           material1->normal.tex_coord,                 false);
+        TEST_EQ(name, material0->normal.texture.texture_key, material1->normal.texture.texture_key, false);
+
+        result = tex_staging_queue_add(allocator, material0->normal.texture.texture_key, true);
+
+        if (result != GPU_ALLOCATOR_RESULT_SUCCESS)
+            println("Failed to queue normal texture");
+        // else
+        //     println("Queued normal texture");
+    }
+    if (material0->flags & MATERIAL_OCCLUSION_BIT) {
+        TEST_EQ(name, material0->occlusion.tex_coord,           material1->occlusion.tex_coord,   false);
+        TEST_EQ(name, material0->occlusion.texture.texture_key, material1->occlusion.texture.texture_key, false);
+
+        result = tex_staging_queue_add(allocator, material0->occlusion.texture.texture_key, true);
+
+        if (result != GPU_ALLOCATOR_RESULT_SUCCESS)
+            println("Failed to queue occlusion texture");
+        // else
+        //     println("Queued occlusion texture");
+    }
+    if (material0->flags & MATERIAL_EMISSIVE_BIT) {
+        TEST_EQ(name, material0->emissive.tex_coord,           material1->emissive.tex_coord,   false);
+        TEST_EQ(name, material0->emissive.texture.texture_key, material1->emissive.texture.texture_key, false);
+
+        result = tex_staging_queue_add(allocator, material0->emissive.texture.texture_key, true);
+
+        if (result != GPU_ALLOCATOR_RESULT_SUCCESS)
+            println("Failed to queue emissive texture");
+        // else
+        //     println("Queued emissive texture");
+    }
+
+    result = tex_staging_queue_submit(allocator);
+    TEST_EQ("tex_staging_queue_submit_result", result, GPU_ALLOCATOR_RESULT_SUCCESS, false);
+
+    END_TEST_MODULE();
 }
 
 static void test_model_from_gltf() {
@@ -1154,17 +1228,17 @@ static void test_model_from_gltf() {
     Mesh_Primitive_Attribute targets1[4] = {
         {
             .n = 0,
-            .accessor = accessors[4],
-            .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL,
+            .accessor = accessors[5],
+            .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION,
         },
         {
             .n = 1,
-            .accessor = accessors[5],
+            .accessor = accessors[4],
             .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_JOINTS,
         },
         {
             .n = 1,
-            .accessor = accessors[4],
+            .accessor = accessors[5],
             .type = MESH_PRIMITIVE_ATTRIBUTE_TYPE_WEIGHTS,
         },
     };
@@ -1194,6 +1268,7 @@ static void test_model_from_gltf() {
 
     Material materials[2] = {
         {
+            .flags = MATERIAL_BASE_BIT | MATERIAL_PBR_BIT | MATERIAL_NORMAL_BIT | MATERIAL_OPAQUE_BIT,
             .pbr = {
                 .base_color_factor = {0.5,0.5,0.5,1.0},
                 .metallic_factor = 1,
@@ -1211,6 +1286,8 @@ static void test_model_from_gltf() {
             .emissive = {.factor = {0.2, 0.1, 0.0}},
         },
         {
+            .flags = MATERIAL_BASE_BIT      | MATERIAL_PBR_BIT      | MATERIAL_NORMAL_BIT |
+                     MATERIAL_OCCLUSION_BIT | MATERIAL_EMISSIVE_BIT | MATERIAL_OPAQUE_BIT,
             .pbr = {
                 .base_color_factor = {2.5,4.5,2.5,1.0},
                 .metallic_factor = 5,
@@ -1251,8 +1328,9 @@ static void test_model_from_gltf() {
 
     u8 *buf = (u8*)file_read_bin_temp_large("test/buf.bin", 10'000);
 
-    Gpu_Allocator *index_allocator  = &model_allocators.index;
-    Gpu_Allocator *vertex_allocator = &model_allocators.vertex;
+    Gpu_Allocator     *index_allocator   = &model_allocators.index;
+    Gpu_Allocator     *vertex_allocator  = &model_allocators.vertex;
+    Gpu_Tex_Allocator *texture_allocator = &model_allocators.tex;
 
     BEGIN_TEST_MODULE("Asset_Test_Meshes", false, false);
 
@@ -1260,9 +1338,14 @@ static void test_model_from_gltf() {
 
     Mesh *meshes = model.meshes;
 
-    // Mesh[0]
+    // Meshes[0]
     test_accessor(index_allocator, buf, name_buf, &meshes[0].primitives[0].indices, &accessors[0], true);
     test_accessor(index_allocator, buf, name_buf, &meshes[0].primitives[1].indices, &accessors[1], true);
+
+    string_format(name_buf, "meshes[0].primitives[0].material");
+    test_material(texture_allocator, name_buf, &meshes[0].primitives[0].material, &materials[0]);
+    string_format(name_buf, "meshes[0].primitives[1].material");
+    test_material(texture_allocator, name_buf, &meshes[0].primitives[1].material, &materials[1]);
 
     for(u32 i = 0; i < 4; ++i) {
         string_format(name_buf, "meshes[0].primitives[0].attributes[%u]", i);
@@ -1279,385 +1362,60 @@ static void test_model_from_gltf() {
         test_accessor(vertex_allocator, buf, name_buf, &meshes[0].primitives[1].attributes[i].accessor, &attributes1[i].accessor, false);
     }
 
-    END_TEST_MODULE();
-}
-#if 0
-static void accessor_tests(char *name, Accessor *accessor1, u32 idx, char *prim_buf) {    
-    float min[16] = {
-        -0.9999089241027832,
-        -4.371139894487897e-8,
-        -0.9999366402626038,
-        0,
-        -4.3707416352845037e-8,
-        1,
-        -4.37086278282095e-8,
-        0,
-        -0.9996265172958374,
-        0,
-        -0.9999089241027832,
-        0,
-        -1.189831018447876,
-        -0.45450031757354736,
-        -1.058603048324585,
-        1,
-    };
-    float max[16] = {
-        0.9971418380737304,
-        -4.371139894487897e-8,
-        0.9996265172958374,
-        0,
-        4.3586464215650273e-8,
-        1,
-        4.3695074225524884e-8,
-        0,
-        0.9999366402626038,
-        0,
-        0.9971418380737304,
-        0,
-        1.1374080181121828,
-        0.44450080394744873,
-        1.0739599466323853,
-        1
-    };
+    // Targets
+    for(u32 i = 0; i < 3; ++i) {
+        string_format(name_buf, "meshes[0].primitives[1].targets[0].attributes[%u]", i);
+        TEST_EQ(name_buf, meshes[0].primitives[1].targets[0].attributes[i].n,    targets0[i].n, false);
+        TEST_EQ(name_buf, meshes[0].primitives[1].targets[0].attributes[i].type, targets0[i].type, false);
 
-    Accessor_Max_Min max_min[2];
-    max_min[0].max[0] = 4212;
-    max_min[0].min[0] = 0;
-    for(u32 i = 0; i < 16; ++i) {
-        max_min[1].max[i] = max[i];
-        max_min[1].min[i] = min[i];
+        test_accessor(vertex_allocator, buf, name_buf, &meshes[0].primitives[1].targets[0].attributes[i].accessor, &targets0[i].accessor, false);
+    }
+    #if 1
+    for(u32 i = 0; i < 3; ++i) {
+        string_format(name_buf, "meshes[0].primitives[1].targets[1].attributes[%u]", i);
+        TEST_EQ(name_buf, meshes[0].primitives[1].targets[1].attributes[i].n,    targets1[i].n, false);
+        TEST_EQ(name_buf, meshes[0].primitives[1].targets[1].attributes[i].type, targets1[i].type, false);
+
+        test_accessor(vertex_allocator, buf, name_buf, &meshes[0].primitives[1].targets[1].attributes[i].accessor, &targets1[i].accessor, false);
+    }
+    #endif
+
+    // Meshes[1]
+    test_accessor(index_allocator, buf, name_buf, &meshes[1].primitives[0].indices, &accessors[1], true);
+    test_accessor(index_allocator, buf, name_buf, &meshes[1].primitives[1].indices, &accessors[0], true);
+    test_accessor(index_allocator, buf, name_buf, &meshes[1].primitives[2].indices, &accessors[1], true);
+
+    string_format(name_buf, "meshes[1].primitives[0].material");
+    test_material(texture_allocator, name_buf, &meshes[1].primitives[0].material, &materials[0]);
+    string_format(name_buf, "meshes[1].primitives[1].material");
+    test_material(texture_allocator, name_buf, &meshes[1].primitives[1].material, &materials[1]);
+    string_format(name_buf, "meshes[1].primitives[2].material");
+    test_material(texture_allocator, name_buf, &meshes[1].primitives[2].material, &materials[0]);
+
+    for(u32 i = 0; i < 4; ++i) {
+        string_format(name_buf, "meshes[1].primitives[0].attributes[%u]", i);
+        TEST_EQ(name_buf, meshes[1].primitives[0].attributes[i].n,    attributes0[i].n, false);
+        TEST_EQ(name_buf, meshes[1].primitives[0].attributes[i].type, attributes0[i].type, false);
+
+        test_accessor(vertex_allocator, buf, name_buf, &meshes[0].primitives[0].attributes[i].accessor, &attributes0[i].accessor, false);
+    }
+    for(u32 i = 0; i < 4; ++i) {
+        string_format(name_buf, "meshes[1].primitives[1].attributes[%u]", i);
+        TEST_EQ(name_buf, meshes[1].primitives[1].attributes[i].n,    attributes1[i].n, false);
+        TEST_EQ(name_buf, meshes[1].primitives[1].attributes[i].type, attributes1[i].type, false);
+
+        test_accessor(vertex_allocator, buf, name_buf, &meshes[1].primitives[1].attributes[i].accessor, &attributes1[i].accessor, false);
     }
 
-    Accessor_Sparse sparse[2] = {
-        {
-            .indices_component_type = ACCESSOR_COMPONENT_TYPE_U16_BIT,
-            .count = 50,
-            .indices_allocation_key = 0,
-            .values_allocation_key = 2,
-            .indices_byte_offset = 0,
-            .values_byte_offset = 192,
-        },
-        {
-            .indices_component_type = ACCESSOR_COMPONENT_TYPE_U16_BIT,
-            .count = 10,
-            .indices_allocation_key = 0,
-            .values_allocation_key = 2,
-            .indices_byte_offset = 50,
-            .values_byte_offset = 0,
-        }
-    };
+    for(u32 i = 0; i < 4; ++i) {
+        string_format(name_buf, "meshes[1].primitives[0].attributes[%u]", i);
+        TEST_EQ(name_buf, meshes[1].primitives[0].attributes[i].n,    attributes0[i].n, false);
+        TEST_EQ(name_buf, meshes[1].primitives[0].attributes[i].type, attributes0[i].type, false);
 
-    Accessor accessors[3] = {
-        {
-            .flags = ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT,
-            .allocation_key = 0,
-            .byte_offset = 0,
-            .count = 25,
-            .max_min = &max_min[0]
-        },
-        {
-            .flags = ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT,
-            .allocation_key = 0,
-            .byte_offset = 50,
-            .count = 25,
-            .max_min = &max_min[0]
-        },
-        {
-            .flags = ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT,
-            .allocation_key = 1,
-            .byte_offset = 0,
-            .count = 16,
-            .max_min = &max_min[1]
-        },
-        {
-            .flags = ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT,
-            .allocation_key = 1,
-            .byte_offset = 1024,
-            .count = 16,
-            .max_min = &max_min[1]
-        },
-        {
-            .flags = ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT,
-            .allocation_key = 2,
-            .byte_offset = 0,
-            .count = 16,
-            .sparse = &sparse,
-        },
-        {
-            .flags = ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT,
-            .allocation_key = 2,
-            .byte_offset = 192,
-            .count = 16,
-            .sparse = &sparse,
-        },
-    };
-
-    BEGIN_TEST_MODULE(name, false, false);
-
-    Accessor *accessor2 = &accessors[idx];
-
-    TEST_EQ(prim_buf, accessor1->flags         , accessor2->flags         , false);
-    TEST_EQ(prim_buf, accessor1->allocation_key, accessor2->allocation_key, false);
-    TEST_EQ(prim_buf, accessor1->byte_offset   , accessor2->byte_offset   , false);
-    TEST_EQ(prim_buf, accessor1->count         , accessor2->count         , false);
-
-    switch(accessor2->allocation_key) {
-    case 1: 
-        TEST_FEQ(prim_buf, accessor1->max_min->max[0], accessor2->max_min->max[0], false);
-        TEST_FEQ(prim_buf, accessor1->max_min->min[0], accessor2->max_min->min[0], false);
-
-        break;
-    case 2:
-        for(u32 k = 0; k < 16; ++k) {
-            TEST_FEQ(prim_buf, accessor1->max_min->max[k], accessor2->max_min->max[k], false);
-            TEST_FEQ(prim_buf, accessor1->max_min->min[k], accessor2->max_min->min[k], false);
-        }
-
-        break;
-    case 3:
-        TEST_EQ(prim_buf, accessor1->sparse->count, accessor2->sparse->count,  false);
-        TEST_EQ(prim_buf, accessor1->sparse->indices_component_type, accessor2->sparse->indices_component_type, false);
-
-        TEST_EQ(prim_buf, accessor1->sparse->values_allocation_key,  accessor2->sparse->values_allocation_key,  false);
-        TEST_EQ(prim_buf, accessor1->sparse->indices_allocation_key, accessor2->sparse->indices_allocation_key, false);
-        TEST_EQ(prim_buf, accessor1->sparse->values_byte_offset,     accessor2->sparse->values_byte_offset,     false);
-        TEST_EQ(prim_buf, accessor1->sparse->indices_byte_offset,    accessor2->sparse->indices_byte_offset,    false);
-
-        break;
-    } // switch allocation key
+        test_accessor(vertex_allocator, buf, name_buf, &meshes[0].primitives[0].attributes[i].accessor, &attributes0[i].accessor, false);
+    }
 
     END_TEST_MODULE();
 }
-
-void test_model_from_gltf() {
-
-    Model_Allocators_Config model_allocators_config = {};
-    Model_Allocators model_allocators = init_model_allocators(&model_allocators_config);
-    
-    u32 size = 1024 * 16;
-    u8 *model_buffer = malloc_t(size);
-
-    u64 req_size;
-    String model_dir  = cstr_to_string("test/");
-    String model_name = cstr_to_string("test_gltf2.gltf");
-    Model  model      = model_from_gltf(&model_allocators, &model_dir, &model_name, size, model_buffer, &req_size);
-
-    float weights[][2] = {
-        {2, 1},
-        {1, 2},
-    };
-
-    Material materials[2] = {
-        {
-            .pbr = {
-                .base_color_factor = {0.5,0.5,0.5,1.0},
-                .metallic_factor = 1,
-                .roughness_factor = 1,
-                .base_color_tex_coord = 1,
-                .metallic_roughness_tex_coord = 0,
-                .base_color_texture = {.texture_key = 1},
-                .metallic_roughness_texture = {.texture_key = 2},
-            },
-            .normal = {
-                .scale = 2,
-                .texture = {.texture_key = 1},
-                .tex_coord = 1,
-            },
-            .emissive = {.factor = {0.2, 0.1, 0.0}},
-        },
-        {
-            .pbr = {
-                .base_color_factor = {2.5,4.5,2.5,1.0},
-                .metallic_factor = 5,
-                .roughness_factor = 6,
-                .base_color_tex_coord = 0,
-                .metallic_roughness_tex_coord = 1,
-                .base_color_texture = {.texture_key = 2},
-                .metallic_roughness_texture = {.texture_key = 1},
-            },
-            .normal = {
-                .scale = 1,
-                .texture = {.texture_key = 0},
-                .tex_coord = 1,
-            },
-            .occlusion = {
-                .strength = 0.679,
-                .texture = {.texture_key = 0},
-                .tex_coord = 1,
-            },
-            .emissive = {
-                .factor = {0.2, 0.1, 0.0},
-                .texture = {.texture_key = 2},
-                .tex_coord = 0,
-            },
-        },
-    };
-
-    Mesh_Primitive_Attribute_Type attrib_types[] = {
-        MESH_PRIMITIVE_ATTRIBUTE_TYPE_NORMAL,
-        MESH_PRIMITIVE_ATTRIBUTE_TYPE_POSITION,
-        MESH_PRIMITIVE_ATTRIBUTE_TYPE_TANGENT,
-        MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS,
-    };
-
-    char weight_buf[128];
-    char mesh_buf[128];
-    char prim_buf[128];
-    char attrib_buf[128];
-    char accessor_buf[128];
-
-    u32 mat_idx      = 0;
-    u32 index_idx    = 0;
-    u32 accessor_idx = 0;
-    u32 weights_idx  = 0;
-    u32 attribute_idx = 0;
-
-    Accessor *accessor1;
-    Accessor *accessor2;
-    Material *material1;
-    Material *material2;
-    Mesh_Primitive *prim;
-
-    BEGIN_TEST_MODULE("Model_From_Gltf", false, false);
-
-    for(u32 i = 0; i < model.mesh_count; ++i) {
-        string_format(mesh_buf, "meshes[%u]", i);
-
-        for(u32 j = 0; j < model.meshes[i].weight_count; ++j) {
-            string_format(weight_buf, "%s.weights[%u]", mesh_buf, j);
-            TEST_FEQ(weight_buf, model.meshes[i].weights[j], weights[weights_idx][j], false);
-        }
-        weights_idx++;
-        weights_idx %= 2;
-
-        for(u32 j = 0; j < model.meshes[i].primitive_count; ++j) {
-            string_format(prim_buf, "%s.primitives[%u]", mesh_buf, j);
-
-            prim = &model.meshes[i].primitives[j];
-            switch(i) {
-            case 0:
-                accessor1 = &prim->indices;
-
-                string_format(accessor_buf, "Accessor_Tests_Mesh_%u_Primitive_%u", i, j);
-                accessor_tests(accessor_buf, accessor1, index_idx, prim_buf);
-
-                material1 = &prim->material;
-                material2 = &materials[mat_idx];
-
-                TEST_EQ(prim_buf, material1->pbr.base_color_factor[0], material2->pbr.base_color_factor[0], false);
-                TEST_EQ(prim_buf, material1->pbr.base_color_factor[1], material2->pbr.base_color_factor[1], false);
-                TEST_EQ(prim_buf, material1->pbr.base_color_factor[2], material2->pbr.base_color_factor[2], false);
-                TEST_EQ(prim_buf, material1->pbr.base_color_factor[3], material2->pbr.base_color_factor[3], false);
-
-                TEST_EQ(prim_buf, material1->pbr.metallic_factor,  material2->pbr.metallic_factor, false);
-                TEST_EQ(prim_buf, material1->pbr.roughness_factor, material2->pbr.roughness_factor, false);
-
-                TEST_EQ(prim_buf, material1->pbr.base_color_tex_coord, material2->pbr.base_color_tex_coord, false);
-                TEST_EQ(prim_buf, material1->pbr.metallic_roughness_tex_coord, material2->pbr.metallic_roughness_tex_coord, false);
-
-                for(u32 k = 0; k < prim->attribute_count; ++k) {
-                    string_format(attrib_buf, "%s.attributes[%u]", prim_buf, k);
-
-                    TEST_EQ(attrib_buf, prim->attributes[k].n, 0, false);
-                    TEST_EQ(attrib_buf, prim->attributes[k].type, attrib_types[k], false);
-
-                    accessor_tests(accessor_buf, &prim->attributes[k].accessor, attribute_idx % 3, attrib_buf);
-                    attribute_idx++;
-                }
-
-                if (j == 1) {
-                    for(u32 k = 0; k < prim->targets[0].attribute_count; ++k) {
-                        string_format(attrib_buf, "%s.targets[0].attributes[%u]", prim_buf, k);
-
-                        TEST_EQ(attrib_buf, prim->targets[0].attributes[k].n, 0, false);
-                        TEST_EQ(attrib_buf, prim->targets[0].attributes[k].type, attrib_types[k], false);
-
-                        accessor_tests(accessor_buf, &prim->targets[0].attributes[k].accessor, attribute_idx % 3, attrib_buf);
-                        attribute_idx++;
-                    }
-
-                    for(u32 k = 0; k < prim->targets[1].attribute_count; ++k) {
-                        string_format(attrib_buf, "%s.targets[1].attributes[%u]", prim_buf, k);
-
-                        TEST_EQ(attrib_buf, prim->targets[0].attributes[k].n, 0, false);
-                        TEST_EQ(attrib_buf, prim->targets[0].attributes[k].type, attrib_types[k], false);
-
-                        accessor_tests(accessor_buf, &prim->targets[1].attributes[k].accessor, attribute_idx % 3, attrib_buf);
-                        attribute_idx++;
-                    }
-                }
-
-                break;
-            case 1:
-                accessor1 = &prim->indices;
-
-                string_format(accessor_buf, "Accessor_Tests_Mesh_%u_Primitive_%u", i, j);
-                accessor_tests(accessor_buf, accessor1, index_idx, prim_buf);
-
-                material1 = &prim->material;
-                material2 = &materials[mat_idx];
-
-                TEST_EQ(prim_buf, material1->pbr.base_color_factor[0], material2->pbr.base_color_factor[0], false);
-                TEST_EQ(prim_buf, material1->pbr.base_color_factor[1], material2->pbr.base_color_factor[1], false);
-                TEST_EQ(prim_buf, material1->pbr.base_color_factor[2], material2->pbr.base_color_factor[2], false);
-                TEST_EQ(prim_buf, material1->pbr.base_color_factor[3], material2->pbr.base_color_factor[3], false);
-
-                TEST_EQ(prim_buf, material1->pbr.metallic_factor,  material2->pbr.metallic_factor, false);
-                TEST_EQ(prim_buf, material1->pbr.roughness_factor, material2->pbr.roughness_factor, false);
-
-                TEST_EQ(prim_buf, material1->pbr.base_color_tex_coord, material2->pbr.base_color_tex_coord, false);
-                TEST_EQ(prim_buf, material1->pbr.metallic_roughness_tex_coord, material2->pbr.metallic_roughness_tex_coord, false);
-
-                for(u32 k = 0; k < prim->attribute_count; ++k) {
-                    string_format(attrib_buf, "%s.attributes[%u]", prim_buf, k);
-
-                    if (attrib_types[k] == MESH_PRIMITIVE_ATTRIBUTE_TYPE_TEX_COORDS && j == 1) {
-                        TEST_EQ(attrib_buf, prim->attributes[k].n, 1, false);
-                    } else {
-                        TEST_EQ(attrib_buf, prim->attributes[k].n, 0, false);
-                    }
-
-                    TEST_EQ(attrib_buf, prim->attributes[k].type, attrib_types[k], false);
-
-                    accessor_tests(accessor_buf, &prim->attributes[k].accessor, attribute_idx % 3, attrib_buf);
-                    attribute_idx++;
-                }
-
-                if (j == 1) {
-                    for(u32 k = 0; k < prim->targets[0].attribute_count; ++k) {
-                        string_format(attrib_buf, "%s.targets[0].attributes[%u]", prim_buf, k);
-
-                        TEST_EQ(attrib_buf, prim->targets[0].attributes[k].n, 0, false);
-                        TEST_EQ(attrib_buf, prim->targets[0].attributes[k].type, attrib_types[k], false);
-
-                        accessor_tests(accessor_buf, &prim->targets[0].attributes[k].accessor, attribute_idx % 3, attrib_buf);
-                        attribute_idx++;
-                    }
-
-                    for(u32 k = 0; k < prim->targets[1].attribute_count; ++k) {
-                        string_format(attrib_buf, "%s.targets[1].attributes[%u]", prim_buf, k);
-
-                        TEST_EQ(attrib_buf, prim->targets[0].attributes[k].n, 0, false);
-                        TEST_EQ(attrib_buf, prim->targets[0].attributes[k].type, attrib_types[k], false);
-
-                        accessor_tests(accessor_buf, &prim->targets[1].attributes[k].accessor, attribute_idx % 3, attrib_buf);
-                        attribute_idx++;
-                    }
-                }
-
-                break;
-            } // switch mesh index
-
-            index_idx++;
-            mat_idx++;
-            index_idx %= 3;
-            mat_idx %= 2;
-        }
-    }
-
-    
-    END_TEST_MODULE()
-}
-#endif
 
 #endif // if TEST

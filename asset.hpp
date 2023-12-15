@@ -120,15 +120,10 @@ enum Material_Flag_Bits {
     MATERIAL_NORMAL_BIT              = 0x0004,
     MATERIAL_OCCLUSION_BIT           = 0x0008,
     MATERIAL_EMISSIVE_BIT            = 0x0010,
-    MATERIAL_BASE_TEX_COORD_BIT      = 0x0020,
-    MATERIAL_PBR_TEX_COORD_BIT       = 0x0040,
-    MATERIAL_NORMAL_TEX_COORD_BIT    = 0x0080,
-    MATERIAL_OCCLUSION_TEX_COORD_BIT = 0x0100,
-    MATERIAL_EMISSIVE_TEX_COORD_BIT  = 0x0200,
-    MATERIAL_OPAQUE_BIT              = 0x0400,
-    MATERIAL_MASK_BIT                = 0x0800,
-    MATERIAL_BLEND_BIT               = 0x1000,
-    MATERIAL_DOUBLE_SIDED_BIT        = 0x2000,
+    MATERIAL_OPAQUE_BIT              = 0x0020,
+    MATERIAL_MASK_BIT                = 0x0040,
+    MATERIAL_BLEND_BIT               = 0x0080,
+    MATERIAL_DOUBLE_SIDED_BIT        = 0x0100,
 };
 typedef u32 Material_Flags;
 
