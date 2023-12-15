@@ -46,6 +46,7 @@ void end_tests() {
     u32 broken_count = 0;
     u32 fail_count = 0;
 
+    // Ofc these should just be separate arrays on the suite. But it does not matter for now. Bigger fish.
     for(u32 i = 0; i < test->modules.len; ++i) {
         switch(test->modules.data[i].result) {
         case TEST_RESULT_BROKEN:
