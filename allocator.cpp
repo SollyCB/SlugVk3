@@ -19,7 +19,6 @@ void init_allocators() {
     println("\nInitializing Allocators:");
     println("    Initial Capacity (Heap Allocator): %u", DEFAULT_CAP_HEAP_ALLOCATOR);
     println("    Initial Capacity (Temp Allocator): %u", DEFAULT_CAP_TEMP_ALLOCATOR);
-    println("");
     init_heap_allocator(DEFAULT_CAP_HEAP_ALLOCATOR);
     init_temp_allocator(DEFAULT_CAP_TEMP_ALLOCATOR);
 }
