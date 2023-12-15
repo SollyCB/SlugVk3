@@ -2333,7 +2333,7 @@ static void test_images(Gltf_Image *images) {
     image = (Gltf_Image*)((u8*)image + image->stride);
     TEST_EQ("images[1].jpeg", image->jpeg, 1, false);
     TEST_EQ("images[1].bufferView", image->buffer_view, 14, false);
-    TEST_EQ("images[1].uri", image->uri, nullptr, false);
+    TEST_PTREQ("images[1].uri", image->uri, nullptr, false);
 
     image = (Gltf_Image*)((u8*)image + image->stride);
     TEST_STREQ("images[2].uri", image->uri, "duck_but_better.jpeg", false);
