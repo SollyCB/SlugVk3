@@ -26,6 +26,7 @@ int main() {
     run_tests();
 #endif
 
+    #if 1
     init_window(gpu, glfw);
     Window *window = get_window_instance();
 
@@ -46,25 +47,28 @@ int main() {
     present_info.pResults         = &present_result;
 
     while(!glfwWindowShouldClose(glfw->window)) {
-        vkAcquireNextImageKHR(gpu->device, window->swapchain, 10e9, NULL, acquire_image_fence, &present_image_index);
+        // vkAcquireNextImageKHR(gpu->device, window->swapchain, 10e9, NULL, acquire_image_fence, &present_image_index);
 
-        poll_and_get_input(glfw);
+        glfw_poll_and_get_input();
 
-        wait_and_reset_fence(acquire_image_fence);
+        // wait_and_reset_fence(acquire_image_fence);
 
-        vkQueuePresentKHR(gpu->graphics_queue, &present_info);
+        // vkQueuePresentKHR(gpu->graphics_queue, &present_info);
 
         zero_temp(); // Empty temp allocator at the end of the frame
         g_frame_index = (g_frame_index + 1) & 1;
     }
+
+    // @Todo Wait for queue completions before destroy resources.
 
     destroy_fence(acquire_image_fence);
     destroy_semaphore(acquire_image_semaphore);
 
     kill_assets();
     kill_window(gpu, window);
+    #endif
     kill_gpu(gpu);
-    kill_glfw(glfw);
+    kill_glfw();
 
     kill_allocators();
     return 0;
