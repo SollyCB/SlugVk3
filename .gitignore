@@ -18,3 +18,5 @@ external/glfw-win64-bin/build/examples/
 external/glfw-win64-bin/build/tests/
 
 touch_images.sh
+.ignore
+.project.gf
