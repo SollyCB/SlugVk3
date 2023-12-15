@@ -11,7 +11,17 @@
 #include "shader.hpp"
 #include "assert.h"
 
-#define ALLOCATOR_MEMORY_FOOTPRINT 0
+#define ALLOCATOR_INFO 0
+#if ALLOCATOR_INFO
+
+    #define ALLOCATOR_MEMORY_FOOTPRINT 0
+    #define TEX_ALLOCATOR_INFO 1
+
+    #if TEX_ALLOCATOR_INFO
+        #define TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO 1
+    #endif
+
+#endif
 
 // Some arbitrarily large number for allocating temp storage for descriptor sets.
 static const u32 DESCRIPTOR_SET_COUNT = 128;
@@ -2599,10 +2609,12 @@ Gpu_Allocator_Result staging_queue_begin(Gpu_Allocator *alloc) {
         fclose(alloc->disk);
         alloc->disk = NULL;
     }
+
     // '.to_stage_count' set to max by queue submission, indicating it
     // is safe to use again.
     if (alloc->to_stage_count != Max_u32)
         return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
+
     alloc->to_stage_count = 0;
     alloc->staging_queue_byte_count = 0;
     return GPU_ALLOCATOR_RESULT_SUCCESS;
@@ -3303,6 +3315,15 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bo
 
     // If the allocation is already uploaded or marked to be uploaded, early return.
     if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT) {
+
+        #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+        if (states[idx] & ALLOCATION_STATE_STAGED_BIT) {
+            println("Tex Allocator Staging Queue: Queued cached allocation %s", allocations[idx].file_name.str);
+        } else {
+            println("Tex Allocator Staging Queue: Uncached allocation %s is already queued", allocations[idx].file_name.str);
+        }
+        #endif
+
         adjust_allocation_weights(&w_args);
         return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
@@ -3310,16 +3331,26 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bo
     // Allocations' offsets must be aligned to their bit representation. See implementation
     // information (grep '~MAID').
     u64 img_size = allocations[idx].width * allocations[idx].height * 4;
-    u64 bit_align_size = align(img_size, alloc->stage_bit_granularity);
+    u64 bit_aligned_size = align(img_size, alloc->stage_bit_granularity);
 
-    if (bit_align_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
+    if (bit_aligned_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
+
+        #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+        println("Tex Allocator Staging Queue: Failed to queue uncached allocation %s, queued bytes: %u, queue cap: %u, allocation aligned size: %u",
+                allocations[idx].file_name.str, alloc->staging_queue_byte_count, alloc->staging_queue_byte_cap, bit_aligned_size);
+        #endif
+
         states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
     states[idx]                     |= ALLOCATION_STATE_TO_STAGE_BIT;
-    alloc->staging_queue_byte_count += bit_align_size;
+    alloc->staging_queue_byte_count += bit_aligned_size;
     alloc->to_stage_count++;
+
+    #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+    println("Tex Allocator Staging Queue: Queued uncached allocation %s, queued bytes: %u, allocation aligned size: %u", allocations[idx].file_name.str, alloc->staging_queue_byte_count, bit_aligned_size);
+    #endif
 
     // Only adjust weights if the queue was successful, otherwise retries to add an allocation to the
     // queue will make the weights inaccurate.
@@ -3350,8 +3381,17 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     // already cached, and we need not do anything.
     if (alloc->to_stage_count == 0) {
         alloc->to_stage_count = Max_u32;
+
+        #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+        println("Tex Allocator Staging Queue: All allocations cached on queue submission");
+        #endif
+
         return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
+
+    #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+    println("Tex Allocator Staging Queue: Beginning queue submission, %u uncached allocations in queue", alloc->to_stage_count);
+    #endif
 
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
     Gpu_Tex_Allocation  *allocations   = alloc->allocations;
@@ -3416,11 +3456,24 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
                 // @Todo This should be implemented as simd_update_flags_u8(..) but with the ability
                 // to start from an offset. Doing this as a loop over individual u8s is very very
                 // lame.
-                for(u32 j = i; j < indices_count; ++j)
+                u32 j;
+                for(j = i; j < indices_count; ++j) {
                     states[indices[j]] &= ~ALLOCATION_STATE_STAGED_BIT;
+                }
+
+                #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+                println("Tex Allocator Staging Queue: Evicted %u allocations from staging buffer", j);
+                #endif
+
                 goto free_block_found; // jump over early return
             }
         }
+
+        #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+        // @Todo Should add a thing to fetch the actual free space in the free block to judge fragmentation
+        println("Tex Allocator Staging Queue: Insufficient space in staging buffer for queue submission");
+        #endif
+
         // Restore the masks to before allocations were marked as free.
         memcpy(masks, mask_copies, sizeof(u64) * mask_count);
         return GPU_ALLOCATOR_RESULT_STAGE_FULL; // Too many allocations waiting to draw
@@ -3455,6 +3508,10 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     // Get the final list of allocations to stage.
     indices_count = simd_find_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_STAGE_BIT, 0x00, indices);
 
+    #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+    println("Tex Allocator Staging Queue: Added %u allocations to submission queue (pre-emptive cache)", indices_count - alloc->to_stage_count);
+    #endif
+
     // Loop vars
     u64   image_size;
     Image image;
@@ -3471,6 +3528,10 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
         assert(stage_offset + align(image_size, g) <= alloc->stage_cap && "Allocator Stage Overflow");
         memcpy(stage_ptr + stage_offset, image.data, image_size);
 
+        #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+        println("Tex Allocator Staging Queue: Staged image %s, offset: %u", allocations[idx].file_name.str, stage_offset);
+        #endif
+
         allocations[idx].stage_offset = stage_offset;
         stage_offset += align(image_size, g);
 
@@ -3478,6 +3539,10 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
         // look.
         free_image(&image);
     }
+
+    #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
+    println("Tex Allocator Staging Queue: %u allocations uploaded to staging buffer", indices_count);
+    #endif
 
     // Set all TO_STAGE flagged allocations to STAGED and clear TO_STAGE bit.
     simd_update_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_STAGE_BIT, 0x0, ALLOCATION_STATE_STAGED_BIT, ALLOCATION_STATE_TO_STAGE_BIT);
