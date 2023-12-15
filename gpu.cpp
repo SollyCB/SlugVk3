@@ -11,6 +11,8 @@
 #include "shader.hpp"
 #include "assert.h"
 
+#define SHADER_INIT_INFO 0
+
 #define ALLOCATOR_INFO 0
 #if ALLOCATOR_INFO
 
@@ -1333,6 +1335,11 @@ static void gpu_init_shaders() {
     ret.layouts = (VkDescriptorSetLayout*) malloc_h(sizeof(VkDescriptorSetLayout) * ret.descriptor_set_cap, 8);
 
     u32 shader_count = g_shader_count;
+
+    #if SHADER_INIT_INFO
+    println("Loading %u shaders...", shader_count);
+    #endif
+
     const u32 *pcode;
     u64 size;
 
@@ -1367,9 +1374,18 @@ static void gpu_init_shaders() {
     Shader *pshader;
     VkShaderModuleCreateInfo module_info = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
 
+    u32 total_code_size = 0;
     for(u32 i = 0; i < shader_count; ++i) {
+
         pcode = (const u32*)file_read_bin_temp(g_shader_file_names[i], &size);
         spirv = parse_spirv(size, pcode);
+
+
+        #if SHADER_INIT_INFO
+        println("    %s, size: %u", g_shader_file_names[i], size);
+        #endif
+
+        total_code_size += size;
 
         pshader            = &ret.shaders[ret.shader_count];
        *pshader            = {};
@@ -1471,6 +1487,10 @@ static void gpu_init_shaders() {
 
     gpu->shader_memory = ret;
 
+    #if SHADER_INIT_INFO
+    println("Total shader code size (spirv): %u", total_code_size);
+    #endif
+
     return;
 
     //
@@ -1522,6 +1542,8 @@ static void gpu_shutdown_shaders() {
 
     for(u32 i = 0; i < mem->shader_count; ++i)
         vkDestroyShaderModule(device, mem->shaders[i].module, ALLOCATION_CALLBACKS);
+    for(u32 i = 0; i < mem->layout_count; ++i)
+        vkDestroyDescriptorSetLayout(device, mem->layouts[i], ALLOCATION_CALLBACKS);
 
     #if DEBUG
     for(u32 i = 0; i < mem->shader_count; ++i)
@@ -1535,8 +1557,6 @@ static void gpu_shutdown_shaders() {
     /*
     for(u32 i = 0; i < mem->descriptor_pool_count; ++i)
         vkDestroyDescriptorPool(device, mem->descriptor_pools[i], ALLOCATION_CALLBACKS);
-    for(u32 i = 0; i < mem->descriptor_set_count; ++i)
-        vkDestroyDescriptorSetLayout(device, mem->descriptor_set_layouts[i], ALLOCATION_CALLBACKS);
 
     free_h(mem->descriptor_pools);
     free_h(mem->descriptor_sets);
@@ -2507,7 +2527,8 @@ void destroy_tex_allocator(Gpu_Tex_Allocator *alloc) {
 // up from the numerous accessors and buffer views described in the gltf buffer.
 Gpu_Allocator_Result begin_allocation(Gpu_Allocator *alloc) {
     assert(alloc->staging_queue_byte_count == Max_u64);
-    // Upon completing an allocation, '.to_stage_count' is set to Max_u32.
+
+    // Byte count set to max on queue submission, indicating queue is available again
     if (alloc->staging_queue_byte_count != Max_u64)
         return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
 
@@ -2532,6 +2553,7 @@ Gpu_Allocator_Result begin_allocation(Gpu_Allocator *alloc) {
     // reuse it here for tracking in-progress allocations.
     alloc->staging_queue_byte_count = 0;
     alloc->to_stage_count           = 0;
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
@@ -2601,6 +2623,7 @@ Gpu_Allocator_Result submit_allocation(Gpu_Allocator *alloc, u32 *key) {
     // Max_u64 indicates that the queue is safe to use again. This is used by 'begin_allocation(..)'.
     alloc->staging_queue_byte_count = Max_u64;
     alloc->to_stage_count           = Max_u32;
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
@@ -4017,8 +4040,9 @@ Sampler_Allocator create_sampler_allocator(u32 cap) {
 
 void destroy_sampler_allocator(Sampler_Allocator *alloc) {
     u32 *indices = (u32*)malloc_t(sizeof(u32) * alloc->active, 16);
-    simd_find_flags_u8(alloc->count, alloc->flags, SAMPLER_ACTIVE_BIT, 0x0, indices);
-    for(u32 i = 0; i < alloc->count; ++i)
+    u32 active_count = simd_find_flags_u8(alloc->count, alloc->flags, SAMPLER_ACTIVE_BIT, 0x0, indices);
+
+    for(u32 i = 0; i < active_count; ++i)
         vkDestroySampler(alloc->device, alloc->samplers[indices[i]].sampler, ALLOCATION_CALLBACKS);
 
     free_h(alloc->samplers);
