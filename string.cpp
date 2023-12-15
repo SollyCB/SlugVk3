@@ -34,7 +34,7 @@ String string_buffer_get_string(String_Buffer *string_buffer, String *str) {
     if (string_buffer->len + string.len + 1 >= string_buffer->cap)
         string_buffer_do_resize(string_buffer, string.len + 1);
 
-    memcpy(string_buffer->buf + string_buffer->len, string.str, string.len); // copy null
+    memcpy(string_buffer->buf + string_buffer->len, str->str, string.len); // copy null
 
     string_buffer->len += string.len + 1;
     string_buffer->buf[string_buffer->len - 1] = '\0';
