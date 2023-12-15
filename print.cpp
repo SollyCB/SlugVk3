@@ -1,2 +1,3 @@
+#define STB_SPRINTF_IMPLEMENTATION
 #define SOL_PRINT_IMPLEMENTATION
 #include "print.h"

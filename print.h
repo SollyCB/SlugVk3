@@ -13,6 +13,7 @@ extern "C" {
 
 #include "builtin_wrappers.h"
 #include "typedef.h"
+#include "external/stb_sprintf.h"
 
 #define print_assert(x) if (!(x)) {printf("\n    [file: %s, line: %i, fn %s]\n        ** ASSERTION FAILED **: %s\n", __FILE__, __LINE__, __FUNCTION__, #x); asm("int $3");}
 
@@ -302,8 +303,8 @@ void string_format_backend(char *format_buffer, const char *fmt, va_list args) {
                     if (!print_check_config_flags(config.flags, PRINT_VALUE_FLOAT)) {
                         goto not_ident;
                     }
-                    // @Unimplemented
                     f = va_arg(args, double);
+                    buf_pos += stbsp_sprintf(format_buffer + buf_pos, "%f", f);
                     j++;
                     goto not_ident;
                 case 'c':
