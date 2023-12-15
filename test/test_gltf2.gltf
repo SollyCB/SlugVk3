@@ -146,34 +146,34 @@
     ],
     "images": [
         {
-            "uri": "test/images/base1",
+            "uri": "images/base1",
         },  
         {
-            "uri": "test/images/pbr1",
+            "uri": "images/pbr1",
         },  
         {
-            "uri": "test/images/normal1",
+            "uri": "images/normal1",
         },  
         {
-            "uri": "test/images/occlusion1",
+            "uri": "images/occlusion1",
         },  
         {
-            "uri": "test/images/emissive1",
+            "uri": "images/emissive1",
         },
         {
-            "uri": "test/images/base2",
+            "uri": "images/base2",
         },  
         {
-            "uri": "test/images/pbr2",
+            "uri": "images/pbr2",
         },  
         {
-            "uri": "test/images/normal2",
+            "uri": "images/normal2",
         },  
         {
-            "uri": "test/images/occlusion2",
+            "uri": "images/occlusion2",
         },  
         {
-            "uri": "test/images/emissive2",
+            "uri": "images/emissive2",
         }  
     ],
     "samplers": [
