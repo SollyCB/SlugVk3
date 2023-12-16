@@ -20,8 +20,9 @@
 #include "shader.hpp" // include g_shader_file_names global array
 #include "simd.hpp"
 
-static const u32 g_frame_count = 2;
-static       u32 g_frame_index = 0;
+static const u32 g_thread_count = 4;
+static const u32 g_frame_count  = 2;
+static       u32 g_frame_index  = 0;
 
 struct Settings {
     VkSampleCountFlagBits sample_count           = VK_SAMPLE_COUNT_1_BIT;
