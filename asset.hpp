@@ -25,6 +25,13 @@ constexpr u32 g_assets_keys_array_vertex_len     = 256;
 constexpr u32 g_assets_keys_array_sampler_len    = 256;
 constexpr u32 g_assets_keys_array_image_view_len = 256;
 
+// These are u64 bit masks, so not many are necessary
+constexpr u32 g_assets_result_masks_tex_count        = 8;
+constexpr u32 g_assets_result_masks_index_count      = 8;
+constexpr u32 g_assets_result_masks_vertex_count     = 8;
+constexpr u32 g_assets_result_masks_sampler_count    = 8;
+constexpr u32 g_assets_result_masks_image_view_count = 8;
+
 constexpr u32 g_assets_pipelines_array_len = 256;
 
 constexpr u32 g_model_buffer_size                 = 1024 * 1024;
@@ -55,9 +62,12 @@ struct Assets {
     u64* keys_image_view;
 
     // Written by allocators - Individual bits are used (64 bools basically)
-    u64* results_tex;
-    u64* results_index;
-    u64* results_vertex;
+    u64* results_index_stage;
+    u64* results_vertex_stage;
+    u64* results_tex_stage;
+    u64* results_index_upload;
+    u64* results_vertex_upload;
+    u64* results_tex_upload;
     u64* results_sampler;
     u64* results_image_view;
 
@@ -80,16 +90,18 @@ void kill_assets();
 
 // Model
 
-// @Todo Animations, Skins, Cameras
-// @Todo store more of the Gpu_Tex_Allocation data on the model
+// @Todo Animations, Skins, Cameras.
+// @Todo store more of the Gpu_Tex_Allocation data on the model.
+// @Todo Find a place to store texture meta data, such as mip map levels (probably in the tex allocation,
+// I have some space their before I hit the cache line I think. Maybe just keep a pointer in tex allocations
+// to some extra data that we can look up if the image view is not cached. This sounds like a good plan.).
 
-struct Texture { // I think I need to store some more data here, e.g. array layers
-    u32 mip_levels;
+struct Texture {
     u32 texture_key;
     u32 sampler_key;
 };
 
-struct Pbr_Metallic_Roughness { // 56 bytes
+struct Pbr_Metallic_Roughness { // 48 bytes
     Texture base_color_texture;
     Texture metallic_roughness_texture;
     u32     base_color_tex_coord;
@@ -130,7 +142,7 @@ enum Material_Flag_Bits {
 };
 typedef u32 Material_Flags;
 
-struct Material { // 132 bytes
+struct Material { // 124 bytes
     Material_Flags         flags;
     float                  alpha_cutoff = 0.5;
 
@@ -138,8 +150,6 @@ struct Material { // 132 bytes
     Normal_Texture         normal;
     Occlusion_Texture      occlusion;
     Emissive_Texture       emissive;
-
-    // char pad[192 - 132]; is there any point in padding across cache lines?
 };
 
 enum Accessor_Component_Type {

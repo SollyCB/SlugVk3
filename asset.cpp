@@ -53,17 +53,22 @@ void init_assets() {
     bool growable_array = false; // The arrays will be used in separate threads, so we cannot trigger a resize.
     bool temp_array     = false;
 
-    g_assets->keys_tex           = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_tex_len      );
-    g_assets->keys_index         = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_index_len    );
-    g_assets->keys_vertex        = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_vertex_len   );
+    g_assets->keys_tex    = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_tex_len   );
+    g_assets->keys_index  = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_index_len );
+    g_assets->keys_vertex = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_vertex_len);
+
     g_assets->keys_sampler       = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_sampler_len  );
     g_assets->keys_image_view    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
 
-    g_assets->results_tex        = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_tex_len       );
-    g_assets->results_index      = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_index_len     );
-    g_assets->results_vertex     = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_vertex_len    );
-    g_assets->results_sampler    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_sampler_len   );
-    g_assets->results_image_view = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
+    g_assets->results_tex_stage     = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_tex_count   );
+    g_assets->results_index_stage   = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_index_count );
+    g_assets->results_vertex_stage  = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_vertex_count);
+    g_assets->results_tex_upload    = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_tex_count   );
+    g_assets->results_index_upload  = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_index_count );
+    g_assets->results_vertex_upload = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_vertex_count);
+
+    g_assets->results_sampler       = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_sampler_len   );
+    g_assets->results_image_view    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
 
     g_assets->pipelines = (VkPipeline*)malloc_h(sizeof(VkPipeline) * g_assets_pipelines_array_len);
 
@@ -100,15 +105,20 @@ void kill_assets() {
     free_h(g_assets->models);
     destroy_model_allocators(&g_assets->model_allocators);
 
-    free_h(g_assets->keys_tex       );
-    free_h(g_assets->keys_index     );
-    free_h(g_assets->keys_vertex    );
+    free_h(g_assets->keys_tex   );
+    free_h(g_assets->keys_index );
+    free_h(g_assets->keys_vertex);
+
     free_h(g_assets->keys_sampler   );
     free_h(g_assets->keys_image_view);
 
-    free_h(g_assets->results_tex       );
-    free_h(g_assets->results_index     );
-    free_h(g_assets->results_vertex    );
+    free_h(g_assets->results_tex_stage    );
+    free_h(g_assets->results_index_stage  );
+    free_h(g_assets->results_vertex_stage );
+    free_h(g_assets->results_tex_upload   );
+    free_h(g_assets->results_index_upload );
+    free_h(g_assets->results_vertex_upload);
+
     free_h(g_assets->results_sampler   );
     free_h(g_assets->results_image_view);
 
@@ -1047,6 +1057,87 @@ static void load_primitive_resource_keys(u32 count, Mesh_Primitive *primitives, 
     }
 }
 
+// Just copying and pasting the below functions is easier, trust me.
+bool attempt_to_queue_allocations_staging(Gpu_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
+                                          bool adjust_weights)
+{
+    Gpu_Allocator_Result result = staging_queue_begin(allocator);
+    CHECK_GPU_ALLOCATOR_RESULT(result);
+
+    bool check;
+    bool ret = true;
+    for(u32 i = 0; i < count; ++i) {
+        result = staging_queue_add(allocator, keys[i], adjust_weights);
+
+        // if queueing was successful, bit is set
+        check  = result == GPU_ALLOCATOR_RESULT_SUCCESS;
+        ret    = check && ret;
+        result_masks[i >> 6] |= check << (i & 63);
+    }
+
+    return ret;
+}
+
+bool attempt_to_queue_allocations_upload(Gpu_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
+                                          bool adjust_weights)
+{
+    Gpu_Allocator_Result result = upload_queue_begin(allocator);
+    CHECK_GPU_ALLOCATOR_RESULT(result);
+
+    bool check;
+    bool ret = true;
+    for(u32 i = 0; i < count; ++i) {
+        result = upload_queue_add(allocator, keys[i], adjust_weights);
+
+        // if queueing was successful, bit is set
+        check  = result == GPU_ALLOCATOR_RESULT_SUCCESS;
+        ret    = check && ret;
+        result_masks[i >> 6] |= check << (i & 63);
+    }
+
+    return ret;
+}
+
+bool attempt_to_queue_tex_allocations_staging(Gpu_Tex_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
+                                              bool adjust_weights)
+{
+    Gpu_Allocator_Result result = tex_staging_queue_begin(allocator);
+    CHECK_GPU_ALLOCATOR_RESULT(result);
+
+    bool check;
+    bool ret = true;
+    for(u32 i = 0; i < count; ++i) {
+        result = tex_staging_queue_add(allocator, keys[i], adjust_weights);
+
+        // if queueing was successful, bit is set
+        check  = result == GPU_ALLOCATOR_RESULT_SUCCESS;
+        ret    = check && ret;
+        result_masks[i >> 6] |= check << (i & 63);
+    }
+
+    return ret;
+}
+
+bool attempt_to_queue_tex_allocations_upload(Gpu_Tex_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
+                                             bool adjust_weights)
+{
+    Gpu_Allocator_Result result = tex_upload_queue_begin(allocator);
+    CHECK_GPU_ALLOCATOR_RESULT(result);
+
+    bool check;
+    bool ret = true;
+    for(u32 i = 0; i < count; ++i) {
+        result = tex_upload_queue_add(allocator, keys[i], adjust_weights);
+
+        // if queueing was successful, bit is set
+        check  = result == GPU_ALLOCATOR_RESULT_SUCCESS;
+        ret    = check && ret;
+        result_masks[i >> 6] |= check << (i & 63);
+    }
+
+    return ret;
+}
+
 enum Asset_Draw_Prep_Result {
     ASSET_DRAW_PREP_RESULT_SUCCESS = 0,
 };
@@ -1125,28 +1216,34 @@ Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, Mesh_Primitive *pri
     }
 
     // @Multithreading Wait for threads to return, and signal allocators to queue allocation keys in their
-    // respective array. Each allocator queue will be controlled by one thread.
+    // respective array. Each allocator queue will be controlled by a thread.
 
-    for(u32 i = 0; i < accum_offsets.index; ++i) {
-        // @Todo Dispatch allocator queues.
-    }
+    bool adjust_weights = true;
+    Model_Allocators *allocators = &g_assets->model_allocators;
 
-    for(u32 i = 0; i < accum_offsets.vertex; ++i) {
-        // @Todo Dispatch allocator queues.
-    }
+    // Staging Queues
+    bool index_stage_result  = attempt_to_queue_allocations_staging(&allocators->index, accum_offsets.index,
+                                   g_assets->keys_index, g_assets->results_index_stage, adjust_weights);
+    bool vertex_stage_result = attempt_to_queue_allocations_staging(&allocators->vertex, accum_offsets.vertex,
+                                   g_assets->keys_vertex, g_assets->results_vertex_stage, adjust_weights);
+    bool tex_stage_result    = attempt_to_queue_tex_allocations_staging(&allocators->tex, accum_offsets.tex,
+                                   g_assets->keys_tex, g_assets->results_tex_stage, adjust_weights);
 
-    for(u32 i = 0; i < accum_offsets.tex; ++i) {
-        // @Todo Dispatch allocator queues.
-    }
+    // Upload Queues
+    bool index_upload_result  = attempt_to_queue_allocations_upload(&allocators->index, accum_offsets.index,
+                                   g_assets->keys_index, g_assets->results_index_upload, adjust_weights);
+    bool vertex_upload_result = attempt_to_queue_allocations_upload(&allocators->vertex, accum_offsets.vertex,
+                                   g_assets->keys_vertex, g_assets->results_vertex_upload, adjust_weights);
+    bool tex_upload_result    = attempt_to_queue_tex_allocations_upload(&allocators->tex, accum_offsets.tex,
+                                   g_assets->keys_tex, g_assets->results_tex_upload, adjust_weights);
 
-    for(u32 i = 0; i < accum_offsets.sampler; ++i) {
-        // @Todo Dispatch allocator.
-    }
-    
+    // @TODO CURRENT TASK!! Parse upload results to understand which primitives can be drawn and which need to
+    // be requeued, and understand which keys need to be removed from queues.
+
     return ASSET_DRAW_PREP_RESULT_SUCCESS;
 }
 
-#if TEST // 300 lines of tests EOF
+#if TEST // 500 lines of tests EOF
 static void test_model_from_gltf();
 
 void test_asset() {

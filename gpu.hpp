@@ -605,8 +605,8 @@ inline static Gpu_Tex_Allocation* gpu_get_tex_allocation(Gpu_Tex_Allocator *allo
 
 typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Begin_Func)     (Gpu_Allocator*);
 typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Begin_Func) (Gpu_Tex_Allocator*);
-typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Add_Func)       (Gpu_Allocator*, u32);
-typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Add_Func)   (Gpu_Tex_Allocator*, u32);
+typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Add_Func)       (Gpu_Allocator*, u32, bool);
+typedef Gpu_Allocator_Result (*Gpu_Tex_Allocator_Queue_Add_Func)   (Gpu_Tex_Allocator*, u32, bool);
 typedef void                 (*Gpu_Allocator_Queue_Remove_Func)    (Gpu_Allocator*, u32);
 typedef void                 (*Gpu_Tex_Allocator_Queue_Remove_Func)(Gpu_Tex_Allocator*, u32);
 typedef Gpu_Allocator_Result (*Gpu_Allocator_Queue_Submit_Func)    (Gpu_Allocator*);
