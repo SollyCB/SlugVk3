@@ -50,22 +50,22 @@ void init_assets() {
         g_assets->model_count++;
     }
 
-    bool growable_array = true;
+    bool growable_array = false; // The arrays will be used in separate threads, so we cannot trigger a resize.
     bool temp_array     = false;
 
-    g_assets->keys_tex           = new_array<u32>(g_assets_keys_array_tex_len,        growable_array, temp_array);
-    g_assets->keys_index         = new_array<u32>(g_assets_keys_array_index_len,      growable_array, temp_array);
-    g_assets->keys_vertex        = new_array<u32>(g_assets_keys_array_vertex_len,     growable_array, temp_array);
-    g_assets->keys_sampler       = new_array<u64>(g_assets_keys_array_sampler_len,    growable_array, temp_array);
-    g_assets->keys_image_view    = new_array<u64>(g_assets_keys_array_image_view_len, growable_array, temp_array);
+    g_assets->keys_tex           = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_tex_len      );
+    g_assets->keys_index         = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_index_len    );
+    g_assets->keys_vertex        = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_vertex_len   );
+    g_assets->keys_sampler       = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_sampler_len  );
+    g_assets->keys_image_view    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
 
-    g_assets->results_tex        = new_array<bool>(g_assets_keys_array_tex_len,        growable_array, temp_array);
-    g_assets->results_index      = new_array<bool>(g_assets_keys_array_index_len,      growable_array, temp_array);
-    g_assets->results_vertex     = new_array<bool>(g_assets_keys_array_vertex_len,     growable_array, temp_array);
-    g_assets->results_sampler    = new_array<bool>(g_assets_keys_array_sampler_len,    growable_array, temp_array);
-    g_assets->results_image_view = new_array<bool>(g_assets_keys_array_image_view_len, growable_array, temp_array);
+    g_assets->results_tex        = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_tex_len       );
+    g_assets->results_index      = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_index_len     );
+    g_assets->results_vertex     = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_vertex_len    );
+    g_assets->results_sampler    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_sampler_len   );
+    g_assets->results_image_view = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
 
-    g_assets->pipelines          = new_array<VkPipeline>(256, true, false);
+    g_assets->pipelines = (VkPipeline*)malloc_h(sizeof(VkPipeline) * g_assets_pipelines_array_len);
 
     g_assets->semaphores[0] = create_semaphore();
     g_assets->semaphores[1] = create_semaphore();
@@ -100,19 +100,19 @@ void kill_assets() {
     free_h(g_assets->models);
     destroy_model_allocators(&g_assets->model_allocators);
 
-    free_array<u32>(&g_assets->keys_tex       );
-    free_array<u32>(&g_assets->keys_index     );
-    free_array<u32>(&g_assets->keys_vertex    );
-    free_array<u64>(&g_assets->keys_sampler   );
-    free_array<u64>(&g_assets->keys_image_view);
+    free_h(g_assets->keys_tex       );
+    free_h(g_assets->keys_index     );
+    free_h(g_assets->keys_vertex    );
+    free_h(g_assets->keys_sampler   );
+    free_h(g_assets->keys_image_view);
 
-    free_array<bool>(&g_assets->results_tex       );
-    free_array<bool>(&g_assets->results_index     );
-    free_array<bool>(&g_assets->results_vertex    );
-    free_array<bool>(&g_assets->results_sampler   );
-    free_array<bool>(&g_assets->results_image_view);
+    free_h(g_assets->results_tex       );
+    free_h(g_assets->results_index     );
+    free_h(g_assets->results_vertex    );
+    free_h(g_assets->results_sampler   );
+    free_h(g_assets->results_image_view);
 
-    free_array<VkPipeline>(&g_assets->pipelines);
+    free_h(g_assets->pipelines);
 
     destroy_semaphore(g_assets->semaphores[0]);
     destroy_semaphore(g_assets->semaphores[1]);
@@ -431,7 +431,7 @@ static void model_load_gltf_textures(u32 count, Gltf_Texture *gltf_textures, Tex
     for(u32 i = 0; i < count; ++i) {
         // @Todo ktx2 textures for ready to go mipmaps
         textures[i] = {.texture_key = (u32)gltf_texture->source_image, .sampler_key = (u32)gltf_texture->sampler};
-        
+
         gltf_texture = (Gltf_Texture*)((u8*)gltf_texture + gltf_texture->stride);
     }
 }
@@ -867,37 +867,53 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
     }
 
     // Point model back at the allocation keys
-    Accessor       *accessor;
+    Accessor *accessor;
     for(u32 i = 0; i < ret.mesh_count; ++i) {
         for(u32 j = 0; j < ret.meshes[i].primitive_count; ++j) {
             primitive = &ret.meshes[i].primitives[j];
 
             // Indices
             primitive->indices.allocation_key = allocation_keys[primitive->indices.allocation_key];
+            primitive->key_counts.index++;
 
             // Material
             if (primitive->material.flags & MATERIAL_BASE_BIT) {
                 primitive->material.pbr.base_color_texture.texture_key         = tex_allocation_keys[primitive->material.pbr.base_color_texture.texture_key];
                 primitive->material.pbr.base_color_texture.sampler_key         = sampler_keys       [primitive->material.pbr.base_color_texture.sampler_key];
+
+                primitive->key_counts.tex++;
+                primitive->key_counts.sampler++;
             }
             if (primitive->material.flags & MATERIAL_PBR_BIT) {
                 primitive->material.pbr.metallic_roughness_texture.texture_key = tex_allocation_keys[primitive->material.pbr.metallic_roughness_texture.texture_key];
                 primitive->material.pbr.metallic_roughness_texture.sampler_key = sampler_keys       [primitive->material.pbr.metallic_roughness_texture.sampler_key];
+
+                primitive->key_counts.tex++;
+                primitive->key_counts.sampler++;
             }
 
             if (primitive->material.flags & MATERIAL_NORMAL_BIT) {
                 primitive->material.normal.texture.texture_key    = tex_allocation_keys[primitive->material.normal.texture.texture_key];
                 primitive->material.normal.texture.sampler_key    = sampler_keys       [primitive->material.normal.texture.sampler_key];
+
+                primitive->key_counts.tex++;
+                primitive->key_counts.sampler++;
             }
 
             if (primitive->material.flags & MATERIAL_OCCLUSION_BIT) {
                 primitive->material.occlusion.texture.texture_key = tex_allocation_keys[primitive->material.occlusion.texture.texture_key];
                 primitive->material.occlusion.texture.sampler_key = sampler_keys       [primitive->material.occlusion.texture.sampler_key];
+
+                primitive->key_counts.tex++;
+                primitive->key_counts.sampler++;
             }
 
             if (primitive->material.flags & MATERIAL_EMISSIVE_BIT) {
                 primitive->material.emissive.texture.texture_key  = tex_allocation_keys[primitive->material.emissive.texture.texture_key];
                 primitive->material.emissive.texture.sampler_key  = sampler_keys       [primitive->material.emissive.texture.sampler_key];
+
+                primitive->key_counts.tex++;
+                primitive->key_counts.sampler++;
             }
 
             // Attributes
@@ -905,10 +921,14 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
                 accessor = &primitive->attributes[k].accessor;
 
                 accessor->allocation_key = allocation_keys[accessor->allocation_key];
+                primitive->key_counts.vertex++;
 
                 if (accessor->sparse) {
                     accessor->sparse->indices_allocation_key = allocation_keys[accessor->sparse->indices_allocation_key];
                     accessor->sparse->values_allocation_key  = allocation_keys[accessor->sparse->values_allocation_key];
+
+                    primitive->key_counts.index++;
+                    primitive->key_counts.vertex++;
                 }
             }
 
@@ -918,16 +938,20 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
                     accessor = &primitive->targets[k].attributes[l].accessor;
 
                     accessor->allocation_key = allocation_keys[accessor->allocation_key];
+                    primitive->key_counts.vertex++;
 
                     if (accessor->sparse) {
                         accessor->sparse->indices_allocation_key = allocation_keys[accessor->sparse->indices_allocation_key];
                         accessor->sparse->values_allocation_key  = allocation_keys[accessor->sparse->values_allocation_key];
+
+                        primitive->key_counts.index++;
+                        primitive->key_counts.vertex++;
                     }
                 }
             }
         }
     }
-    
+
     reset_to_mark_temp(temp_allocator_mark); // Mark at function beginning
 
     return ret;

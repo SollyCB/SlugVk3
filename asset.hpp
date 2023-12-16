@@ -25,6 +25,8 @@ constexpr u32 g_assets_keys_array_vertex_len     = 256;
 constexpr u32 g_assets_keys_array_sampler_len    = 256;
 constexpr u32 g_assets_keys_array_image_view_len = 256;
 
+constexpr u32 g_assets_pipelines_array_len = 256;
+
 constexpr u32 g_model_buffer_size                 = 1024 * 1024;
 constexpr u32 g_model_buffer_allocation_alignment = 16;
 
@@ -44,23 +46,23 @@ struct Assets {
     u32 pos_keys_image_view;
 
     // Read by allocators
-    Array<u32> keys_index;
-    Array<u32> keys_vertex;
-    Array<u32> keys_tex;
+    u32* keys_index;
+    u32* keys_vertex;
+    u32* keys_tex;
 
     // @Note Will need to add another descriptor array here for uniform buffers? I dont think so.
-    Array<u64> keys_sampler;
-    Array<u64> keys_image_view;
+    u32* keys_sampler;
+    u64* keys_image_view;
 
-    // Written by allocators
-    Array<bool> results_tex;
-    Array<bool> results_index;
-    Array<bool> results_vertex;
-    Array<bool> results_sampler;
-    Array<bool> results_image_view;
+    // Written by allocators - Individual bits are used (64 bools basically)
+    u64* results_tex;
+    u64* results_index;
+    u64* results_vertex;
+    u64* results_sampler;
+    u64* results_image_view;
 
     u32 pos_pipelines;
-    Array<VkPipeline> pipelines;
+    VkPipeline* pipelines;
 
     // fonts, etc.
 
@@ -88,36 +90,36 @@ struct Texture { // I think I need to store some more data here, e.g. array laye
 };
 
 struct Pbr_Metallic_Roughness { // 56 bytes
+    Texture base_color_texture;
+    Texture metallic_roughness_texture;
+    u32     base_color_tex_coord;
+    u32     metallic_roughness_tex_coord;
     float   base_color_factor[4] = {1,1,1,1};
     float   metallic_factor      = 1;
     float   roughness_factor     = 1;
-    u32     base_color_tex_coord;
-    u32     metallic_roughness_tex_coord;
-    Texture base_color_texture;
-    Texture metallic_roughness_texture;
 };
 
 struct Normal_Texture { // 20 bytes
-    float   scale = 1;
     Texture texture;
     u32     tex_coord;
+    float   scale = 1;
 };
 
 struct Occlusion_Texture { // 20 bytes
-    float   strength = 1;
     Texture texture;
     u32     tex_coord;
+    float   strength = 1;
 };
 
 struct Emissive_Texture { // 28 bytes
-    float   factor[3] = {0,0,0};
     Texture texture;
     u32     tex_coord;
+    float   factor[3] = {0,0,0};
 };
 
 enum Material_Flag_Bits {
     MATERIAL_BASE_BIT                = 0x0001,
-    MATERIAL_PBR_BIT                 = 0x0002,
+    MATERIAL_PBR_BIT                 = 0x0002, // This is a little misleading: I want it to mean just 'is there a metallic roughness texture?', but the pbr object in gltf includes the base.
     MATERIAL_NORMAL_BIT              = 0x0004,
     MATERIAL_OCCLUSION_BIT           = 0x0008,
     MATERIAL_EMISSIVE_BIT            = 0x0010,
@@ -231,7 +233,16 @@ struct Morph_Target {
     Mesh_Primitive_Attribute *attributes;
 };
 
+struct Primitive_Key_Counts {
+    u32 index;
+    u32 vertex;
+    u32 tex;
+    u32 sampler;
+};
+
 struct Mesh_Primitive {
+    Primitive_Key_Counts key_counts;
+
     VkPrimitiveTopology topology;
 
     u32 attribute_count;
