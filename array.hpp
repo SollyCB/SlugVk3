@@ -35,6 +35,15 @@ struct Array {
 };
 
 template<typename T>
+inline static Array<T> new_array_from_ptr(T *ptr, u32 cap) {
+    Array<T> array = {};
+    array.data  = ptr;
+    array.flags = 0x0;
+    array.cap   = cap;
+    return array;
+}
+
+template<typename T>
 inline static Array<T> new_array(u64 cap, bool growable, bool temp) {
     Array<T> ret = {};
     ret.cap = align(cap, 16);
