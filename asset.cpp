@@ -6,7 +6,7 @@
 #include "model.hpp"
 #include "vulkan/vulkan_core.h"
 #include "vulkan_errors.hpp"
-#include <cstring>
+#include "simd.hpp"
 
 #if TEST
 #include "test/test.hpp"
@@ -968,28 +968,194 @@ Model load_model(Model_Storage_Info *strorage_info) { // @Unimplemented
     return ret;
 }
 
+inline static void add_accessor_index(Array<u32> *array_index, Array<u32> *array_vertex, Accessor *accessor) {
+    array_add(array_index, &accessor->allocation_key);
+
+    if (accessor->sparse) {
+        array_add(array_index,  &accessor->sparse->indices_allocation_key);
+        array_add(array_vertex, &accessor->sparse->values_allocation_key);
+    }
+}
+inline static void add_accessor_vertex(Array<u32> *array_index, Array<u32> *array_vertex, Accessor *accessor) {
+    array_add(array_vertex, &accessor->allocation_key);
+
+    if (accessor->sparse) {
+        array_add(array_index,  &accessor->sparse->indices_allocation_key);
+        array_add(array_vertex, &accessor->sparse->values_allocation_key);
+    }
+}
+
+struct Key_Arrays {
+    u32 *index;
+    u32 *vertex;
+    u32 *tex;
+    u32 *sampler;
+
+    alignas(16) Primitive_Key_Counts caps;
+};
+
+static void load_primitive_resource_keys(u32 count, Mesh_Primitive *primitives, Key_Arrays *arrays) {
+    Assets *g_assets = get_assets_instance();
+
+    Array<u32> array_index   = new_array_from_ptr(arrays->index,   arrays->caps.index);
+    Array<u32> array_vertex  = new_array_from_ptr(arrays->vertex,  arrays->caps.vertex);
+    Array<u32> array_tex     = new_array_from_ptr(arrays->tex,     arrays->caps.tex);
+    Array<u32> array_sampler = new_array_from_ptr(arrays->sampler, arrays->caps.sampler);
+
+    u32 attribute_count;
+    u32 target_count;
+    Morph_Target *target;
+    for(u32 i = 0; i < count; ++i) {
+        // Indices
+        add_accessor_index(&array_index, &array_vertex, &primitives[i].indices);
+
+        // Vertex Attributes
+        attribute_count = primitives[i].attribute_count;
+        for(u32 j = 0; j < attribute_count; ++j)
+            add_accessor_vertex(&array_index, &array_vertex, &primitives[i].attributes[j].accessor);
+
+        target_count = primitives[i].target_count;
+        for(u32 j = 0; j < target_count; ++j) {
+            target = &primitives[i].targets[j];
+
+            attribute_count = target->attribute_count;
+            for(u32 k = 0; k < attribute_count; ++k)
+                add_accessor_vertex(&array_index, &array_vertex, &target->attributes[k].accessor);
+        }
+
+        // Materials
+        if (primitives[i].material.flags & MATERIAL_BASE_BIT) {
+            array_add(&array_tex,     &primitives[i].material.pbr.base_color_texture.texture_key);
+            array_add(&array_sampler, &primitives[i].material.pbr.base_color_texture.sampler_key);
+        }
+        if (primitives[i].material.flags & MATERIAL_PBR_BIT) {
+            array_add(&array_tex,     &primitives[i].material.pbr.metallic_roughness_texture.texture_key);
+            array_add(&array_sampler, &primitives[i].material.pbr.metallic_roughness_texture.sampler_key);
+        }
+        if (primitives[i].material.flags & MATERIAL_NORMAL_BIT) {
+            array_add(&array_tex,     &primitives[i].material.normal.texture.texture_key);
+            array_add(&array_sampler, &primitives[i].material.normal.texture.sampler_key);
+        }
+        if (primitives[i].material.flags & MATERIAL_OCCLUSION_BIT) {
+            array_add(&array_tex,     &primitives[i].material.occlusion.texture.texture_key);
+            array_add(&array_sampler, &primitives[i].material.occlusion.texture.sampler_key);
+        }
+        if (primitives[i].material.flags & MATERIAL_EMISSIVE_BIT) {
+            array_add(&array_tex,     &primitives[i].material.emissive.texture.texture_key);
+            array_add(&array_sampler, &primitives[i].material.emissive.texture.sampler_key);
+        }
+    }
+}
+
 enum Asset_Draw_Prep_Result {
     ASSET_DRAW_PREP_RESULT_SUCCESS = 0,
 };
 
-Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, Mesh_Primitive *primitive) {
+Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, Mesh_Primitive *primitives,
+                                                  Primitive_Key_Counts *key_counts)
+{
+    Assets *g_assets = get_assets_instance();
 
-    for(u32 i = 0; i < count; ++i) {
-        // @TODO CURRENT TASK!!
+    // @Multithreading Each thread will take an offset into the primitives array and some
+    // number of primitives, and offsets into each of the key arrays in g_assets where it
+    // will write primitives' corresponding keys.
+
+    u32 primitive_job_size = count / g_thread_count;
+    u32 remainder_job_size = count % g_thread_count;
+
+    u32         primitive_job_offsets   [g_thread_count];
+    u32         primitive_job_sizes     [g_thread_count]; // The number of primitives in a job
+    Key_Arrays  primitive_job_key_arrays[g_thread_count];
+
+    alignas(16) Primitive_Key_Counts accum_offsets = {};
+
+    __m128i  a;
+    __m128i  b;
+    __m128i *tmp_addr;
+
+    u32 idx = 0;
+    u32 job_offset_accum = 0;
+    for(u32 i = 0; i < g_thread_count; ++i) {
+        primitive_job_sizes[i]  = primitive_job_size;
+        primitive_job_sizes[i] += remainder_job_size > 0;
+        remainder_job_size     -= remainder_job_size > 0;
+
+        primitive_job_offsets[i]  = job_offset_accum;
+        job_offset_accum         += primitive_job_sizes[i];
+
+        // @SIMD This could be simd too, but it would be awkward since the pointers are a different
+        // size to the offsets...
+        primitive_job_key_arrays[i].index   = g_assets->keys_index   + accum_offsets.index;
+        primitive_job_key_arrays[i].vertex  = g_assets->keys_vertex  + accum_offsets.vertex;
+        primitive_job_key_arrays[i].tex     = g_assets->keys_tex     + accum_offsets.tex;
+        primitive_job_key_arrays[i].sampler = g_assets->keys_sampler + accum_offsets.sampler;
+
+        // For every primitive in the job, add its key counts to the to accumulator in order to
+        // offset the key arrays.
+        for(u32 j = 0; j < primitive_job_sizes[i]; ++j) {
+            // accum_offsets.index += key_counts[idx].index; accum_offsets.vertex  += key_counts[idx].vertex;
+            // accum_offsets.tex   += key_counts[idx].tex;   accum_offsets.sampler += key_counts[idx].sampler;
+
+            a = _mm_load_si128((__m128i*)(key_counts + idx));
+            b = _mm_load_si128((__m128i*)(&accum_offsets));
+            a = _mm_add_epi32(a, b);
+            _mm_store_si128((__m128i*)(&accum_offsets), a);
+
+            idx++;
+        }
+        // primitive_job_key_arrays[i].cap_index = accum_offsets.index; primitive_job_key_arrays[i].cap_vertex  = accum_offsets.vertex;
+        // primitive_job_key_arrays[i].cap_tex   = accum_offsets.tex;   primitive_job_key_arrays[i].cap_sampler = accum_offsets.sampler;
+        //
+        // Store the accumulator offsets of the next job as the caps of the current job
+        a = _mm_load_si128((__m128i*)(&accum_offsets));
+
+        tmp_addr = (__m128i*)((u8*)(primitive_job_key_arrays + i) + offsetof(Key_Arrays, caps));
+
+        _mm_store_si128(tmp_addr, a);
+    }
+    assert(idx == count && "We should have visited every primitive in the 'accum_offsets' loop");
+
+    // @Multithreading The below loop simulates multhreading without me having to yet go through the
+    // rigmarole of setting it all up completely. This should be behave in the exact same fashion as
+    // the real threaded version, as synchronisation has no effect here, only the range which is written.
+
+    for(u32 i = 0; i < g_thread_count; ++i) {
+        load_primitive_resource_keys(primitive_job_sizes[i], primitives + primitive_job_offsets[i],
+                                     &primitive_job_key_arrays[i]);
     }
 
+    // @Multithreading Wait for threads to return, and signal allocators to queue allocation keys in their
+    // respective array. Each allocator queue will be controlled by one thread.
+
+    for(u32 i = 0; i < accum_offsets.index; ++i) {
+        // @Todo Dispatch allocator queues.
+    }
+
+    for(u32 i = 0; i < accum_offsets.vertex; ++i) {
+        // @Todo Dispatch allocator queues.
+    }
+
+    for(u32 i = 0; i < accum_offsets.tex; ++i) {
+        // @Todo Dispatch allocator queues.
+    }
+
+    for(u32 i = 0; i < accum_offsets.sampler; ++i) {
+        // @Todo Dispatch allocator.
+    }
+    
     return ASSET_DRAW_PREP_RESULT_SUCCESS;
 }
 
-#if TEST // 300 lines of tests
+#if TEST // 300 lines of tests EOF
 static void test_model_from_gltf();
 
 void test_asset() {
     test_model_from_gltf();
 }
 
-static void test_accessor(Gpu_Allocator *allocator, u8 *buf, char *name, Accessor *accessor0, Accessor *accessor1, bool index) {
-
+static void test_accessor(Gpu_Allocator *allocator, u8 *buf, char *name, Accessor *accessor0, Accessor *accessor1,
+                          bool index)
+{
     TEST_EQ(name, accessor0->allocation_key, accessor1->allocation_key, false);
     TEST_EQ(name, accessor0->byte_offset,    accessor1->byte_offset,    false);
     TEST_EQ(name, accessor0->flags,          accessor1->flags,          false);
@@ -1319,18 +1485,18 @@ static void test_model_from_gltf() {
         {
             .flags = MATERIAL_BASE_BIT | MATERIAL_PBR_BIT | MATERIAL_NORMAL_BIT | MATERIAL_OPAQUE_BIT,
             .pbr = {
+                .base_color_texture = {.texture_key = 0},
+                .metallic_roughness_texture = {.texture_key = 1, .sampler_key = 0},
+                .base_color_tex_coord = 1,
+                .metallic_roughness_tex_coord = 0,
                 .base_color_factor = {0.5,0.5,0.5,1.0},
                 .metallic_factor = 1,
                 .roughness_factor = 1,
-                .base_color_tex_coord = 1,
-                .metallic_roughness_tex_coord = 0,
-                .base_color_texture = {.texture_key = 0},
-                .metallic_roughness_texture = {.texture_key = 1, .sampler_key = 0},
             },
             .normal = {
-                .scale = 2,
                 .texture = {.texture_key = 2},
                 .tex_coord = 1,
+                .scale = 2,
             },
             .emissive = {.factor = {0.2, 0.1, 0.0}},
         },
@@ -1338,35 +1504,35 @@ static void test_model_from_gltf() {
             .flags = MATERIAL_BASE_BIT      | MATERIAL_PBR_BIT      | MATERIAL_NORMAL_BIT |
                      MATERIAL_OCCLUSION_BIT | MATERIAL_EMISSIVE_BIT | MATERIAL_OPAQUE_BIT,
             .pbr = {
+                .base_color_texture = {.texture_key = 5, .sampler_key = 0},
+                .metallic_roughness_texture = {.texture_key = 6, .sampler_key = 0},
+                .base_color_tex_coord = 0,
+                .metallic_roughness_tex_coord = 1,
                 .base_color_factor = {2.5,4.5,2.5,1.0},
                 .metallic_factor = 5,
                 .roughness_factor = 6,
-                .base_color_tex_coord = 0,
-                .metallic_roughness_tex_coord = 1,
-                .base_color_texture = {.texture_key = 5, .sampler_key = 0},
-                .metallic_roughness_texture = {.texture_key = 6, .sampler_key = 0},
             },
             .normal = {
-                .scale = 1,
                 .texture = {.texture_key = 7, .sampler_key = 0},
                 .tex_coord = 1,
+                .scale = 1,
             },
             .occlusion = {
-                .strength = 0.679,
                 .texture = {.texture_key = 8, .sampler_key = 0},
                 .tex_coord = 1,
+                .strength = 0.679,
             },
             .emissive = {
-                .factor = {0.2, 0.1, 0.0},
                 .texture = {.texture_key = 9, .sampler_key = 0},
                 .tex_coord = 0,
+                .factor = {0.2, 0.1, 0.0},
             },
         },
     };
 
     Model_Allocators_Config model_allocators_config = {};
     Model_Allocators model_allocators = create_model_allocators(&model_allocators_config);
-    
+
     u32 size = 1024 * 16;
     u8 *model_buffer = malloc_t(size);
 
