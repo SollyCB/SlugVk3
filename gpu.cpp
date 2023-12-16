@@ -2702,15 +2702,14 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key, bool adjus
 void staging_queue_remove(Gpu_Allocator *alloc, u32 key) {
     u32 idx = alloc->allocation_indices[key];
 
-    // Operator precedence with bit shifting so dumb...
-    if (!(alloc->allocation_states[idx] & ALLOCATION_STATE_TO_STAGE_BIT))
-        return;
+    Gpu_Allocation_State_Flags state            = alloc->allocation_states[idx]; 
+    u64                        bit_aligned_size = align(alloc->allocations[idx].size, alloc->stage_bit_granularity);
 
-    u64 bit_aligned_size = align(alloc->allocations[idx].size, alloc->stage_bit_granularity);
+    alloc->staging_queue_byte_count -= bit_aligned_size & max64_if_true(state & ALLOCATION_STATE_TO_STAGE_BIT);
+    alloc->to_stage_count           -= (state & ALLOCATION_STATE_TO_STAGE_BIT) != 0;
 
-    alloc->allocation_states[idx]   &= ~(ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
-    alloc->staging_queue_byte_count -= bit_aligned_size;
-    alloc->to_stage_count--;
+    // Allocator should not stage this allocation or wait on it to draw.
+    alloc->allocation_states[idx] &= ~(ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
 
     return;
 }
@@ -2923,15 +2922,14 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust
 void upload_queue_remove(Gpu_Allocator *alloc, u32 key) {
     u32 idx = alloc->allocation_indices[key];
 
-    // Operator precedence with bit shifting so dumb...
-    if (!(alloc->allocation_states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT))
-        return;
+    Gpu_Allocation_State_Flags state            = alloc->allocation_states[idx]; 
+    u64                        bit_aligned_size = align(alloc->allocations[idx].size, alloc->upload_bit_granularity);
 
-    u64 bit_aligned_size = align(alloc->allocations[idx].size, alloc->upload_bit_granularity);
+    alloc->upload_queue_byte_count -= bit_aligned_size & max64_if_true(state & ALLOCATION_STATE_TO_UPLOAD_BIT);
+    alloc->to_upload_count         -= (state & ALLOCATION_STATE_TO_UPLOAD_BIT) != 0;
 
-    alloc->allocation_states[idx]   &= ~(ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
-    alloc->upload_queue_byte_count -= bit_aligned_size;
-    alloc->to_upload_count--;
+    // Allocator should not upload this allocation or wait on it to draw.
+    alloc->allocation_states[idx] &= ~(ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
 
     return;
 }
@@ -3385,16 +3383,15 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bo
 void tex_staging_queue_remove(Gpu_Tex_Allocator *alloc, u32 key) {
     u32 idx = alloc->allocation_indices[key];
 
-    // Operator precedence with bit shifting so dumb...
-    if (!(alloc->allocation_states[idx] & ALLOCATION_STATE_TO_STAGE_BIT))
-        return;
+    Gpu_Allocation_State_Flags state              = alloc->allocation_states[idx]; 
+    u64                        img_size           = alloc->allocations[idx].width * alloc->allocations[idx].height * 4;
+    u64                        bit_aligned_size   = align(img_size, alloc->stage_bit_granularity);
 
-    u64 img_size         = alloc->allocations[idx].width * alloc->allocations[idx].height * 4;
-    u64 bit_aligned_size = align(img_size, alloc->stage_bit_granularity);
+    alloc->staging_queue_byte_count -= bit_aligned_size & max64_if_true(state & ALLOCATION_STATE_TO_STAGE_BIT);
+    alloc->to_stage_count           -= (state & ALLOCATION_STATE_TO_STAGE_BIT) != 0;
 
-    alloc->allocation_states[idx]   &= ~(ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
-    alloc->staging_queue_byte_count -= bit_aligned_size;
-    alloc->to_stage_count--;
+    // Allocator should not stage this allocation or wait on it to draw.
+    alloc->allocation_states[idx] &= ~(ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
 
     return;
 }
@@ -3648,13 +3645,14 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key, boo
 void tex_upload_queue_remove(Gpu_Tex_Allocator *alloc, u32 key) {
     u32 idx = alloc->allocation_indices[key];
 
-    // Operator precedence with bit shifting so dumb...
-    if (!(alloc->allocation_states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT))
-        return;
+    Gpu_Allocation_State_Flags state            = alloc->allocation_states[idx]; 
+    u64                        bit_aligned_size = alloc->allocations[idx].size; // Tex allocations already aligned
 
-    alloc->allocation_states[idx]  &= ~(ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
-    alloc->upload_queue_byte_count -= alloc->allocations[idx].size;
-    alloc->to_upload_count--;
+    alloc->upload_queue_byte_count -= bit_aligned_size & max64_if_true(state & ALLOCATION_STATE_TO_UPLOAD_BIT);
+    alloc->to_upload_count         -= (state & ALLOCATION_STATE_TO_UPLOAD_BIT) != 0;
+
+    // Allocator should not upload this allocation or wait on it to draw.
+    alloc->allocation_states[idx] &= ~(ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
 
     return;
 }
