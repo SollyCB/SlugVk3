@@ -2699,21 +2699,6 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key, bool adjus
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
-void staging_queue_remove(Gpu_Allocator *alloc, u32 key) {
-    u32 idx = alloc->allocation_indices[key];
-
-    Gpu_Allocation_State_Flags state            = alloc->allocation_states[idx]; 
-    u64                        bit_aligned_size = align(alloc->allocations[idx].size, alloc->stage_bit_granularity);
-
-    alloc->staging_queue_byte_count -= bit_aligned_size & max64_if_true(state & ALLOCATION_STATE_TO_STAGE_BIT);
-    alloc->to_stage_count           -= (state & ALLOCATION_STATE_TO_STAGE_BIT) != 0;
-
-    // Allocator should not stage this allocation or wait on it to draw.
-    alloc->allocation_states[idx] &= ~(ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
-
-    return;
-}
-
 Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
     // If the 'to_stage' count is zero on queue submission, just assume that everything queued was
     // already cached, and we need not do anything. This is most likely, as vertex data should just
@@ -2917,21 +2902,6 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust
     adjust_allocation_weights(&w_args);
 
     return GPU_ALLOCATOR_RESULT_SUCCESS;
-}
-
-void upload_queue_remove(Gpu_Allocator *alloc, u32 key) {
-    u32 idx = alloc->allocation_indices[key];
-
-    Gpu_Allocation_State_Flags state            = alloc->allocation_states[idx]; 
-    u64                        bit_aligned_size = align(alloc->allocations[idx].size, alloc->upload_bit_granularity);
-
-    alloc->upload_queue_byte_count -= bit_aligned_size & max64_if_true(state & ALLOCATION_STATE_TO_UPLOAD_BIT);
-    alloc->to_upload_count         -= (state & ALLOCATION_STATE_TO_UPLOAD_BIT) != 0;
-
-    // Allocator should not upload this allocation or wait on it to draw.
-    alloc->allocation_states[idx] &= ~(ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
-
-    return;
 }
 
 Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
@@ -3380,22 +3350,6 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bo
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
-void tex_staging_queue_remove(Gpu_Tex_Allocator *alloc, u32 key) {
-    u32 idx = alloc->allocation_indices[key];
-
-    Gpu_Allocation_State_Flags state              = alloc->allocation_states[idx]; 
-    u64                        img_size           = alloc->allocations[idx].width * alloc->allocations[idx].height * 4;
-    u64                        bit_aligned_size   = align(img_size, alloc->stage_bit_granularity);
-
-    alloc->staging_queue_byte_count -= bit_aligned_size & max64_if_true(state & ALLOCATION_STATE_TO_STAGE_BIT);
-    alloc->to_stage_count           -= (state & ALLOCATION_STATE_TO_STAGE_BIT) != 0;
-
-    // Allocator should not stage this allocation or wait on it to draw.
-    alloc->allocation_states[idx] &= ~(ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
-
-    return;
-}
-
 Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     // If the to stage count is zero on queue submission, just assume that everything queued was
     // already cached, and we need not do anything.
@@ -3640,21 +3594,6 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key, boo
     adjust_allocation_weights(&w_args);
 
     return GPU_ALLOCATOR_RESULT_SUCCESS;
-}
-
-void tex_upload_queue_remove(Gpu_Tex_Allocator *alloc, u32 key) {
-    u32 idx = alloc->allocation_indices[key];
-
-    Gpu_Allocation_State_Flags state            = alloc->allocation_states[idx]; 
-    u64                        bit_aligned_size = alloc->allocations[idx].size; // Tex allocations already aligned
-
-    alloc->upload_queue_byte_count -= bit_aligned_size & max64_if_true(state & ALLOCATION_STATE_TO_UPLOAD_BIT);
-    alloc->to_upload_count         -= (state & ALLOCATION_STATE_TO_UPLOAD_BIT) != 0;
-
-    // Allocator should not upload this allocation or wait on it to draw.
-    alloc->allocation_states[idx] &= ~(ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT);
-
-    return;
 }
 
 Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
