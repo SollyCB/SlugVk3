@@ -87,6 +87,14 @@ inline static void array_do_resize(Array<T> *array) {
     }
 }
 
+inline static void array_add(Array<u32> *array, u32 t) {
+    if (array->cap <= array->len)
+        array_do_resize(array);
+
+    array->data[array->len] = t;
+    array->len++;
+}
+
 template<typename T>
 inline static void array_add(Array<T> *array, T *t) {
     if (array->cap <= array->len)

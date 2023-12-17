@@ -17,7 +17,7 @@ Assets* get_assets_instance() { return &s_Assets; }
 
 struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
 
-static Model_Allocators create_model_allocators(Model_Allocators_Config *config);
+static Model_Allocators create_model_allocators(const Model_Allocators_Config *config);
 static void             destroy_model_allocators(Model_Allocators *model_allocators);
 
 void init_assets() {
@@ -134,7 +134,7 @@ void kill_assets() {
         vkDestroyCommandPool(device, g_assets->cmd_pools[i], ALLOCATION_CALLBACKS);
 }
 
-static Model_Allocators create_model_allocators(Model_Allocators_Config *config) {
+static Model_Allocators create_model_allocators(const Model_Allocators_Config *config) {
     Gpu *gpu = get_gpu_instance();
 
     // Vertex allocator
@@ -254,12 +254,12 @@ static Model_Req_Size_Info model_get_required_size_from_gltf(Gltf *gltf) {
     u32 sparse_count  = 0; // The number of accessor sparse structures
     u32 max_min_count = 0;
 
-    Gltf_Accessor *gltf_accessor = gltf->accessors;
+    const Gltf_Accessor *gltf_accessor = gltf->accessors;
     for(u32 i = 0; i < accessor_count; ++i) {
         sparse_count  += gltf_accessor->sparse_count != 0;
         max_min_count += gltf_accessor->max != NULL;
 
-        gltf_accessor = (Gltf_Accessor*)((u8*)gltf_accessor + gltf_accessor->stride);
+        gltf_accessor = (const Gltf_Accessor*)((u8*)gltf_accessor + gltf_accessor->stride);
     }
 
     // Meshes: weights, primitive attributes, morph targets
@@ -269,9 +269,9 @@ static Model_Req_Size_Info model_get_required_size_from_gltf(Gltf *gltf) {
     u32 target_count           = 0;
     u32 target_attribute_count = 0;
 
-    Gltf_Mesh           *gltf_mesh = gltf->meshes;
-    Gltf_Mesh_Primitive *gltf_primitive;
-    Gltf_Morph_Target   *gltf_morph_target;
+    const Gltf_Mesh           *gltf_mesh = gltf->meshes;
+    const Gltf_Mesh_Primitive *gltf_primitive;
+    const Gltf_Morph_Target   *gltf_morph_target;
     for(u32 i = 0; i < mesh_count; ++i) {
 
         weight_count    += gltf_mesh->weight_count;
@@ -294,13 +294,13 @@ static Model_Req_Size_Info model_get_required_size_from_gltf(Gltf *gltf) {
             for(u32 k = 0; k < gltf_primitive->target_count; ++k) {
                 target_attribute_count += gltf_morph_target->attribute_count;
 
-                gltf_morph_target = (Gltf_Morph_Target*)((u8*)gltf_morph_target + gltf_morph_target->stride);
+                gltf_morph_target = (const Gltf_Morph_Target*)((u8*)gltf_morph_target + gltf_morph_target->stride);
             }
 
-            gltf_primitive = (Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
+            gltf_primitive = (const Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
         }
 
-        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
+        gltf_mesh = (const Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 
 
@@ -386,12 +386,12 @@ inline static Accessor_Flag_Bits translate_gltf_accessor_type_to_bits(Gltf_Acces
     return (Accessor_Flag_Bits)ret;
 }
 
-static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, Accessor *accessors, u8 *buffer) {
+static void model_load_gltf_accessors(u32 count, const Gltf_Accessor *gltf_accessors, Accessor *accessors, u8 *buffer) {
     u32 tmp_component_count;
     u32 tmp_component_width;
     u32 tmp;
 
-    Gltf_Accessor *gltf_accessor = gltf_accessors;
+    const Gltf_Accessor *gltf_accessor = gltf_accessors;
 
     u32 size_used = 0;
     for(u32 i = 0; i < count; ++i) {
@@ -428,27 +428,27 @@ static void model_load_gltf_accessors(u32 count, Gltf_Accessor *gltf_accessors, 
             accessors[i].sparse->values_byte_offset     = gltf_accessor->values_byte_offset;
         }
 
-        gltf_accessor = (Gltf_Accessor*)((u8*)gltf_accessor + gltf_accessor->stride);
+        gltf_accessor = (const Gltf_Accessor*)((u8*)gltf_accessor + gltf_accessor->stride);
     }
 }
 
-static void model_load_gltf_textures(u32 count, Gltf_Texture *gltf_textures, Texture *textures) {
+static void model_load_gltf_textures(u32 count, const Gltf_Texture *gltf_textures, Texture *textures) {
     // Bro wtf are the C compiler spec writers doing!! How is this not a compilation error!!
     // Gltf_Texture *gltf_texture = gltf_texture;
 
-    Gltf_Texture *gltf_texture = gltf_textures;
+    const Gltf_Texture *gltf_texture = gltf_textures;
 
     for(u32 i = 0; i < count; ++i) {
         // @Todo ktx2 textures for ready to go mipmaps
         textures[i] = {.texture_key = (u32)gltf_texture->source_image, .sampler_key = (u32)gltf_texture->sampler};
 
-        gltf_texture = (Gltf_Texture*)((u8*)gltf_texture + gltf_texture->stride);
+        gltf_texture = (const Gltf_Texture*)((u8*)gltf_texture + gltf_texture->stride);
     }
 }
 
-static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, Texture *textures, Material *materials) {
+static void model_load_gltf_materials(u32 count, const Gltf_Material *gltf_materials, const Texture *textures, Material *materials) {
 
-    Gltf_Material *gltf_material = gltf_materials;
+    const Gltf_Material *gltf_material = gltf_materials;
 
     for(u32 i = 0; i < count; ++i) {
         materials[i] = {};
@@ -500,7 +500,7 @@ static void model_load_gltf_materials(u32 count, Gltf_Material *gltf_materials, 
         materials[i].emissive.texture   = textures[gltf_material->emissive_texture_index];
         materials[i].emissive.tex_coord = gltf_material->emissive_tex_coord;
 
-        gltf_material = (Gltf_Material*)((u8*)gltf_material + gltf_material->stride);
+        gltf_material = (const Gltf_Material*)((u8*)gltf_material + gltf_material->stride);
     }
 }
 
@@ -509,15 +509,15 @@ struct Load_Mesh_Info {
     Material *materials;
 };
 
-static void model_load_gltf_meshes(Load_Mesh_Info *info, u32 count, Gltf_Mesh *gltf_meshes, Mesh *meshes,
+static void model_load_gltf_meshes(const Load_Mesh_Info *info, u32 count, const Gltf_Mesh *gltf_meshes, Mesh *meshes,
                                    u8 *primitives_buffer, u8 *weights_buffer)
 {
     u32 tmp;
     u32 idx;
 
-    Gltf_Mesh           *gltf_mesh = gltf_meshes;
-    Gltf_Mesh_Primitive *gltf_primitive;
-    Gltf_Morph_Target   *gltf_morph_target;
+    const Gltf_Mesh           *gltf_mesh = gltf_meshes;
+    const Gltf_Mesh_Primitive *gltf_primitive;
+    const Gltf_Morph_Target   *gltf_morph_target;
 
     u32 primitive_count;
 
@@ -615,10 +615,10 @@ static void model_load_gltf_meshes(Load_Mesh_Info *info, u32 count, Gltf_Mesh *g
                     attribute->type     = (Mesh_Primitive_Attribute_Type)gltf_morph_target->attributes[l].type;
                 }
 
-                gltf_morph_target = (Gltf_Morph_Target*)((u8*)gltf_morph_target + gltf_morph_target->stride);
+                gltf_morph_target = (const Gltf_Morph_Target*)((u8*)gltf_morph_target + gltf_morph_target->stride);
             }
 
-            gltf_primitive = (Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
+            gltf_primitive = (const Gltf_Mesh_Primitive*)((u8*)gltf_primitive + gltf_primitive->stride);
         }
 
         meshes[i].weight_count = gltf_mesh->weight_count;
@@ -627,7 +627,7 @@ static void model_load_gltf_meshes(Load_Mesh_Info *info, u32 count, Gltf_Mesh *g
 
         memcpy(meshes[i].weights, gltf_mesh->weights, sizeof(float) * meshes[i].weight_count);
 
-        gltf_mesh = (Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
+        gltf_mesh = (const Gltf_Mesh*)((u8*)gltf_mesh + gltf_mesh->stride);
     }
 }
 
@@ -657,7 +657,7 @@ inline static void add_buffer_view_index(u32 idx, u32 *count, u32 *indices, u32 
 //
 // @Todo Skins, Animations, Cameras.
 //
-Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, String *gltf_file_name, u64 size_available,
+Model model_from_gltf(Model_Allocators *model_allocators, const String *model_dir, const String *gltf_file_name, u64 size_available,
                       u8 *model_buffer, u64 *ret_req_size)
 {
     u64 temp_allocator_mark = get_mark_temp(); // Reset to mark at end of function
@@ -788,7 +788,7 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
     // Repeated assert ik, a reminder for a different section...
     assert(gltf_buffer_get_count(&gltf) == 1 && "Have to loop buffers *rolls eyes*");
 
-    Gltf_Buffer *gltf_buffer = gltf.buffers;
+    const Gltf_Buffer *gltf_buffer = gltf.buffers;
 
     u32 model_dir_len = model_dir->len;
     strcpy(uri_buf + model_dir_len, gltf_buffer->uri); // Build the buffer uri.
@@ -798,7 +798,7 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
     u32 *allocation_keys = (u32*)malloc_t(sizeof(u32) * buffer_view_count);
 
     u32 tmp;
-    Gltf_Buffer_View     *gltf_buffer_view;
+    const Gltf_Buffer_View     *gltf_buffer_view;
     Gpu_Allocator_Result  allocator_result;
     for(u32 i = 0; i < index_buffer_view_count; ++i) {
         allocator_result = begin_allocation(&model_allocators->index);
@@ -836,7 +836,7 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
     u32 *tex_allocation_keys  = (u32*)malloc_t(sizeof(u32) * image_count);
 
     String image_file_name;
-    Gltf_Image *gltf_image = gltf.images;
+    const Gltf_Image *gltf_image = gltf.images;
     for(u32 i = 0; i < image_count; ++i) {
         // Fixing the below assert is trivial, but I do not need to right now. It will be done
         // when it actually fires.
@@ -852,7 +852,7 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
         allocator_result = tex_add_texture(&model_allocators->tex, &image_file_name, &tex_allocation_keys[i]);
         CHECK_GPU_ALLOCATOR_RESULT(allocator_result);
 
-        gltf_image = (Gltf_Image*)((u8*)gltf_image + gltf_image->stride);
+        gltf_image = (const Gltf_Image*)((u8*)gltf_image + gltf_image->stride);
     }
 
     u32  sampler_count = gltf_sampler_get_count(&gltf);
@@ -861,7 +861,7 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
     Get_Sampler_Info         get_sampler_info;
     Sampler_Allocator_Result sampler_result;
 
-    Gltf_Sampler *gltf_sampler = gltf.samplers;
+    const Gltf_Sampler *gltf_sampler = gltf.samplers;
     for(u32 i = 0; i < sampler_count; ++i) {
         get_sampler_info = {};
         get_sampler_info.wrap_s = (VkSamplerAddressMode)gltf_sampler->wrap_u;
@@ -873,7 +873,7 @@ Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, Str
         assert(sampler_result == SAMPLER_ALLOCATOR_RESULT_SUCCESS);
         CHECK_SAMPLER_ALLOCATOR_RESULT(sampler_result);
 
-        gltf_sampler = (Gltf_Sampler*)((u8*)gltf_sampler + gltf_sampler->stride);
+        gltf_sampler = (const Gltf_Sampler*)((u8*)gltf_sampler + gltf_sampler->stride);
     }
 
     // Point model back at the allocation keys
@@ -978,20 +978,20 @@ Model load_model(Model_Storage_Info *strorage_info) { // @Unimplemented
     return ret;
 }
 
-inline static void add_accessor_index(Array<u32> *array_index, Array<u32> *array_vertex, Accessor *accessor) {
-    array_add(array_index, &accessor->allocation_key);
+inline static void add_accessor_index(Array<u32> *array_index, Array<u32> *array_vertex, const Accessor *accessor) {
+    array_add(array_index, accessor->allocation_key);
 
     if (accessor->sparse) {
-        array_add(array_index,  &accessor->sparse->indices_allocation_key);
-        array_add(array_vertex, &accessor->sparse->values_allocation_key);
+        array_add(array_index,  accessor->sparse->indices_allocation_key);
+        array_add(array_vertex, accessor->sparse->values_allocation_key);
     }
 }
 inline static void add_accessor_vertex(Array<u32> *array_index, Array<u32> *array_vertex, Accessor *accessor) {
-    array_add(array_vertex, &accessor->allocation_key);
+    array_add(array_vertex, accessor->allocation_key);
 
     if (accessor->sparse) {
-        array_add(array_index,  &accessor->sparse->indices_allocation_key);
-        array_add(array_vertex, &accessor->sparse->values_allocation_key);
+        array_add(array_index,  accessor->sparse->indices_allocation_key);
+        array_add(array_vertex, accessor->sparse->values_allocation_key);
     }
 }
 
@@ -1004,7 +1004,7 @@ struct Key_Arrays {
     alignas(16) Primitive_Key_Counts caps;
 };
 
-static void load_primitive_resource_keys(u32 count, Mesh_Primitive *primitives, Key_Arrays *arrays) {
+static void load_primitive_resource_keys(u32 count, const Mesh_Primitive *primitives, Key_Arrays *arrays) {
     Assets *g_assets = get_assets_instance();
 
     Array<u32> array_index   = new_array_from_ptr(arrays->index,   arrays->caps.index);
@@ -1035,24 +1035,24 @@ static void load_primitive_resource_keys(u32 count, Mesh_Primitive *primitives, 
 
         // Materials
         if (primitives[i].material.flags & MATERIAL_BASE_BIT) {
-            array_add(&array_tex,     &primitives[i].material.pbr.base_color_texture.texture_key);
-            array_add(&array_sampler, &primitives[i].material.pbr.base_color_texture.sampler_key);
+            array_add(&array_tex,     primitives[i].material.pbr.base_color_texture.texture_key);
+            array_add(&array_sampler, primitives[i].material.pbr.base_color_texture.sampler_key);
         }
         if (primitives[i].material.flags & MATERIAL_PBR_BIT) {
-            array_add(&array_tex,     &primitives[i].material.pbr.metallic_roughness_texture.texture_key);
-            array_add(&array_sampler, &primitives[i].material.pbr.metallic_roughness_texture.sampler_key);
+            array_add(&array_tex,     primitives[i].material.pbr.metallic_roughness_texture.texture_key);
+            array_add(&array_sampler, primitives[i].material.pbr.metallic_roughness_texture.sampler_key);
         }
         if (primitives[i].material.flags & MATERIAL_NORMAL_BIT) {
-            array_add(&array_tex,     &primitives[i].material.normal.texture.texture_key);
-            array_add(&array_sampler, &primitives[i].material.normal.texture.sampler_key);
+            array_add(&array_tex,     primitives[i].material.normal.texture.texture_key);
+            array_add(&array_sampler, primitives[i].material.normal.texture.sampler_key);
         }
         if (primitives[i].material.flags & MATERIAL_OCCLUSION_BIT) {
-            array_add(&array_tex,     &primitives[i].material.occlusion.texture.texture_key);
-            array_add(&array_sampler, &primitives[i].material.occlusion.texture.sampler_key);
+            array_add(&array_tex,     primitives[i].material.occlusion.texture.texture_key);
+            array_add(&array_sampler, primitives[i].material.occlusion.texture.sampler_key);
         }
         if (primitives[i].material.flags & MATERIAL_EMISSIVE_BIT) {
-            array_add(&array_tex,     &primitives[i].material.emissive.texture.texture_key);
-            array_add(&array_sampler, &primitives[i].material.emissive.texture.sampler_key);
+            array_add(&array_tex,     primitives[i].material.emissive.texture.texture_key);
+            array_add(&array_sampler, primitives[i].material.emissive.texture.sampler_key);
         }
     }
 }
@@ -1138,12 +1138,16 @@ bool attempt_to_queue_tex_allocations_upload(Gpu_Tex_Allocator *allocator, u32 c
     return ret;
 }
 
+inline static bool check_queue_result(u32 key_pos, u64 *results) {
+    return results[key_pos >> 6] & (1 << (key_pos & 63));
+}
+
 enum Asset_Draw_Prep_Result {
     ASSET_DRAW_PREP_RESULT_SUCCESS = 0,
 };
 
-Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, Mesh_Primitive *primitives,
-                                                  Primitive_Key_Counts *key_counts)
+Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, const Mesh_Primitive *primitives,
+                                                  const Primitive_Key_Counts *key_counts, bool adjust_weights)
 {
     Assets *g_assets = get_assets_instance();
 
