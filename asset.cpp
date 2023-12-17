@@ -1142,12 +1142,12 @@ inline static bool check_queue_result(u32 key_pos, u64 *results) {
     return results[key_pos >> 6] & (1 << (key_pos & 63));
 }
 
-enum Asset_Draw_Prep_Result {
-    ASSET_DRAW_PREP_RESULT_SUCCESS = 0,
-};
-
-Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, const Mesh_Primitive *primitives,
-                                                  const Primitive_Key_Counts *key_counts, bool adjust_weights)
+Asset_Draw_Prep_Result load_primitive_allocations(
+    u32                         count,
+    const Mesh_Primitive       *primitives,
+    const Primitive_Key_Counts *key_counts,
+    bool                        adjust_weights,
+    u64                        *success_masks)
 {
     Assets *g_assets = get_assets_instance();
 
@@ -1162,6 +1162,7 @@ Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, const Mesh_Primitiv
     u32         primitive_job_sizes     [g_thread_count]; // The number of primitives in a job
     Key_Arrays  primitive_job_key_arrays[g_thread_count];
 
+    // Doubles as the total key count for each key type once filled in
     alignas(16) Primitive_Key_Counts accum_offsets = {};
 
     __m128i  a;
@@ -1177,6 +1178,11 @@ Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, const Mesh_Primitiv
 
         primitive_job_offsets[i]  = job_offset_accum;
         job_offset_accum         += primitive_job_sizes[i];
+
+        // @Note Sampler keys are accounted for, but are not used at this stage. I really just
+        // use them for now to pad out the 16 bytes for SIMD. I may make acquiring them part
+        // of this function, maybe just to warm up the cache, but for now the keys are unused.
+        // I cannot see any over head to them so whatever.
 
         // @SIMD This could be simd too, but it would be awkward since the pointers are a different
         // size to the offsets...
@@ -1222,29 +1228,169 @@ Asset_Draw_Prep_Result prepare_to_draw_primitives(u32 count, const Mesh_Primitiv
     // @Multithreading Wait for threads to return, and signal allocators to queue allocation keys in their
     // respective array. Each allocator queue will be controlled by a thread.
 
-    bool adjust_weights = true;
-    Model_Allocators *allocators = &g_assets->model_allocators;
+    Gpu_Allocator     *index_allocator  = &g_assets->model_allocators.index;
+    Gpu_Allocator     *vertex_allocator = &g_assets->model_allocators.vertex;
+    Gpu_Tex_Allocator *tex_allocator    = &g_assets->model_allocators.tex;
+
+    u64 *results_index_stage   = g_assets->results_index_stage;
+    u64 *results_vertex_stage  = g_assets->results_vertex_stage;
+    u64 *results_tex_stage     = g_assets->results_tex_stage;
+    u64 *results_index_upload  = g_assets->results_index_upload;
+    u64 *results_vertex_upload = g_assets->results_vertex_upload;
+    u64 *results_tex_upload    = g_assets->results_tex_upload;
+
+    u32 *keys_index  = g_assets->keys_index;
+    u32 *keys_vertex = g_assets->keys_vertex;
+    u32 *keys_tex    = g_assets->keys_tex;
+
+    // @Note Not currently acquiring samplers in this phase. Although I could, I think it would
+    // be more appropriate to get them at the image view phase. Idk though, maybe I should acquire
+    // them here just to warm up the cache.
 
     // Staging Queues
-    bool index_stage_result  = attempt_to_queue_allocations_staging(&allocators->index, accum_offsets.index,
-                                   g_assets->keys_index, g_assets->results_index_stage, adjust_weights);
-    bool vertex_stage_result = attempt_to_queue_allocations_staging(&allocators->vertex, accum_offsets.vertex,
-                                   g_assets->keys_vertex, g_assets->results_vertex_stage, adjust_weights);
-    bool tex_stage_result    = attempt_to_queue_tex_allocations_staging(&allocators->tex, accum_offsets.tex,
-                                   g_assets->keys_tex, g_assets->results_tex_stage, adjust_weights);
+    bool result_stage_index  = attempt_to_queue_allocations_staging(index_allocator, accum_offsets.index,
+                                   keys_index, results_index_stage, adjust_weights);
+    bool result_stage_vertex = attempt_to_queue_allocations_staging(vertex_allocator, accum_offsets.vertex,
+                                   keys_vertex, results_vertex_stage, adjust_weights);
+    bool result_stage_tex    = attempt_to_queue_tex_allocations_staging(tex_allocator, accum_offsets.tex,
+                                   keys_tex, results_tex_stage, adjust_weights);
 
     // Upload Queues
-    bool index_upload_result  = attempt_to_queue_allocations_upload(&allocators->index, accum_offsets.index,
-                                   g_assets->keys_index, g_assets->results_index_upload, adjust_weights);
-    bool vertex_upload_result = attempt_to_queue_allocations_upload(&allocators->vertex, accum_offsets.vertex,
-                                   g_assets->keys_vertex, g_assets->results_vertex_upload, adjust_weights);
-    bool tex_upload_result    = attempt_to_queue_tex_allocations_upload(&allocators->tex, accum_offsets.tex,
-                                   g_assets->keys_tex, g_assets->results_tex_upload, adjust_weights);
+    bool result_upload_index  = attempt_to_queue_allocations_upload(index_allocator,   accum_offsets.index,
+                                    keys_index,  results_index_upload, adjust_weights);
+    bool result_upload_vertex = attempt_to_queue_allocations_upload(vertex_allocator,  accum_offsets.vertex,
+                                    keys_vertex, results_vertex_upload, adjust_weights);
+    bool result_upload_tex    = attempt_to_queue_tex_allocations_upload(tex_allocator, accum_offsets.tex,
+                                    keys_tex,    results_tex_upload,    adjust_weights);
 
-    // @TODO CURRENT TASK!! Parse upload results to understand which primitives can be drawn and which need to
-    // be requeued, and understand which keys need to be removed from queues.
+    // @Note the above final results are unused, but later they can be used to just return the function,
+    // as a true result would mean that all allocations successfully queued, so no need for next step
 
-    return ASSET_DRAW_PREP_RESULT_SUCCESS;
+    // Parse upload results to understand which primitives can be drawn and which need to be requeued.
+    // Remove allocations from queues if other allocations for that primitive were not queued. This avoids
+    // the case where some primitive late in the array successfully queues some of its allocations, then
+    // on a requeue, earlier allocations are unable to queue all of their dependencies because of space
+    // being take up later allocations which also cannot draw because queue space is taken first by earlier
+    // primitives.
+
+    u32 key_pos_index  = 0;
+    u32 key_pos_vertex = 0;
+    u32 key_pos_tex    = 0;
+
+    u32 *to_remove_keys_index  = (u32*)malloc_t(sizeof(u32) * accum_offsets.index);
+    u32 *to_remove_keys_vertex = (u32*)malloc_t(sizeof(u32) * accum_offsets.vertex);
+    u32 *to_remove_keys_tex    = (u32*)malloc_t(sizeof(u32) * accum_offsets.tex);
+
+    u32 to_remove_key_count_index  = 0;
+    u32 to_remove_key_count_vertex = 0;
+    u32 to_remove_key_count_tex    = 0;
+
+    // The below loop fills the above arrays with allocation keys which need to be removed from allocation
+    // queues. It does this in a branchless fashion by adding every key to the arrays, but only incrementing
+    // the length of the array if the key actually needs to be removed. This technically incurs a bunch more
+    // work on every call of this function, but I think that really it is only really one extra 32 bit mov
+    // per key, which seems like a good price to pay for not branching. Especially since we could just
+    // skip all of this work using the above results from the allocator calls. Maybe we want to just do this
+    // anyway, justified by the Carmack email thread on Jon Blow's blog - (http://number-none.com/blow/blog/programming/2014/09/26/carmack-on-inlined-code.html).
+
+    // @Multithreading The below loop with four sub could become four jobs, hence the separate masks.
+
+    const u32 success_mask_count = g_primitive_draw_queue_success_mask_count;
+
+    u64 success_masks_index [success_mask_count] = {};
+    u64 success_masks_vertex[success_mask_count] = {};
+    u64 success_masks_tex   [success_mask_count] = {};
+
+    u32  success_count;
+    u32  req_count;
+    u32  have_count;
+    bool result_stage;
+    bool result_upload;
+    Primitive_Key_Counts key_count;
+    for(u32 i = 0; i < count; ++i) {
+        key_count     = key_counts[i];
+        req_count     = (key_count.index + key_count.vertex + key_count.tex) * 2; // x2 for stage + upload
+        success_count = 0;
+
+        // @SIMD I would like to simd the below stuff, such as storing four keys at a time, but to make this
+        // work the keys per primitive would really have to be aligned to a 16 byte boundary which would make
+        // it annoying to take them from the array into the allocator. You can make this work by always taking
+        // the next 32 bits and just padding with some null key, like Max_u32 that the allocator knows about.
+        // This might be fun to do later, but for now I will chill on it.
+        for(u32 j = 0; j < key_count.index; ++j) {
+            result_stage  = (results_index_stage [key_pos_index >> 6] & (1 << (key_pos_index & 63))) > 0;
+            result_upload = (results_index_upload[key_pos_index >> 6] & (1 << (key_pos_index & 63))) > 0;
+
+            success_count += result_stage + result_upload;
+
+            to_remove_keys_index[to_remove_key_count_index] = keys_index[key_pos_index];
+
+            to_remove_key_count_index   +=  result_stage && result_upload;
+            success_masks_index[i >> 6] |= (result_stage && result_upload) << (i & 63);
+
+            key_pos_index++;
+        }
+
+        for(u32 j = 0; j < key_count.vertex; ++j) {
+            result_stage  = (results_vertex_stage [key_pos_vertex >> 6] & (1 << (key_pos_vertex & 63))) > 0;
+            result_upload = (results_vertex_upload[key_pos_vertex >> 6] & (1 << (key_pos_vertex & 63))) > 0;
+
+            success_count += result_stage + result_upload;
+
+            to_remove_keys_vertex[to_remove_key_count_vertex] = keys_vertex[key_pos_vertex];
+
+            to_remove_key_count_vertex   +=  result_stage && result_upload;
+            success_masks_vertex[i >> 6] |= (result_stage && result_upload) << (i & 63);
+
+            key_pos_vertex++;
+        }
+
+        for(u32 j = 0; j < key_count.tex; ++j) {
+            result_stage  = (results_tex_stage [key_pos_tex >> 6] & (1 << (key_pos_tex & 63))) > 0;
+            result_upload = (results_tex_upload[key_pos_tex >> 6] & (1 << (key_pos_tex & 63))) > 0;
+
+            success_count += result_stage + result_upload;
+
+            to_remove_keys_tex[to_remove_key_count_tex] = keys_tex[key_pos_tex];
+
+            to_remove_key_count_tex   +=  result_stage && result_upload;
+            success_masks_tex[i >> 6] |= (result_stage && result_upload) << (i & 63);
+
+            key_pos_tex++;
+        }
+        assert(success_count <= req_count && "How do we have more allocations successful than we have allocations to check... ummm ur bad programmer broski! Fix ur algorithm.");
+    }
+    assert(key_pos_index == accum_offsets.index && key_pos_vertex == accum_offsets.vertex && key_pos_tex == accum_offsets.tex && "Did not pass all keys somewhere");
+
+    // @Multithreading These will each be a job for the corresponding allocator threads.
+
+    for(u32 i = 0; i < to_remove_key_count_index; ++i) {
+        staging_queue_upload_queue_remove(index_allocator, to_remove_keys_index[i]);
+    }
+
+    for(u32 i = 0; i < to_remove_key_count_vertex; ++i) {
+        staging_queue_upload_queue_remove(vertex_allocator, to_remove_keys_vertex[i]);
+    }
+
+    for(u32 i = 0; i < to_remove_key_count_tex; ++i) {
+        tex_staging_queue_upload_queue_remove(tex_allocator, to_remove_keys_tex[i]);
+    }
+
+    // Return which primitives were successfully queued.
+    for(u32 i = 0; i < success_mask_count; ++i) {
+        success_masks[i] = success_masks_index[i] & success_masks_vertex[i] & success_masks_tex[i];
+    }
+
+    if (result_stage_index  && result_stage_vertex  && result_stage_tex &&
+        result_upload_index && result_upload_vertex && result_upload_tex)
+    {
+        return ASSET_DRAW_PREP_RESULT_SUCCESS;
+    } else {
+        // I guess partial is a little misleading, since it could be the case that nothing was queued.
+        // But that should never happen: the arch around queue submission should only be calling this function
+        // if it is the correct time to do so. So I am happy with PARTIAL.
+        return ASSET_DRAW_PREP_RESULT_PARTIAL;
+    }
 }
 
 #if TEST // 500 lines of tests EOF

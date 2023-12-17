@@ -34,6 +34,8 @@ constexpr u32 g_assets_result_masks_image_view_count = 8;
 
 constexpr u32 g_assets_pipelines_array_len = 256;
 
+constexpr u32 g_primitive_draw_queue_success_mask_count = 8;
+
 constexpr u32 g_model_buffer_size                 = 1024 * 1024;
 constexpr u32 g_model_buffer_allocation_alignment = 16;
 
@@ -276,14 +278,33 @@ struct Model {
     Mesh *meshes;
 };
 
-Model model_from_gltf(Model_Allocators *model_allocators, String *model_dir, String *gltf_file_name,
-                      u64 size_available, u8 *model_buffer, u64 *ret_req_size);
+Model model_from_gltf(
+    Model_Allocators *model_allocators,
+    const String     *model_dir,
+    const String     *gltf_file_name,
+    u64               size_available,
+    u8               *model_buffer,
+    u64              *ret_req_size);
 
 struct Model_Storage_Info {
     u64 offset;
     u64 size;
 };
 Model_Storage_Info store_model(Model *model); // @Unimplemented
-Model              load_model (String *gltf_file);
+Model              load_model (String *gltf_file); // @Unimplemented
+
+enum Asset_Draw_Prep_Result {
+    ASSET_DRAW_PREP_RESULT_SUCCESS = 0,
+    ASSET_DRAW_PREP_RESULT_PARTIAL = 1,
+};
+
+// @TODO CURRENT TASK!! Write tests for this function. This should not take too long, since the only thing
+// to test are the return masks.
+Asset_Draw_Prep_Result load_primitive_allocations(
+    u32                         count,
+    const Mesh_Primitive       *primitives,
+    const Primitive_Key_Counts *key_counts,
+    bool                        adjust_weights,
+    u64                        *success_masks);
 
 #endif // include guard
