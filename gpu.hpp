@@ -874,7 +874,7 @@ struct Descriptor_Allocator {
 };
 
 // Does not need to be freed
-Descriptor_Allocator get_descriptor_allocator(u64 size, u8 *mem, VkBuffer buf);
+Descriptor_Allocator get_descriptor_allocator(u64 size, void *mem, VkBuffer buf);
 
 u8*  descriptor_allocate_layout             (Descriptor_Allocator *alloc, u64 size, u64 *offset);
 void descriptor_write_uniform_buffer        (Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem);

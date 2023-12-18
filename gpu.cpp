@@ -1210,7 +1210,7 @@ void free_memory() {
 }
 
 // `Shaders + Descriptors
-Descriptor_Allocator get_descriptor_allocator(u64 size, u8 *mem, VkBuffer buf) {
+Descriptor_Allocator get_descriptor_allocator(u64 size, void *mem, VkBuffer buf) {
     Gpu *gpu        = get_gpu_instance();
     VkDevice device = gpu->device;
 
@@ -1220,7 +1220,7 @@ Descriptor_Allocator get_descriptor_allocator(u64 size, u8 *mem, VkBuffer buf) {
     Descriptor_Allocator ret;
     ret.cap  = size;
     ret.used = 0;
-    ret.mem  = mem;
+    ret.mem  = (u8*)mem;
     ret.buf  = buf;
     ret.buffer_address = vkGetBufferDeviceAddress(device, &address_info);
 
