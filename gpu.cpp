@@ -1618,8 +1618,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     // if weights didnt change, dont loop
     count &= ~(Max_u32 + (u32)(args->inc || args->dec));
 
-    // if weights didnt change, pos = idx
-    u32 pos = idx | ~(Max_u32 + (u32)(args->dec || args->inc));
+    u32 pos = idx;
 
     u8 *weights = args->weights;
     for(inc = 0; inc < count; inc += 16) {
@@ -1705,8 +1704,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     // if weights didnt change, dont loop
     count &= ~(Max_u32 + (u32)(args->inc || args->dec));
 
-    // if weights didnt change, pos = idx
-    u32 pos = idx | ~(Max_u32 + (u32)(args->dec || args->inc));
+    u32 pos = idx;
 
     u8 *weights = args->weights;
     for(inc = 0; inc < count; inc += 16) {
