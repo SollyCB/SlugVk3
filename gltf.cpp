@@ -1557,6 +1557,9 @@ Gltf_Mesh_Primitive* gltf_parse_mesh_primitives(const char *data, u64 *offset, i
                     target_mark = get_mark_temp();
                     target =
                         (Gltf_Morph_Target*)malloc_t(sizeof(Gltf_Morph_Target), 8);
+
+                    *target = {};
+
                     target->attributes =
                         gltf_parse_mesh_attributes(data + inc, &inc, &target->attribute_count, true, NULL, NULL, NULL, NULL);
 
@@ -1595,9 +1598,10 @@ Gltf_Mesh_Attribute* gltf_parse_mesh_attributes(const char *data, u64 *offset, i
     while(simd_find_char_interrupted(data + inc, '"', '}', &inc)) {
         inc++; // step into key
         // aligning to 4 allows for regular indexing
-        if      (simd_strcmp_short(data + inc, "NORMALxxxxxxxxxx", 10) == 0) {
+        if (simd_strcmp_short(data + inc, "NORMALxxxxxxxxxx", 10) == 0) {
             if (targets) {
                 attribute = (Gltf_Mesh_Attribute*)malloc_t(sizeof(Gltf_Mesh_Attribute), 4);
+                attribute->n = 0;
                 attribute->type           = GLTF_MESH_ATTRIBUTE_TYPE_NORMAL;
                 attribute->accessor_index = gltf_ascii_to_int(data + inc, &inc);
                 count++;
@@ -1609,6 +1613,7 @@ Gltf_Mesh_Attribute* gltf_parse_mesh_attributes(const char *data, u64 *offset, i
         else if (simd_strcmp_short(data + inc, "POSITIONxxxxxxxx",  8) == 0) {
             if (targets) {
                 attribute = (Gltf_Mesh_Attribute*)malloc_t(sizeof(Gltf_Mesh_Attribute), 4);
+                attribute->n = 0;
                 attribute->type = GLTF_MESH_ATTRIBUTE_TYPE_POSITION;
                 attribute->accessor_index = gltf_ascii_to_int(data + inc, &inc);
                 count++;
@@ -1620,6 +1625,7 @@ Gltf_Mesh_Attribute* gltf_parse_mesh_attributes(const char *data, u64 *offset, i
         else if (simd_strcmp_short(data + inc, "TANGENTxxxxxxxxx",  9) == 0) {
             if (targets) {
                 attribute = (Gltf_Mesh_Attribute*)malloc_t(sizeof(Gltf_Mesh_Attribute), 4);
+                attribute->n = 0;
                 attribute->type = GLTF_MESH_ATTRIBUTE_TYPE_TANGENT;
                 attribute->accessor_index = gltf_ascii_to_int(data + inc, &inc);
                 count++;
