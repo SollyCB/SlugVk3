@@ -1774,7 +1774,7 @@ void adjust_weights(u32 count, u8 *weights, u32 idx, s8 inc, s8 dec) {
     dec |= max8_if_true(dec > 127);
     inc &= 127;
     dec &= 127;
- 
+
     s8 w    = s_weights[idx];
     s8 tmp  = w + inc;
     tmp    |= Max_u8 + (tmp >= w);
@@ -2234,35 +2234,51 @@ static void recreate_images(Gpu_Tex_Allocator *alloc, u32 count, u32 *indices) {
 
     /* Model Texture and Vertex/Index Attribute Allocators */
 Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocator *allocator) {
-    assert(config->stage_bit_granularity  % 2 == 0 && "Bit granularity must be a power of 2");
-    assert(config->upload_bit_granularity % 2 == 0 && "Bit granularity must be a power of 2");
+    if ((config->stage_bit_granularity  & (config->stage_bit_granularity  - 1)) != 0) {
+        println("Misaligned Bit Granularity (Stage):");
+        println("    config->stage_bit_granularity = %u - this is not a power of 2");
 
-    if (config->stage_bit_granularity  % 2 != 0 ||
-        config->upload_bit_granularity % 2 != 0)
-    {
+        assert(false && "Bit Granularity Must Be A Power Of 2");
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+    if ((config->upload_bit_granularity & (config->upload_bit_granularity - 1)) != 0) {
+        println("Misaligned Bit Granularity (Upload):");
+        println("    config->upload_bit_granularity = %u - this is not a power of 2");
+
+        assert(false && "Bit Granularity Must Be A Power Of 2");
         return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
-    assert(config->stage_cap  % config->stage_bit_granularity  == 0 &&
-          "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
-    assert(config->upload_cap % config->upload_bit_granularity == 0 &&
-          "Bit granularity must be aligned to capacity && see implementation details for info (grep '~MAID')");
+    if ((config->stage_cap & (config->stage_bit_granularity  - 1)) != 0) {
+        println("Misaligned Bit Granularity (Stage):");
+        println("    config->stage_bit_granularity = %u, config->stage_cap = %u - cap must be a multiple of bit granularity", config->stage_bit_granularity, config->stage_cap);
 
-    if (config->stage_cap   % config->stage_bit_granularity  != 0 ||
-        config->upload_cap  % config->upload_bit_granularity != 0)
-    {
+        assert(false && "Bit Granularity Must Be A Power Of 2");
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+    if ((config->upload_cap & (config->upload_bit_granularity - 1)) != 0) {
+        println("Misaligned Bit Granularity (Upload):");
+        println("    config->upload_bit_granularity = %u, config->upload_cap = %u - cap must be a multiple of bit granularity", config->upload_bit_granularity, config->upload_cap);
+
+        assert(false && "Bit Granularity Must Be A Power Of 2");
         return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
     Gpu *gpu = get_gpu_instance();
-    assert(config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 &&
-          "Bit granularity must be aligned to the optimal buffer copy offset alignment");
-    assert(config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 &&
-          "Bit granularity must be aligned to the optimal buffer copy offset alignment");
 
-    if (config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0 ||
-        config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0)
-    {
+    // Have to do mod here, as this optimal alignment can be 1
+    if (config->stage_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0) {
+        println("Misaligned Bit Granularity (Stage):");
+        println("    config->stage_bit_granularity  = %u, optimal buffer copy alignment = %u - bit granularity must be aligned to optimal buffer copy offset alignment", config->stage_bit_granularity, gpu->info.props.limits.optimalBufferCopyOffsetAlignment);
+
+        assert(false && "Bit granularity must be aligned to the optimal buffer copy offset alignment");
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+    if (config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0) {
+        println("Misaligned Bit Granularity (Upload):");
+        println("    config->upload_bit_granularity = %u, optimal buffer copy alignment = %u - bit granularity must be aligned to optimal buffer copy offset alignment", config->upload_bit_granularity, gpu->info.props.limits.optimalBufferCopyOffsetAlignment);
+
+        assert(false && "Bit granularity must be aligned to the optimal buffer copy offset alignment");
         return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
@@ -2273,6 +2289,7 @@ Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocato
     ret.upload_queue_byte_cap  = config->upload_queue_byte_cap;
     ret.allocation_cap         = config->allocation_cap;
     ret.stage_cap              = config->stage_cap;
+    ret.upload_cap             = config->upload_cap;
     ret.stage_bit_granularity  = config->stage_bit_granularity;
     ret.upload_bit_granularity = config->upload_bit_granularity;
     ret.stage_ptr              = config->stage_ptr;
@@ -2368,36 +2385,53 @@ void destroy_allocator(Gpu_Allocator *alloc) {
 
     *alloc = {};
 }
-Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_Tex_Allocator *allocator) {
-    assert(config->stage_bit_granularity  % 2 == 0 && "Bit granularity must be a power of 2");
-    assert(config->upload_bit_granularity % 2 == 0 && "Bit granularity must be a power of 2");
 
-    if (config->stage_bit_granularity  % 2 != 0 ||
-        config->upload_bit_granularity % 2 != 0)
-    {
+Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_Tex_Allocator *allocator) {
+    if ((config->stage_bit_granularity  & (config->stage_bit_granularity  - 1)) != 0) {
+        println("Misaligned Bit Granularity (Stage):");
+        println("    config->stage_bit_granularity = %u - this is not a power of 2");
+
+        assert(false && "Bit Granularity Must Be A Power Of 2");
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+    if ((config->upload_bit_granularity & (config->upload_bit_granularity - 1)) != 0) {
+        println("Misaligned Bit Granularity (Upload):");
+        println("    config->upload_bit_granularity = %u - this is not a power of 2");
+
+        assert(false && "Bit Granularity Must Be A Power Of 2");
         return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
-    assert(config->stage_cap  % config->stage_bit_granularity  == 0 &&
-          "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
-    assert(config->upload_cap % config->upload_bit_granularity == 0 &&
-          "Bit granularity must be aligned to capacity, see implementation details for info (grep '~MAID')");
+    if ((config->stage_cap & (config->stage_bit_granularity  - 1)) != 0) {
+        println("Misaligned Bit Granularity (Stage):");
+        println("    config->stage_bit_granularity = %u, config->stage_cap = %u - cap must be a multiple of bit granularity", config->stage_bit_granularity, config->stage_cap);
 
-    if (config->stage_cap   % config->stage_bit_granularity  != 0 ||
-        config->upload_cap  % config->upload_bit_granularity != 0)
-    {
+        assert(false && "Bit Granularity Must Be A Power Of 2");
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+    if ((config->upload_cap & (config->upload_bit_granularity - 1)) != 0) {
+        println("Misaligned Bit Granularity (Upload):");
+        println("    config->upload_bit_granularity = %u, config->upload_cap = %u - cap must be a multiple of bit granularity", config->upload_bit_granularity, config->upload_cap);
+
+        assert(false && "Bit Granularity Must Be A Power Of 2");
         return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
     Gpu *gpu = get_gpu_instance();
-    assert(config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 &&
-          "Bit granularity must be aligned to the optimal buffer copy offset alignment");
-    assert(config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment == 0 &&
-          "Bit granularity must be aligned to the optimal buffer copy offset alignment");
 
-    if (config->stage_bit_granularity  % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0 ||
-        config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0)
-    {
+    // Have to do mod here, as this optimal alignment can be 1
+    if (config->stage_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0) {
+        println("Misaligned Bit Granularity (Stage):");
+        println("    config->stage_bit_granularity  = %u, optimal buffer copy alignment = %u - bit granularity must be aligned to optimal buffer copy offset alignment", config->stage_bit_granularity, gpu->info.props.limits.optimalBufferCopyOffsetAlignment);
+
+        assert(false && "Bit granularity must be aligned to the optimal buffer copy offset alignment");
+        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
+    }
+    if (config->upload_bit_granularity % gpu->info.props.limits.optimalBufferCopyOffsetAlignment != 0) {
+        println("Misaligned Bit Granularity (Upload):");
+        println("    config->upload_bit_granularity = %u, optimal buffer copy alignment = %u - bit granularity must be aligned to optimal buffer copy offset alignment", config->upload_bit_granularity, gpu->info.props.limits.optimalBufferCopyOffsetAlignment);
+
+        assert(false && "Bit granularity must be aligned to the optimal buffer copy offset alignment");
         return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
     }
 
@@ -2408,6 +2442,7 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     ret.upload_queue_byte_cap  = config->upload_queue_byte_cap;
     ret.allocation_cap         = config->allocation_cap;
     ret.stage_cap              = config->stage_cap;
+    ret.upload_cap             = config->upload_cap;
     ret.stage_bit_granularity  = config->stage_bit_granularity;
     ret.upload_bit_granularity = config->upload_bit_granularity;
     ret.string_buffer          = create_string_buffer(config->string_buffer_size);
@@ -2415,16 +2450,15 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     ret.stage                  = config->stage;
     ret.upload                 = config->upload;
 
-    u32 allocation_cap = ret.allocation_cap;
-    ret.allocations        =         (Gpu_Tex_Allocation*) malloc_h(sizeof(Gpu_Allocation)             * allocation_cap, 16);
-    ret.allocation_states  = (Gpu_Allocation_State_Flags*) malloc_h(sizeof(Gpu_Allocation_State_Flags) * allocation_cap, 16);
-    ret.allocation_indices =                            (u32*) malloc_h(sizeof(u32)                    * allocation_cap, 16);
-    ret.allocation_weights =                             (u8*) malloc_h(sizeof(u8)                     * allocation_cap, 16);
-    ret.hashes             =                            (u64*) malloc_h(sizeof(u64)                    * allocation_cap, 16);
+    ret.allocations        =             (Gpu_Tex_Allocation*)malloc_h(sizeof(Gpu_Allocation)             * ret.allocation_cap, 16);
+    ret.allocation_states  =     (Gpu_Allocation_State_Flags*)malloc_h(sizeof(Gpu_Allocation_State_Flags) * ret.allocation_cap, 16);
+    ret.allocation_indices =                            (u32*)malloc_h(sizeof(u32)                        * ret.allocation_cap, 16);
+    ret.allocation_weights =                             (u8*)malloc_h(sizeof(u8)                         * ret.allocation_cap, 16);
+    ret.hashes             =                            (u64*)malloc_h(sizeof(u64)                        * ret.allocation_cap, 16);
 
-    memset(ret.allocation_states,   0, sizeof(u8)  * allocation_cap);
-    memset(ret.allocation_weights,  0, sizeof(u8)  * allocation_cap);
-    memset(ret.hashes,              0, sizeof(u64) * allocation_cap);
+    memset(ret.allocation_states,   0, sizeof(u8)  * ret.allocation_cap);
+    memset(ret.allocation_weights,  0, sizeof(u8)  * ret.allocation_cap);
+    memset(ret.hashes,              0, sizeof(u64) * ret.allocation_cap);
 
     ret.stage_mask_count  = config->stage_cap  / (64 * ret.stage_bit_granularity);
     ret.upload_mask_count = config->upload_cap / (64 * ret.upload_bit_granularity);
@@ -2519,6 +2553,10 @@ void destroy_tex_allocator(Gpu_Tex_Allocator *alloc) {
 //  ** Model Allocation implementation details (grep marker: ~MAID) **
 //                  @Todo Explain the implementation.
 //
+// @Todo Setting the flags to 'TO_STAGE' on allocations that are automatically added to the staging queue
+// by their weight and their lack of being staged should be done with simd find and update flags: that loop
+// should only check sizes to find the last allocation to add to the queue, then we can run to that index
+// with the find and update.
 
 // begin/continue/submit_allocation(..) explanation:
 //
@@ -2542,10 +2580,7 @@ Gpu_Allocator_Result begin_allocation(Gpu_Allocator *alloc) {
     Gpu_Allocation *p_allocation = &alloc->allocations[alloc->allocation_count];
     *p_allocation = {};
 
-    // Open allocator disk storage (closes when the staging queue is first used).
-    // Allocations are also written to a file managed by the allocator in case
-    // of evictions from staging buffer - grep '~MAID' for details.
-    p_allocation->disk_offset = alloc->disk_size;
+    // File is closed the first time staging_queue_begin() is called
     if (!alloc->disk)
         alloc->disk = fopen(alloc->disk_storage.str, "wb");
 
@@ -2558,35 +2593,22 @@ Gpu_Allocator_Result begin_allocation(Gpu_Allocator *alloc) {
 }
 
 Gpu_Allocator_Result continue_allocation(Gpu_Allocator *alloc, u64 size, void *ptr) {
-    // @Note Test against upload cap, assuming that the stage cap is at least as large as the upload
-    // cap.
-    u64 new_aligned_queue_size = align(alloc->staging_queue_byte_count + size, alloc->upload_bit_granularity);
-    if (new_aligned_queue_size > alloc->upload_queue_byte_cap)
+
+    alloc->allocations[alloc->allocation_count].size += size;
+
+    if (align(alloc->allocations[alloc->allocation_count].size, alloc->stage_bit_granularity) > alloc->staging_queue_byte_cap) {
+        println("Allocation Size (Aligned to Stage Bit Granularity) Would Overflow The Staging Queue: allocation_size = %u, staging_queue_byte_cap = %u", alloc->allocations[alloc->allocation_count].size, alloc->staging_queue_byte_cap);
         return GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
+    }
+    if (align(alloc->allocations[alloc->allocation_count].size, alloc->upload_bit_granularity) > alloc->upload_queue_byte_cap) {
+        println("Allocation Size (Aligned to Upload Bit Granularity) Would Overflow The Upload Queue: allocation_size = %u, upload_queue_byte_cap = %u", alloc->allocations[alloc->allocation_count].size, alloc->upload_queue_byte_cap);
+        return GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
+    }
 
-    // 'ptr' should be a pointer to model data pertinent to this allocation. Read from
-    // this pointer into the allocator's disk storage.
-    fwrite(ptr, 1, size, alloc->disk);
-
-    // Adding allocations to a the allocators should happen at a specific stage
-    // in the program, a stage which happens before using the '..queue..' functions
-    // below. Therefore, at this stage we can treat the allocator as a simple
-    // linear allocator. Since we already have the data in memory, if there is still
-    // room in the staging buffer, copy it in. (Note that allocations which are expected
-    // to be needed often should be added to the allocators first to take advantage of
-    // this pseudo caching.)
-    //
-    // @Note Sizes are not aligned here as these are *continued* allocations. Only
-    // the final allocation size should be aligned, obvs. Also, bytes_staged is already aligned.
-    //
-    // @Note If a later 'continue_allocation(..)' fails, it does not matter that there is data leftover
-    // in the staging buffer, as bytes staged acts as the base offset for any new allocation, and is
-    // not incremented until the allocation is successfully submitted. So any future allocation will
-    // just overwrite this data.
-    if (alloc->bytes_staged + new_aligned_queue_size < alloc->stage_cap)
-        memcpy((u8*)alloc->stage_ptr + alloc->bytes_staged + alloc->staging_queue_byte_count, ptr, size);
-
+    // Use the staging queue as temp storage while adding allocations to the allocator
+    memcpy((u8*)alloc->stage_ptr + alloc->staging_queue_byte_count, ptr, size);
     alloc->staging_queue_byte_count += size;
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
@@ -2595,22 +2617,13 @@ Gpu_Allocator_Result submit_allocation(Gpu_Allocator *alloc, u32 *key) {
     Gpu_Allocation *allocations        = alloc->allocations;
     Gpu_Allocation_State_Flags *states = alloc->allocation_states;
 
-    // Ensure state beyond allocation_count has not been messed with SIMD overlap).
-    // @Note the SIMD helper functions used by these allocators have been tested, but best be safe:
-    // this would be a very painful bug to try to catch so I will just avoid...
-    states[allocation_count] = 0x0;
+    // Write total allocation to disk for faster reloading.
+    fwrite(alloc->stage_ptr, 1, allocations[allocation_count].size, alloc->disk);
 
-    // Set final allocation size and offset bytes_staged, aligned for the next allocation.
-    // If the allocation fitted into the staging queue, update state and stage offset.
-    u64 aligned_bytes_staged = align(alloc->staging_queue_byte_count + alloc->bytes_staged, alloc->stage_bit_granularity);
-    if (aligned_bytes_staged <= alloc->stage_cap) {
-        //states     [allocation_count]             |= ALLOCATION_STATE_STAGED_BIT; commented out for testing
-        allocations[allocation_count].stage_offset = alloc->bytes_staged;
-        alloc->bytes_staged                        = aligned_bytes_staged;
-    }
-    allocations[allocation_count].size        = alloc->staging_queue_byte_count;
-    allocations[allocation_count].disk_offset = alloc->disk_size;
-    alloc->disk_size                         += allocations[allocation_count].size;
+    allocations[allocation_count].disk_offset  = alloc->disk_size;
+    alloc->disk_size                          += allocations[allocation_count].size;
+
+    states[allocation_count] = 0x0;
 
     // '*key' is an index which corresponds to this allocation's index in the
     // '.indices' field of the allocator. As the allocator is used, allocations
@@ -2644,14 +2657,6 @@ Gpu_Allocator_Result staging_queue_begin(Gpu_Allocator *alloc) {
 }
 
 Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust_weights) {
-    if (alloc->to_stage_count >= alloc->to_stage_cap)
-        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
-
-    // Adjust the allocations' cache weights.
-    //
-    // @Note This function does a number of things - see the allocator implementation explanation to
-    // understand (grep '~MAID').
-
     u8 inc = 10 & ~(Max_u8 + (u8)(adjust_weights));
     u8 dec =  1 & ~(Max_u8 + (u8)(adjust_weights));
 
@@ -2670,30 +2675,34 @@ Gpu_Allocator_Result staging_queue_add(Gpu_Allocator *alloc, u32 key, bool adjus
 
     u32 idx = alloc->allocation_indices[key];
 
-    // Indicate that the allocation has been called up.
-    states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
-
     // If the allocation is already staged or marked to be staged, early return.
     if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT) {
+
+        // Indicate that the allocation has been called up.
+        states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
+
         adjust_allocation_weights(&w_args);
         return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
 
+    if (alloc->to_stage_count >= alloc->to_stage_cap)
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
+
     // Allocations' offsets must be aligned to their representation in the allocator bit masks.
     // See the implementation info for details (grep '~MAID').
     u64 bit_aligned_size = align(allocations[idx].size, alloc->stage_bit_granularity);
+
     if (bit_aligned_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
         // If the queue add fails, we do not want stuff marked as to draw that is not also part of a queue.
-        states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
-    states[idx]                     |= ALLOCATION_STATE_TO_STAGE_BIT;
+    states[idx] |= ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT;
+
     alloc->staging_queue_byte_count += bit_aligned_size;
     alloc->to_stage_count++;
 
-    // Only adjust weights if the queue was successful, otherwise retries to add an allocation to the
-    // queue will make the weights inaccurate.
+    // 'idx' becomes invalid after this call
     adjust_allocation_weights(&w_args);
 
     return GPU_ALLOCATOR_RESULT_SUCCESS;
@@ -2711,16 +2720,17 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
         return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
 
-    Gpu_Allocation_State_Flags *states = alloc->allocation_states;
-    Gpu_Allocation *allocations        = alloc->allocations;
-    u32         allocation_count   = alloc->allocation_count;
-    u64         queue_size         = alloc->staging_queue_byte_count;
+    Gpu_Allocation_State_Flags *states      = alloc->allocation_states;
+    Gpu_Allocation             *allocations = alloc->allocations;
+
+    u32 allocation_count = alloc->allocation_count;
+    u64 queue_size       = alloc->staging_queue_byte_count;
 
     u32 mask_count = alloc->stage_mask_count;
     u64 *masks     = alloc->stage_masks;
 
-    u32 g          = alloc->stage_bit_granularity;
-    u32 req_bits   = alloc->staging_queue_byte_count / g; // This size is aligned to g (being the sum of aligned sizes), so need to worry about remainder
+    u32 g        = alloc->stage_bit_granularity;
+    u32 req_bits = alloc->staging_queue_byte_count / g; // This size is aligned to g (being the sum of aligned sizes), so need to worry about remainder
 
     u32 indices_count;
     u32 *indices = (u32*)malloc_t(sizeof(u32) * allocation_count, 16); // Align 16 for SIMD
@@ -2752,10 +2762,9 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
         for(u32 i = indices_count - 1; i != Max_u32; --i) {
             u32 idx = indices[i];
 
-            // @Note Really g should always be power of 2, so these should be bit shifts, not
-            // divides. I really do not like these divides... 20 cycles...
+            // @Todo Really g should always be power of 2, so these should be a bit shifts, not divides.
             bit_size   = align(allocations[idx].size, g) / g;
-            bit_offset = align(allocations[idx].stage_offset, g) / g;
+            bit_offset = allocations[idx].stage_offset / g;
 
             // Clear the allocation's range in the bit masks, and check if there is now a large
             // enough free block.
@@ -2803,11 +2812,10 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
         if (size > block_size - queue_size)
             break;
         else
-            // @Note @Todo This should also be implemented as simd_update_flags(..) but with offset
-            // and limit.
             states[idx] |= ALLOCATION_STATE_TO_STAGE_BIT;
     }
-    // Get the final list of allocations to stage.
+    // Get the final list of allocations to stage (comprised of those called up by 'queue_add()', and those
+    // grabbed from the above loop').
     indices_count = simd_find_flags_u8(allocation_count, states, ALLOCATION_STATE_TO_STAGE_BIT, 0x00, indices);
 
     // Loop vars
@@ -2815,10 +2823,7 @@ Gpu_Allocator_Result staging_queue_submit(Gpu_Allocator *alloc) {
     FILE *disk       = fopen(alloc->disk_storage.str, "rb");
     void *stage_ptr  = alloc->stage_ptr;
 
-    // Read the data from the allocator's buffer file into the staging buffer. If you think that
-    // having copies of this data in gltf buffers AND the allocators, AND doing the copies on every
-    // run, I agree with you, but I justify this system in the implementation details - grep
-    // '~MAID'.
+    // Read the data from the allocator's buffer file into the staging buffer.
     for(u32 i = 0; i < indices_count; ++i) {
         idx = indices[i];
 
@@ -2847,15 +2852,14 @@ Gpu_Allocator_Result upload_queue_begin(Gpu_Allocator *alloc) {
     // indicating that the queue is safe to use again.
     if (alloc->to_upload_count != Max_u32)
         return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
+
     alloc->to_upload_count = 0;
     alloc->upload_queue_byte_count = 0;
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust_weights) {
-    if (alloc->to_upload_count >= alloc->to_upload_cap)
-        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
-
     u8 inc = 10 & ~(Max_u32 + (u32)(adjust_weights));
     u8 dec =  1 & ~(Max_u32 + (u32)(adjust_weights));
 
@@ -2872,16 +2876,19 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust
 
     u32 idx = alloc->allocation_indices[key];
 
-    // Indicate that the allocation has been called up.
-    alloc->allocation_states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
-
     // If the allocation is already uploaded or marked to be uploaded, early return.
     if (alloc->allocation_states[idx] & ALLOCATION_STATE_UPLOADED_BIT ||
         alloc->allocation_states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT)
     {
+        // Indicate that the allocation has been called up.
+        alloc->allocation_states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
+
         adjust_allocation_weights(&w_args);
         return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
+
+    if (alloc->to_upload_count >= alloc->to_upload_cap)
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
 
     // Allocations' offsets must be aligned to their representation in the allocator bit masks.
     // See the implementation info for details (grep '~MAID').
@@ -2889,16 +2896,14 @@ Gpu_Allocator_Result upload_queue_add(Gpu_Allocator *alloc, u32 key, bool adjust
     if (bit_align_size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap) {
         // If the queue add fails, we do not want stuff marked as to draw that is not also part of a
         // queue.
-        alloc->allocation_states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
-    alloc->allocation_states[idx]  |= ALLOCATION_STATE_TO_UPLOAD_BIT;
+    alloc->allocation_states[idx]  |= ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT;
     alloc->upload_queue_byte_count += bit_align_size;
     alloc->to_upload_count++;
 
-    // Only adjust weights if the queue was successful, otherwise retries to add an allocation to the
-    // queue will make the weights inaccurate.
+    // 'idx' becomes invalid after this call.
     adjust_allocation_weights(&w_args);
 
     return GPU_ALLOCATOR_RESULT_SUCCESS;
@@ -2912,10 +2917,11 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
         return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
 
-    Gpu_Allocation_State_Flags *states = alloc->allocation_states;
-    Gpu_Allocation  *allocations       = alloc->allocations;
-    u32          allocation_count  = alloc->allocation_count;
-    u64          queue_size        = alloc->upload_queue_byte_count;
+    Gpu_Allocation_State_Flags *states      = alloc->allocation_states;
+    Gpu_Allocation             *allocations = alloc->allocations;
+
+    u32 allocation_count  = alloc->allocation_count;
+    u64 queue_size        = alloc->upload_queue_byte_count;
 
     u32 mask_count = alloc->upload_mask_count;
     u64 *masks     = alloc->upload_masks;
@@ -2957,7 +2963,7 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
             //
             // Find the allocation's range (adjusted to the range in bits).
             bit_size   = align(allocations[idx].size, g) / g;
-            bit_offset = align(allocations[idx].upload_offset, g) / g;
+            bit_offset = allocations[idx].upload_offset / g;
 
             // Clear the allocation's range in the bit masks, and check if there is now a large
             // enough free block.
@@ -3006,8 +3012,6 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
         if (size > block_size - queue_size)
             break;
         else
-            // @Note @Todo This should be implemented as a simd_update_flags(..) with an offset and
-            // a limit.
             states[idx] |= ALLOCATION_STATE_TO_UPLOAD_BIT;
     }
     // Get the final list of allocations to upload.
@@ -3028,6 +3032,7 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
         regions[i].size      = p_allocation->size;
 
         upload_offset += align(p_allocation->size, g);
+        assert(upload_offset <= alloc->upload_cap && "Gpu Allocator Upload Overflow");
     }
 
     // Fill the bit masks where the data was copied to.
@@ -3156,6 +3161,7 @@ Gpu_Allocator_Result upload_queue_submit(Gpu_Allocator *alloc) {
 Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name, u32 *key) {
     // Check if the texture has already been seen. If so, early return.
     u64 hash = get_string_hash(file_name);
+
     for(u32 i = 0; i < alloc->allocation_count; ++i)
         if (hash == alloc->hashes[i]) {
             // If a texture is added to an allocator multiple times, it is probably going to be used
@@ -3190,13 +3196,15 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     // Images are forced to have four channels, as Vulkan can reject a format with fewer.
     Image image      = load_image(file_name);
     u64 image_size   = image.width * image.height * 4;
-    u64 aligned_size = align(image_size, alloc->stage_bit_granularity);
-    //println("%s image size = %u (aligned)", file_name->str, aligned_size);
 
-    // Ensure that the image can actually be staged.
-    assert(aligned_size <= alloc->staging_queue_byte_cap && "Image too large for staging queue");
-    if (aligned_size > alloc->stage_cap) {
+    if (align(image_size, alloc->stage_bit_granularity) > alloc->staging_queue_byte_cap) {
         free_image(&image);
+        println("Image %s aligned to stage_bit_granularity (%u) would overflow staging queue: image_size = %u, staging_queue_byte_cap = %u",
+                 file_name->str, alloc->stage_bit_granularity, align(image_size, alloc->stage_bit_granularity), alloc->staging_queue_byte_cap);
+
+        // Ensure that the image can actually be staged.
+        assert(false && "See above");
+
         return GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
     }
 
@@ -3221,17 +3229,14 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     VkMemoryRequirements req;
     vkGetImageMemoryRequirements(device, vk_image, &req);
 
-    assert((req.alignment & (alloc->upload_bit_granularity - 1)) == 0 && "Bit Granularity must have sufficient alignment for any image");
-    assert(req.size <= alloc->upload_queue_byte_cap && "Image too large for upload queue");
+    u64 aligned_size_upload = align(req.size, req.alignment);
 
-    // Check that alignment requirements are satisfied. Allocations' offsets must be
-    // aligned to their bit representation (see implementation details - grep '~MAID').
+    if (aligned_size_upload > alloc->upload_queue_byte_cap) {
+        println("Image %s aligned to upload_bit_granularity (%u) would overflow upload queue: image_size = %u, upload_queue_byte_cap = %u",
+                 file_name->str, alloc->upload_bit_granularity, align(image_size, alloc->upload_bit_granularity), alloc->upload_queue_byte_cap);
 
-    if ((alloc->upload_bit_granularity & (req.alignment - 1)) != 0) {
-        vkDestroyImage(device, vk_image, ALLOCATION_CALLBACKS);
-        free_image(&image);
-        return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
-    } else if (req.size > alloc->upload_queue_byte_cap) {
+        assert(false && "See Above");
+
         vkDestroyImage(device, vk_image, ALLOCATION_CALLBACKS);
         free_image(&image);
         return GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
@@ -3241,34 +3246,21 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     Gpu_Tex_Allocation *p_allocation = &alloc->allocations[alloc->allocation_count];
     *p_allocation = {};
 
-    p_allocation->file_name = string_buffer_get_string(&alloc->string_buffer, file_name);
-    p_allocation->width     = image.width;
-    p_allocation->height    = image.height;
-    p_allocation->image     = vk_image;
-    p_allocation->size      = align(req.size, alloc->upload_bit_granularity);
+    p_allocation->file_name        = string_buffer_get_string(&alloc->string_buffer, file_name);
+    p_allocation->width            = image.width;
+    p_allocation->height           = image.height;
+    p_allocation->image            = vk_image;
+    p_allocation->size             = aligned_size_upload;
+    p_allocation->upload_alignment = req.alignment;
 
-    // Ensure these flags beyond allocation_count have not been messed with by SIMD overlap.  @Note
-    // This should never happen but this bug would be cancer so I will do my best to avoid it
-    // without incurring overhead...
     alloc->allocation_states[alloc->allocation_count] = 0x0;
 
-    // Textures should be added to allocators at a specific stage in the program,
-    // a stage which happens before any of the queue functions are used. Hence
-    // at this stage we can treat the allocator as a simple linear allocator.
-    // Since the image data is already in memory from reading its width and height,
-    // if there is room in the staging buffer, copy it in.
-    if (alloc->bytes_staged + aligned_size <= alloc->stage_cap) {
-        memcpy((u8*)alloc->stage_ptr + alloc->bytes_staged, image.data, image_size);
-
-        p_allocation->stage_offset = alloc->bytes_staged;
-        alloc->allocation_states[alloc->allocation_count] |= ALLOCATION_STATE_STAGED_BIT;
-        alloc->bytes_staged += aligned_size;
-    }
     free_image(&image);
 
     *key = alloc->allocation_count;
     alloc->allocation_indices[alloc->allocation_count] = alloc->allocation_count;
     alloc->allocation_count++;
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
@@ -3276,15 +3268,14 @@ Gpu_Allocator_Result tex_staging_queue_begin(Gpu_Tex_Allocator *alloc) {
     // .to_stage_count is set to Max_u32 on queue submission, indicating it is safe to use again.
     if (alloc->to_stage_count != Max_u32)
         return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
+
     alloc->to_stage_count = 0;
     alloc->staging_queue_byte_count = 0;
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bool adjust_weights) {
-    // Increment the allocation's cache weight since it has been called on.
-    // See implementation details to understand (grep '~MAID').
-
     u8 inc = 10 & ~(Max_u8 + (u8)(adjust_weights));
     u8 dec =  1 & ~(Max_u8 + (u8)(adjust_weights));
 
@@ -3305,11 +3296,11 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bo
 
     u32 idx = alloc->allocation_indices[key];
 
-    // Flag the allocation as having been called up.
-    states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
-
     // If the allocation is already uploaded or marked to be uploaded, early return.
     if (states[idx] & ALLOCATION_STATE_STAGED_BIT || states[idx] & ALLOCATION_STATE_TO_STAGE_BIT) {
+
+        // Flag the allocation as having been called up.
+        states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
 
         #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
         if (states[idx] & ALLOCATION_STATE_STAGED_BIT) {
@@ -3325,7 +3316,7 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bo
 
     // Allocations' offsets must be aligned to their bit representation. See implementation
     // information (grep '~MAID').
-    u64 img_size = allocations[idx].width * allocations[idx].height * 4;
+    u64 img_size         = allocations[idx].width * allocations[idx].height * 4;
     u64 bit_aligned_size = align(img_size, alloc->stage_bit_granularity);
 
     if (bit_aligned_size + alloc->staging_queue_byte_count > alloc->staging_queue_byte_cap) {
@@ -3335,11 +3326,10 @@ Gpu_Allocator_Result tex_staging_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bo
                 allocations[idx].file_name.str, alloc->staging_queue_byte_count, alloc->staging_queue_byte_cap, bit_aligned_size);
         #endif
 
-        states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
-    states[idx]                     |= ALLOCATION_STATE_TO_STAGE_BIT;
+    states[idx]                     |= ALLOCATION_STATE_TO_STAGE_BIT | ALLOCATION_STATE_TO_DRAW_BIT;
     alloc->staging_queue_byte_count += bit_aligned_size;
     alloc->to_stage_count++;
 
@@ -3416,10 +3406,9 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
             u32 idx = indices[i];
             allocation = allocations[idx];
 
-            // @Note Really g should always be power of 2, so these should be bit shifts, not
-            // divides. I really do not like these divides... 20 cycles...
+            // @Note Really g should always be power of 2, so these should be bit shifts, not divides.
             bit_size   = align(allocation.width * allocation.height * 4, g) / g;
-            bit_offset = align(allocation.stage_offset, g) / g;
+            bit_offset = allocation.stage_offset / g;
 
             // Clear the allocation's range in the bit masks, and check if there is now a large
             // enough free block.
@@ -3471,6 +3460,7 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     u64 size = 0;
     for(u32 i = 0; i < indices_count; ++i) {
         idx = indices[i];
+
         size += align(allocations[idx].width * allocations[idx].height * 4, g);
 
         // @Test This static predicts that there will be room for at least one allocation, it might be
@@ -3478,8 +3468,6 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
         if (size > block_size - queue_size) {
             break;
         } else {
-            // @Todo @Note This is lame, this should be implemented as simd_update_flags(..) with an
-            // offset and a limit.
             states[idx] |= ALLOCATION_STATE_TO_STAGE_BIT;
         }
     }
@@ -3496,14 +3484,14 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
     Gpu_Allocation *p_allocation;
 
     u64 stage_offset = free_block * g;
-    u8 *stage_ptr = (u8*)alloc->stage_ptr;
+    u8 *stage_ptr    = (u8*)alloc->stage_ptr;
+
     for(u32 i = 0; i < indices_count; ++i) {
         idx = indices[i];
 
         image      = load_image(&allocations[idx].file_name);
         image_size = image.width * image.height * 4;
 
-        assert(stage_offset + align(image_size, g) <= alloc->stage_cap && "Allocator Stage Overflow");
         memcpy(stage_ptr + stage_offset, image.data, image_size);
 
         #if TEX_ALLOCATOR_STAGING_QUEUE_PROGRESS_INFO
@@ -3511,10 +3499,11 @@ Gpu_Allocator_Result tex_staging_queue_submit(Gpu_Tex_Allocator *alloc) {
         #endif
 
         allocations[idx].stage_offset = stage_offset;
-        stage_offset += align(image_size, g);
+        stage_offset                 += align(image_size, g);
 
-        // @Todo I so despise that I did not get the temp allocator working with this. Take another
-        // look.
+        assert(stage_offset <= alloc->stage_cap && "Allocator Stage Overflow");
+
+        // @Todo I so despise that I did not get the temp allocator working with this. Take another look.
         free_image(&image);
     }
 
@@ -3537,15 +3526,14 @@ Gpu_Allocator_Result tex_upload_queue_begin(Gpu_Tex_Allocator *alloc) {
     // is safe to use again.
     if (alloc->to_upload_count != Max_u32)
         return GPU_ALLOCATOR_RESULT_QUEUE_IN_USE;
+
     alloc->to_upload_count = 0;
     alloc->upload_queue_byte_count = 0;
+
     return GPU_ALLOCATOR_RESULT_SUCCESS;
 }
 
 Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key, bool adjust_weights) {
-    if (alloc->to_upload_count >= alloc->to_upload_cap)
-        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
-
     // Increment the allocation's weight since it has been referenced.
     // See implementation info (grep '~MAID').
 
@@ -3568,33 +3556,31 @@ Gpu_Allocator_Result tex_upload_queue_add(Gpu_Tex_Allocator *alloc, u32 key, boo
 
     u32 idx = alloc->allocation_indices[key];
 
-    // Mark allocation as having been called up.
-    states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
-
     // If the allocation is already uploaded or marked to be uploaded, early return.
     if (states[idx] & ALLOCATION_STATE_UPLOADED_BIT || states[idx] & ALLOCATION_STATE_TO_UPLOAD_BIT) {
+        states[idx] |= ALLOCATION_STATE_TO_DRAW_BIT;
+
         adjust_allocation_weights(&w_args);
         return GPU_ALLOCATOR_RESULT_SUCCESS;
     }
 
-    // Allocations' offsets must be aligned to their bit representation.
-    // Grep '~MAID' for implementation information.
-    //
-    // @Note .size is already aligned to upload bit granularity.
-    u64 size = allocations[idx].size;
-    if (size + alloc->upload_queue_byte_count > alloc->upload_queue_byte_cap) {
+    if (alloc->to_upload_count >= alloc->to_upload_cap)
+        return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
+
+    u64 size                  = allocations[idx].size;
+    u64 aligned_upload_offset = align(alloc->upload_queue_byte_count, allocations[idx].upload_alignment);
+
+    if (size + aligned_upload_offset > alloc->upload_queue_byte_cap) {
         // If the queue add fails, we do not want stuff marked as to draw that is not also part of a
         // queue.
-        states[idx] &= ~ALLOCATION_STATE_TO_DRAW_BIT;
         return GPU_ALLOCATOR_RESULT_QUEUE_FULL;
     }
 
-    states[idx]                    |= ALLOCATION_STATE_TO_UPLOAD_BIT;
-    alloc->upload_queue_byte_count += size;
+    states[idx]                    |= ALLOCATION_STATE_TO_UPLOAD_BIT | ALLOCATION_STATE_TO_DRAW_BIT;
+    alloc->upload_queue_byte_count  = aligned_upload_offset + size;
     alloc->to_upload_count++;
 
-    // Only adjust weights if the queue was successful, otherwise retries to add an allocation to the
-    // queue will make the weights inaccurate.
+    // 'idx' becomes invalid after this call
     adjust_allocation_weights(&w_args);
 
     return GPU_ALLOCATOR_RESULT_SUCCESS;
@@ -3652,12 +3638,9 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
             idx = indices[i];
             allocation = allocations[idx];
 
-            // @Note Really g should always be power of 2, so these should be bit shifts, not
-            // divides. I really do not like these divides...
-            //
-            // Find the allocation's range (adjusted to the range in bits).
-            bit_size   = align(allocation.size, g);
-            bit_offset = align(allocation.upload_offset, g);
+            // @Note Really g is always a power of 2, so these should be bit shifts, not divides.
+            bit_size   = allocation.size / g; // No need to align size, as image upload sizes already are.
+            bit_offset = allocation.upload_offset / g;
 
             // Clear the allocation's range in the bit masks, and check if there is now a large
             // enough free block.
@@ -3696,8 +3679,8 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
     u64 size = 0;
     for(u32 i = 0; i < indices_count; ++i) {
         idx = indices[i];
-        // VkImage memreq sizes are already aligned to upload bit granularity. Memory offsets must be
-        // aligned to match their bit representation.
+
+        size  = align(size, allocations[idx].upload_alignment);
         size += allocations[idx].size;
 
         // @Test This static predicts that there will be room for at least one allocation, it might be
@@ -3705,8 +3688,6 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
         if (size > block_size - queue_size) {
             break;
         } else {
-            // @Note This should be implemented simd_update_flags(..) with an offset and a limit.
-            // This is lame.
             states[idx] |= ALLOCATION_STATE_TO_UPLOAD_BIT;
         }
     }
@@ -3718,10 +3699,14 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
     VkBindImageMemoryInfo *bind_infos =
         (VkBindImageMemoryInfo*)malloc_t(sizeof(VkBindImageMemoryInfo) * indices_count, 8);
 
-    Gpu_Tex_Allocation  *p_allocation;
+    Gpu_Tex_Allocation *p_allocation;
     VkDeviceMemory upload = alloc->upload;
     for(u32 i = 0; i < indices_count; ++i) {
-        p_allocation                = &allocations[indices[i]];
+        idx = indices[i];
+
+        p_allocation  = &allocations[indices[i]];
+        upload_offset = align(upload_offset, p_allocation->upload_alignment);
+
         p_allocation->upload_offset = upload_offset;
 
         bind_infos[i]              = {VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO};
@@ -3729,7 +3714,8 @@ Gpu_Allocator_Result tex_upload_queue_submit(Gpu_Tex_Allocator *alloc) {
         bind_infos[i].memory       = upload;
         bind_infos[i].memoryOffset = upload_offset;
 
-        upload_offset += p_allocation->size; // VkImage memreq sizes have already been aligned to g
+        upload_offset += p_allocation->size;
+        assert(upload_offset <= alloc->upload_cap && "Tex Allocator Upload Overflow");
     }
 
     // Fill the bit masks where the data was copied to.

@@ -322,11 +322,36 @@ enum Gpu_Allocator_Result {
     GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE       = 8,
 };
 
-#define CHECK_GPU_ALLOCATOR_RESULT(res)              \
-    if (res != GPU_ALLOCATOR_RESULT_SUCCESS) {       \
-        assert(res == GPU_ALLOCATOR_RESULT_SUCCESS); \
-        return {};                                   \
+// @Todo This should be debug only.
+inline static void CHECK_GPU_ALLOCATOR_RESULT(Gpu_Allocator_Result res) {
+    switch(res) {
+    case GPU_ALLOCATOR_RESULT_QUEUE_IN_USE:
+        assert(false && "GPU_ALLOCATOR_RESULT_QUEUE_IN_USE");
+    case GPU_ALLOCATOR_RESULT_QUEUE_FULL:
+        assert(false && "GPU_ALLOCATOR_RESULT_QUEUE_FULL");
+        break;
+    case GPU_ALLOCATOR_RESULT_STAGE_FULL:
+        assert(false && "GPU_ALLOCATOR_RESULT_STAGE_FULL");
+        break;
+    case GPU_ALLOCATOR_RESULT_UPLOAD_FULL:
+        assert(false && "GPU_ALLOCATOR_RESULT_UPLOAD_FULL");
+        break;
+    case GPU_ALLOCATOR_RESULT_ALLOCATOR_FULL:
+        assert(false && "GPU_ALLOCATOR_RESULT_ALLOCATOR_FULL");
+        break;
+    case GPU_ALLOCATOR_RESULT_BIND_IMAGE_FAIL:
+        assert(false && "GPU_ALLOCATOR_RESULT_BIND_IMAGE_FAIL");
+        break;
+    case GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY:
+        assert(false && "GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY");
+        break;
+    case GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE:
+        assert(false && "GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE");
+        break;
+    default:
+        break;
     }
+}
 
 enum Gpu_Allocation_State_Flag_Bits {
     ALLOCATION_STATE_TO_DRAW_BIT   = 0x01,
@@ -369,9 +394,8 @@ struct Gpu_Allocator {
     u64 upload_queue_byte_cap;
     u64 upload_queue_byte_count;
 
-    // Only used during the allocation adding phase.
+    u64 upload_cap;
     u64 stage_cap;
-    u64 bytes_staged;
 
     void    *stage_ptr;
     VkBuffer stage;
@@ -525,17 +549,16 @@ inline static void staging_queue_upload_queue_remove(Gpu_Allocator *alloc, u32 k
 //     - Sol 9 Dec 2023
 //
 //
-struct Gpu_Tex_Allocation {
-    u64     stage_offset;
-    u64     upload_offset;
-    u64     size; // aligned to bit granularity (no reason to keep it as it is)
-    u32     width;
-    u32     height;
+struct Gpu_Tex_Allocation { // 64 bytes
+    u64 stage_offset;
+    u64 upload_offset;
+    u64 size; // aligned to upload_alignment
+    u64 upload_alignment;
+    u32 width;
+    u32 height;
 
     VkImage image;
     String  file_name;
-
-    char pad[64 - 52]; // pad to cache line
 };
 struct Gpu_Tex_Allocator {
     u32  allocation_cap;
@@ -563,9 +586,8 @@ struct Gpu_Tex_Allocator {
     u64 upload_queue_byte_cap;
     u64 upload_queue_byte_count;
 
-    // Only used during the allocation adding phase.
     u64 stage_cap;
-    u64 bytes_staged;
+    u64 upload_cap;
 
     void          *stage_ptr;
     VkBuffer       stage;
