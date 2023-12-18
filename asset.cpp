@@ -10,6 +10,7 @@
 
 #if TEST
 #include "test/test.hpp"
+#include "image.hpp"
 #endif
 
 static Assets s_Assets;
@@ -1504,7 +1505,7 @@ static void test_accessor(Gpu_Allocator *allocator, u8 *buf, char *name, Accesso
     }
 }
 
-static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *material0, Material *material1) {
+static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *material0, Material *material1, bool one) {
 
     TEST_EQ(name, material0->flags, material1->flags, false);
 
@@ -1581,6 +1582,86 @@ static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *ma
 
     result = tex_staging_queue_submit(allocator);
     TEST_EQ("tex_staging_queue_submit_result", result, GPU_ALLOCATOR_RESULT_SUCCESS, false);
+
+    Gpu_Tex_Allocation *allocation;
+    Image image;
+    String image_name;
+    if (material0->flags & MATERIAL_BASE_BIT) {
+        allocation = gpu_get_tex_allocation(allocator, material0->pbr.base_color_texture.texture_key);
+
+        if (one)
+            image_name = cstr_to_string("test/images/base1");
+        else
+            image_name = cstr_to_string("test/images/base2");
+
+        image = load_image(&image_name);
+        assert(image.width * image.height * 4);
+
+        TEST_EQ("tex_base_staged_data", memcmp((u8*)allocator->stage_ptr + allocation->stage_offset, image.data, image.width * image.height * 4), 0, false);
+
+        free_image(&image);
+    }
+    if (material0->flags & MATERIAL_PBR_BIT) {
+        allocation = gpu_get_tex_allocation(allocator, material0->pbr.base_color_texture.texture_key);
+
+        if (one)
+            cstr_to_string("test/images/pbr1");
+        else
+            cstr_to_string("test/images/pbr2");
+
+        image = load_image(&image_name);
+        assert(image.width * image.height * 4);
+
+        TEST_EQ("tex_pbr_staged_data", memcmp((u8*)allocator->stage_ptr + allocation->stage_offset, image.data, image.width * image.height * 4), 0, false);
+ 
+        free_image(&image);
+    }
+    if (material0->flags & MATERIAL_NORMAL_BIT) {
+        allocation = gpu_get_tex_allocation(allocator, material0->pbr.base_color_texture.texture_key);
+
+        if (one)
+            cstr_to_string("test/images/normal1");
+        else
+            cstr_to_string("test/images/normal2");
+
+        image = load_image(&image_name);
+        assert(image.width * image.height * 4);
+
+        TEST_EQ("tex_normal_staged_data", memcmp((u8*)allocator->stage_ptr + allocation->stage_offset, image.data, image.width * image.height * 4), 0, false);
+
+        free_image(&image);
+    }
+    if (material0->flags & MATERIAL_OCCLUSION_BIT) {
+        allocation = gpu_get_tex_allocation(allocator, material0->pbr.base_color_texture.texture_key);
+
+        if (one)
+            cstr_to_string("test/images/occlusion1");
+       else
+            cstr_to_string("test/images/occlusion2");
+
+        image = load_image(&image_name);
+        assert(image.width * image.height * 4);
+
+        TEST_EQ("tex_occlusion_staged_data", memcmp((u8*)allocator->stage_ptr + allocation->stage_offset, image.data, image.width * image.height * 4), 0, false);
+
+        free_image(&image);
+    }
+    if (material0->flags & MATERIAL_EMISSIVE_BIT) {
+        allocation = gpu_get_tex_allocation(allocator, material0->pbr.base_color_texture.texture_key);
+
+        if (one)
+            cstr_to_string("test/images/emissive1");
+       else
+            cstr_to_string("test/images/emissive2");
+
+        image = load_image(&image_name);
+        assert(image.width * image.height * 4);
+
+        TEST_EQ("tex_emissive_staged_data", memcmp((u8*)allocator->stage_ptr + allocation->stage_offset, image.data, image.width * image.height * 4), 0, false);
+
+        free_image(&image);
+    }
+
 }
 
 static void test_model_from_gltf() {
@@ -1778,19 +1859,6 @@ static void test_model_from_gltf() {
     float weights0[2] = {2, 1};
     float weights1[2] = {1, 2};
 
-    const char *images[10] = {
-        "test/images/base1",
-        "test/images/pbr1",
-        "test/images/normal1",
-        "test/images/occlusion1",
-        "test/images/emissive1",
-        "test/images/base2",
-        "test/images/pbr2",
-        "test/images/normal2",
-        "test/images/occlusion2",
-        "test/images/emissive2",
-    };
-
     Get_Sampler_Info sampler = {
         .wrap_s = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         .wrap_t = VK_SAMPLER_ADDRESS_MODE_REPEAT,
@@ -1875,9 +1943,9 @@ static void test_model_from_gltf() {
     test_accessor(index_allocator, buf, name_buf, &meshes[0].primitives[1].indices, &accessors[1], true);
 
     string_format(name_buf, "meshes[0].primitives[0].material");
-    test_material(texture_allocator, name_buf, &meshes[0].primitives[0].material, &materials[0]);
+    test_material(texture_allocator, name_buf, &meshes[0].primitives[0].material, &materials[0], true);
     string_format(name_buf, "meshes[0].primitives[1].material");
-    test_material(texture_allocator, name_buf, &meshes[0].primitives[1].material, &materials[1]);
+    test_material(texture_allocator, name_buf, &meshes[0].primitives[1].material, &materials[1], true);
 
     for(u32 i = 0; i < 4; ++i) {
         string_format(name_buf, "meshes[0].primitives[0].attributes[%u]", i);
@@ -1918,11 +1986,11 @@ static void test_model_from_gltf() {
     test_accessor(index_allocator, buf, name_buf, &meshes[1].primitives[2].indices, &accessors[1], true);
 
     string_format(name_buf, "meshes[1].primitives[0].material");
-    test_material(texture_allocator, name_buf, &meshes[1].primitives[0].material, &materials[0]);
+    test_material(texture_allocator, name_buf, &meshes[1].primitives[0].material, &materials[0], true);
     string_format(name_buf, "meshes[1].primitives[1].material");
-    test_material(texture_allocator, name_buf, &meshes[1].primitives[1].material, &materials[1]);
+    test_material(texture_allocator, name_buf, &meshes[1].primitives[1].material, &materials[1], true);
     string_format(name_buf, "meshes[1].primitives[2].material");
-    test_material(texture_allocator, name_buf, &meshes[1].primitives[2].material, &materials[0]);
+    test_material(texture_allocator, name_buf, &meshes[1].primitives[2].material, &materials[0], true);
 
     for(u32 i = 0; i < 4; ++i) {
         string_format(name_buf, "meshes[1].primitives[0].attributes[%u]", i);
