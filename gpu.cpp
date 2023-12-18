@@ -3188,12 +3188,14 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     alloc->hashes[alloc->allocation_count] = hash;
 
     // Images are forced to have four channels, as Vulkan can reject a format with fewer.
-    Image image    = load_image(file_name);
-    u64 image_size = image.width * image.height * 4;
+    Image image      = load_image(file_name);
+    u64 image_size   = image.width * image.height * 4;
+    u64 aligned_size = align(image_size, alloc->stage_bit_granularity);
+    //println("%s image size = %u (aligned)", file_name->str, aligned_size);
 
     // Ensure that the image can actually be staged.
-    assert(image_size <= alloc->staging_queue_byte_cap && "Image too large for staging queue");
-    if (image_size > alloc->stage_cap) {
+    assert(aligned_size <= alloc->staging_queue_byte_cap && "Image too large for staging queue");
+    if (aligned_size > alloc->stage_cap) {
         free_image(&image);
         return GPU_ALLOCATOR_RESULT_ALLOCATION_TOO_LARGE;
     }
@@ -3224,7 +3226,8 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
 
     // Check that alignment requirements are satisfied. Allocations' offsets must be
     // aligned to their bit representation (see implementation details - grep '~MAID').
-    if ((req.alignment & (alloc->upload_bit_granularity - 1)) != 0) {
+
+    if ((alloc->upload_bit_granularity & (req.alignment - 1)) != 0) {
         vkDestroyImage(device, vk_image, ALLOCATION_CALLBACKS);
         free_image(&image);
         return GPU_ALLOCATOR_RESULT_MISALIGNED_BIT_GRANULARITY;
@@ -3236,11 +3239,13 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
 
     // Fill in allocation fields
     Gpu_Tex_Allocation *p_allocation = &alloc->allocations[alloc->allocation_count];
-    p_allocation->file_name      = string_buffer_get_string(&alloc->string_buffer, file_name);
-    p_allocation->width          = image.width;
-    p_allocation->height         = image.height;
-    p_allocation->image          = vk_image;
-    p_allocation->size           = align(req.size, alloc->upload_bit_granularity);
+    *p_allocation = {};
+
+    p_allocation->file_name = string_buffer_get_string(&alloc->string_buffer, file_name);
+    p_allocation->width     = image.width;
+    p_allocation->height    = image.height;
+    p_allocation->image     = vk_image;
+    p_allocation->size      = align(req.size, alloc->upload_bit_granularity);
 
     // Ensure these flags beyond allocation_count have not been messed with by SIMD overlap.  @Note
     // This should never happen but this bug would be cancer so I will do my best to avoid it
@@ -3252,7 +3257,6 @@ Gpu_Allocator_Result tex_add_texture(Gpu_Tex_Allocator *alloc, String *file_name
     // at this stage we can treat the allocator as a simple linear allocator.
     // Since the image data is already in memory from reading its width and height,
     // if there is room in the staging buffer, copy it in.
-    u64 aligned_size = align(image_size, alloc->stage_bit_granularity);
     if (alloc->bytes_staged + aligned_size <= alloc->stage_cap) {
         memcpy((u8*)alloc->stage_ptr + alloc->bytes_staged, image.data, image_size);
 
