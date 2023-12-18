@@ -29,6 +29,10 @@ Image load_image(String *file_name) {
     int x,y,n;
     u8* data = stbi_load(file_name->str, &x, &y, &n, 4); // Vulkan does not like fewer than 4 channels
 
+    char msg[127];
+    string_format(msg, "Failed to load image %s", file_name->str);
+    assert(data && (const char*)msg);
+
     #if IMG_LOADER_SHOW_INFO
     println("Info for Image: %s", file_name->str);
     println("    width: %i", x); // See if this ever crashes without being cast to s64 (print always va_args integers to 64 and I thought this should cause crashes but it never has...)
