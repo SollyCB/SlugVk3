@@ -18,7 +18,7 @@ Assets* get_assets_instance() { return &s_Assets; }
 
 struct Model_Allocators_Config {
     // Vertex Allocator
-    u64 vertex_allocator_config_allocation_cap         = 512;
+    u64 vertex_allocator_config_allocation_cap         = 2048;
     u64 vertex_allocator_config_to_stage_cap           = 64;
     u64 vertex_allocator_config_to_upload_cap          = 32;
     u64 vertex_allocator_config_stage_bit_granularity  = 256;
@@ -35,7 +35,7 @@ struct Model_Allocators_Config {
     VkBuffer  vertex_allocator_config_upload       = get_gpu_instance()->memory.vertex_buf_device;
 
     // Index Allocator
-    u64 index_allocator_config_allocation_cap         = 512;
+    u64 index_allocator_config_allocation_cap         = 2048;
     u64 index_allocator_config_to_stage_cap           = 64;
     u64 index_allocator_config_to_upload_cap          = 32;
     u64 index_allocator_config_stage_bit_granularity  = 256;
@@ -52,7 +52,7 @@ struct Model_Allocators_Config {
     VkBuffer  index_allocator_config_upload       = get_gpu_instance()->memory.index_buf_device;
 
     // Tex Allocator
-    u64 tex_allocator_config_allocation_cap         = 512;
+    u64 tex_allocator_config_allocation_cap         = 2048;
     u64 tex_allocator_config_to_stage_cap           = 64;
     u64 tex_allocator_config_to_upload_cap          = 32;
     u64 tex_allocator_config_stage_bit_granularity  = 256 * 4;
@@ -103,6 +103,7 @@ void init_assets() {
     println("Loading %u models; model buffer size %u", g_model_count, g_model_buffer_size);
     #endif
 
+    #if 1
     u64 tmp_size;
     for(u32 i = 0; i < g_model_count; ++i) {
         g_assets->models[i] = model_from_gltf(allocs, &g_model_dir_names[i], &g_model_file_names[i],
@@ -114,13 +115,19 @@ void init_assets() {
 
         g_assets->model_count++;
     }
+    #endif
 
     bool growable_array = false; // The arrays will be used in separate threads, so we cannot trigger a resize.
     bool temp_array     = false;
 
-    g_assets->keys_tex    = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_tex_len   );
-    g_assets->keys_index  = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_index_len );
-    g_assets->keys_vertex = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_vertex_len);
+    // @Todo These should all be sub allocated from a single block.
+
+    u32 size = g_assets_keys_array_index_len + g_assets_keys_array_vertex_len + g_assets_keys_array_tex_len;
+    g_assets->keys_index  = (u32*)malloc_h(sizeof(u32) * size);
+    g_assets->keys_vertex = g_assets->keys_index  + g_assets_keys_array_index_len;
+    g_assets->keys_tex    = g_assets->keys_vertex + g_assets_keys_array_vertex_len;
+    // g_assets->keys_index  = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_index_len );
+    // g_assets->keys_vertex = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_vertex_len);
 
     g_assets->keys_sampler       = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_sampler_len  );
     g_assets->keys_image_view    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
@@ -170,9 +177,12 @@ void kill_assets() {
     free_h(g_assets->models);
     destroy_model_allocators(&g_assets->model_allocators);
 
-    free_h(g_assets->keys_tex   );
+    // free_h(g_assets->keys_tex   );
+    // println("Free Tex");
     free_h(g_assets->keys_index );
-    free_h(g_assets->keys_vertex);
+    println("Free Index");
+    // free_h(g_assets->keys_vertex);
+    // println("Free Vertex");
 
     free_h(g_assets->keys_sampler   );
     free_h(g_assets->keys_image_view);
@@ -1304,9 +1314,10 @@ Asset_Draw_Prep_Result load_primitive_allocations(
     u64 *results_vertex_upload = g_assets->results_vertex_upload;
     u64 *results_tex_upload    = g_assets->results_tex_upload;
 
-    u32 *keys_index  = g_assets->keys_index;
-    u32 *keys_vertex = g_assets->keys_vertex;
-    u32 *keys_tex    = g_assets->keys_tex;
+    u32 *keys_index   = g_assets->keys_index;
+    u32 *keys_vertex  = g_assets->keys_vertex;
+    u32 *keys_tex     = g_assets->keys_tex;
+    u32 *keys_sampler = g_assets->keys_sampler;
 
     // @Note Not currently acquiring samplers in this phase. Although I could, I think it would
     // be more appropriate to get them at the image view phase. Idk though, maybe I should acquire
@@ -1464,6 +1475,7 @@ static void test_load_primitive_allocations();
 
 void test_asset() {
     test_model_from_gltf();
+    test_load_primitive_allocations();
 }
 
 // @Note This test function *temporarily* reassigns the g_assets model allocators with ones created from a slightly
@@ -1492,7 +1504,7 @@ static void test_load_primitive_allocations() {
     model_allocators_config.tex_allocator_config_upload_bit_granularity = 64;
 
     Model_Allocators reassigned_model_allocators = create_model_allocators(&model_allocators_config);
-    g_assets->model_allocators = reassigned_model_allocators;
+    // g_assets->model_allocators = reassigned_model_allocators;
 
     Model_Allocators *allocators = &g_assets->model_allocators;
 
@@ -1510,12 +1522,18 @@ static void test_load_primitive_allocations() {
         cstr_to_string("test/images/emissive1"),
     };
 
+    Primitive_Key_Counts *key_counts = (Primitive_Key_Counts*)malloc_t(sizeof(Primitive_Key_Counts) * primitive_count);
+
     u32 tmp = primitive_count;
     String image_name;
     Gpu_Allocator_Result result;
     for(u32 i = 0; i < primitive_count; ++i) {
         primitives[i] = {};
+        primitives[i].key_counts = {1, 4, 5, 5};
 
+        key_counts[i] = primitives[i].key_counts;
+
+        primitives[i].material = {};
         primitives[i].material.flags = MATERIAL_BASE_BIT      | MATERIAL_PBR_BIT       | MATERIAL_NORMAL_BIT    |
                                        MATERIAL_OCCLUSION_BIT | MATERIAL_EMISSIVE_BIT;
 
@@ -1531,6 +1549,7 @@ static void test_load_primitive_allocations() {
         result = continue_allocation(&allocators->index, allocation_size, allocation_mem);
         assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
 
+        primitives[i].indices = {};
         result = submit_allocation(&allocators->index, &primitives[i].indices.allocation_key);
         assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
 
@@ -1544,14 +1563,29 @@ static void test_load_primitive_allocations() {
             result = continue_allocation(&allocators->vertex, allocation_size, allocation_mem);
             assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
 
+            primitives[i].attributes[j].accessor = {};
             result = submit_allocation(&allocators->vertex, &primitives[i].attributes[j].accessor.allocation_key);
             assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
         }
     }
 
-    // BEGIN_TEST_MODULE("Load Primitive Allocations", false, false);
+// Asset_Draw_Prep_Result load_primitive_allocations(
+//     u32                         count,
+//     const Mesh_Primitive       *primitives,
+//     const Primitive_Key_Counts *key_counts,
+//     bool                        adjust_weights,
+//     u64                        *success_masks)
 
-    // END_TEST_MODULE();
+    u32 mask_count     = align(primitive_count, 64) / 64;
+    u64 *success_masks = (u64*)malloc_t(sizeof(u64) * mask_count);
+    BEGIN_TEST_MODULE("Load Primitive Allocations", false, false);
+
+    Asset_Draw_Prep_Result draw_prep_result = load_primitive_allocations(primitive_count, primitives, key_counts, true, success_masks);
+    TEST_EQ("NULL", true, true, false);
+
+    END_TEST_MODULE();
+
+    destroy_model_allocators(&reassigned_model_allocators);
 
     // Restore the actual model allocators (they were reassigned at function start to simplify testing)
     g_assets->model_allocators = model_allocators_from_assets_initialization;
@@ -1722,7 +1756,7 @@ static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *ma
 
         if (one)
             cstr_to_string("test/images/occlusion1");
-       else
+        else
             cstr_to_string("test/images/occlusion2");
 
         image = load_image(&image_name);
@@ -1737,7 +1771,7 @@ static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *ma
 
         if (one)
             cstr_to_string("test/images/emissive1");
-       else
+        else
             cstr_to_string("test/images/emissive2");
 
         image = load_image(&image_name);
