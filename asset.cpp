@@ -1466,9 +1466,95 @@ void test_asset() {
     test_model_from_gltf();
 }
 
+// @Note This test function *temporarily* reassigns the g_assets model allocators with ones created from a slightly
+// different config (the only change is smaller allocator queues to make testing easier). It reassigns the model
+// allocators created by init_assets() at the end.
 static void test_load_primitive_allocations() {
+    Assets *g_assets = get_assets_instance();
+    Model_Allocators model_allocators_from_assets_initialization = g_assets->model_allocators;
+
     Model_Allocators_Config model_allocators_config = {};
-    Model_Allocators model_allocators = create_model_allocators(&model_allocators_config);
+
+    // Shrink the queues to make the testing simpler.
+    model_allocators_config.index_allocator_config_staging_queue_byte_cap = 1024 * 2;
+    model_allocators_config.index_allocator_config_upload_queue_byte_cap  = 1024 * 1;
+    model_allocators_config.index_allocator_config_stage_bit_granularity  = 64;
+    model_allocators_config.index_allocator_config_upload_bit_granularity = 64;
+
+    model_allocators_config.vertex_allocator_config_staging_queue_byte_cap = 1024 * 2;
+    model_allocators_config.vertex_allocator_config_upload_queue_byte_cap  = 1024 * 1;
+    model_allocators_config.vertex_allocator_config_stage_bit_granularity  = 64;
+    model_allocators_config.vertex_allocator_config_upload_bit_granularity = 64;
+
+    model_allocators_config.tex_allocator_config_staging_queue_byte_cap = 1024 * 1024 * 4;
+    model_allocators_config.tex_allocator_config_upload_queue_byte_cap  = 1024 * 1024 * 2;
+    model_allocators_config.tex_allocator_config_stage_bit_granularity  = 64;
+    model_allocators_config.tex_allocator_config_upload_bit_granularity = 64;
+
+    Model_Allocators reassigned_model_allocators = create_model_allocators(&model_allocators_config);
+    g_assets->model_allocators = reassigned_model_allocators;
+
+    Model_Allocators *allocators = &g_assets->model_allocators;
+
+    u64 allocation_size = 64;
+    u8 *allocation_mem  = malloc_t(allocation_size);
+
+    u32 primitive_count = 128;
+    Mesh_Primitive *primitives = (Mesh_Primitive*)malloc_t(sizeof(Mesh_Primitive) * primitive_count);
+
+    String image_names[10] = {
+        cstr_to_string("test/images/base1"),
+        cstr_to_string("test/images/pbr1"),
+        cstr_to_string("test/images/normal1"),
+        cstr_to_string("test/images/occlusion1"),
+        cstr_to_string("test/images/emissive1"),
+    };
+
+    u32 tmp = primitive_count;
+    String image_name;
+    Gpu_Allocator_Result result;
+    for(u32 i = 0; i < primitive_count; ++i) {
+        primitives[i] = {};
+
+        primitives[i].material.flags = MATERIAL_BASE_BIT      | MATERIAL_PBR_BIT       | MATERIAL_NORMAL_BIT    |
+                                       MATERIAL_OCCLUSION_BIT | MATERIAL_EMISSIVE_BIT;
+
+        tex_add_texture(&allocators->tex, &image_names[0], &primitives[i].material.pbr.base_color_texture.texture_key);
+        tex_add_texture(&allocators->tex, &image_names[1], &primitives[i].material.pbr.metallic_roughness_texture.texture_key);
+        tex_add_texture(&allocators->tex, &image_names[2], &primitives[i].material.normal.texture.texture_key);
+        tex_add_texture(&allocators->tex, &image_names[3], &primitives[i].material.occlusion.texture.texture_key);
+        tex_add_texture(&allocators->tex, &image_names[4], &primitives[i].material.emissive.texture.texture_key);
+
+        result = begin_allocation(&allocators->index);
+        assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
+
+        result = continue_allocation(&allocators->index, allocation_size, allocation_mem);
+        assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
+
+        result = submit_allocation(&allocators->index, &primitives[i].indices.allocation_key);
+        assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
+
+        primitives[i].attribute_count = 4;
+        primitives[i].attributes = (Mesh_Primitive_Attribute*)malloc_t(sizeof(Mesh_Primitive_Attribute) * 4);
+
+        for(u32 j = 0; j < 4; ++j) {
+            result = begin_allocation(&allocators->vertex);
+            assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
+
+            result = continue_allocation(&allocators->vertex, allocation_size, allocation_mem);
+            assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
+
+            result = submit_allocation(&allocators->vertex, &primitives[i].attributes[j].accessor.allocation_key);
+            assert(result == GPU_ALLOCATOR_RESULT_SUCCESS);
+        }
+    }
+
+    // BEGIN_TEST_MODULE("Load Primitive Allocations", false, false);
+
+    // END_TEST_MODULE();
+
+    // Restore the actual model allocators (they were reassigned at function start to simplify testing)
+    g_assets->model_allocators = model_allocators_from_assets_initialization;
 }
 
 static void test_accessor(Gpu_Allocator *allocator, u8 *buf, char *name, Accessor *accessor0, Accessor *accessor1,
@@ -1613,7 +1699,7 @@ static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *ma
         assert(image.width * image.height * 4);
 
         TEST_EQ("tex_pbr_staged_data", memcmp((u8*)allocator->stage_ptr + allocation->stage_offset, image.data, image.width * image.height * 4), 0, false);
- 
+
         free_image(&image);
     }
     if (material0->flags & MATERIAL_NORMAL_BIT) {
