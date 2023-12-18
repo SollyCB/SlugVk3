@@ -15,7 +15,71 @@
 static Assets s_Assets;
 Assets* get_assets_instance() { return &s_Assets; }
 
-struct Model_Allocators_Config {}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
+struct Model_Allocators_Config {
+    // Vertex Allocator
+    u64 vertex_allocator_config_allocation_cap         = 512;
+    u64 vertex_allocator_config_to_stage_cap           = 64;
+    u64 vertex_allocator_config_to_upload_cap          = 32;
+    u64 vertex_allocator_config_stage_bit_granularity  = 256;
+    u64 vertex_allocator_config_upload_bit_granularity = 256;
+
+    u64 vertex_allocator_config_staging_queue_byte_cap = VERTEX_STAGE_SIZE;
+    u64 vertex_allocator_config_upload_queue_byte_cap  = VERTEX_DEVICE_SIZE;
+    u64 vertex_allocator_config_stage_cap              = VERTEX_STAGE_SIZE;
+    u64 vertex_allocator_config_upload_cap             = VERTEX_DEVICE_SIZE;
+
+    String    vertex_allocator_config_disk_storage = cstr_to_string("allocator-files/vertex_allocator_file.bin");
+    void     *vertex_allocator_config_stage_ptr    = get_gpu_instance()->memory.vertex_ptrs[0];
+    VkBuffer  vertex_allocator_config_stage        = get_gpu_instance()->memory.vertex_bufs_stage[0];
+    VkBuffer  vertex_allocator_config_upload       = get_gpu_instance()->memory.vertex_buf_device;
+
+    // Index Allocator
+    u64 index_allocator_config_allocation_cap         = 512;
+    u64 index_allocator_config_to_stage_cap           = 64;
+    u64 index_allocator_config_to_upload_cap          = 32;
+    u64 index_allocator_config_stage_bit_granularity  = 256;
+    u64 index_allocator_config_upload_bit_granularity = 256;
+
+    u64 index_allocator_config_staging_queue_byte_cap = INDEX_STAGE_SIZE;
+    u64 index_allocator_config_upload_queue_byte_cap  = INDEX_DEVICE_SIZE;
+    u64 index_allocator_config_stage_cap              = INDEX_STAGE_SIZE;
+    u64 index_allocator_config_upload_cap             = INDEX_DEVICE_SIZE;
+
+    String    index_allocator_config_disk_storage = cstr_to_string("allocator-files/index_allocator_file.bin");
+    void     *index_allocator_config_stage_ptr    = get_gpu_instance()->memory.index_ptrs[0];
+    VkBuffer  index_allocator_config_stage        = get_gpu_instance()->memory.index_bufs_stage[0];
+    VkBuffer  index_allocator_config_upload       = get_gpu_instance()->memory.index_buf_device;
+
+    // Tex Allocator
+    u64 tex_allocator_config_allocation_cap         = 512;
+    u64 tex_allocator_config_to_stage_cap           = 64;
+    u64 tex_allocator_config_to_upload_cap          = 32;
+    u64 tex_allocator_config_stage_bit_granularity  = 256 * 4;
+    u64 tex_allocator_config_upload_bit_granularity = 256 * 4;
+    u64 tex_allocator_config_string_buffer_size     = 1024;
+
+    u64 tex_allocator_config_staging_queue_byte_cap = TEXTURE_STAGE_SIZE;
+    u64 tex_allocator_config_upload_queue_byte_cap  = TEXTURE_DEVICE_SIZE;
+    u64 tex_allocator_config_stage_cap              = TEXTURE_STAGE_SIZE;
+    u64 tex_allocator_config_upload_cap             = TEXTURE_DEVICE_SIZE;
+
+    void           *tex_allocator_config_stage_ptr = get_gpu_instance()->memory.texture_ptrs[0];
+    VkBuffer        tex_allocator_config_stage     = get_gpu_instance()->memory.texture_bufs_stage[0];
+    VkDeviceMemory  tex_allocator_config_upload    = get_gpu_instance()->memory.texture_mem_device;
+
+    // Image View and Sampler Allocators
+    u64 sampler_allocator_cap    = 0; // 0 makes the allocator use the device cap
+    u64 image_view_allocator_cap = 256;
+
+    // Descriptor Allocator
+    u64   descriptor_allocator_cap_sampler  = DESCRIPTOR_BUFFER_SIZE;
+    u64   descriptor_allocator_cap_resource = DESCRIPTOR_BUFFER_SIZE;
+    void *descriptor_allocator_ptr_sampler  = get_gpu_instance()->memory.sampler_descriptor_ptr;
+    void *descriptor_allocator_ptr_resource = get_gpu_instance()->memory.resource_descriptor_ptr;
+
+    VkBuffer descriptor_allocator_buffer_sampler  = get_gpu_instance()->memory.sampler_descriptor_buffer;
+    VkBuffer descriptor_allocator_buffer_resource = get_gpu_instance()->memory.resource_descriptor_buffer;
+}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
 
 static Model_Allocators create_model_allocators(const Model_Allocators_Config *config);
 static void             destroy_model_allocators(Model_Allocators *model_allocators);
@@ -140,21 +204,21 @@ static Model_Allocators create_model_allocators(const Model_Allocators_Config *c
     // Vertex allocator
     Gpu_Allocator_Config vertex_allocator_config = {};
 
-    vertex_allocator_config.allocation_cap         = 512;
-    vertex_allocator_config.to_stage_cap           = 64;
-    vertex_allocator_config.to_upload_cap          = 32;
-    vertex_allocator_config.stage_bit_granularity  = 256;
-    vertex_allocator_config.upload_bit_granularity = 256;
+    vertex_allocator_config.allocation_cap         = config->vertex_allocator_config_allocation_cap;
+    vertex_allocator_config.to_stage_cap           = config->vertex_allocator_config_to_stage_cap;
+    vertex_allocator_config.to_upload_cap          = config->vertex_allocator_config_to_upload_cap;
+    vertex_allocator_config.stage_bit_granularity  = config->vertex_allocator_config_stage_bit_granularity;
+    vertex_allocator_config.upload_bit_granularity = config->vertex_allocator_config_upload_bit_granularity;
 
-    vertex_allocator_config.staging_queue_byte_cap = VERTEX_STAGE_SIZE;
-    vertex_allocator_config.upload_queue_byte_cap  = VERTEX_DEVICE_SIZE;
-    vertex_allocator_config.stage_cap              = VERTEX_STAGE_SIZE;
-    vertex_allocator_config.upload_cap             = VERTEX_DEVICE_SIZE;
+    vertex_allocator_config.staging_queue_byte_cap = config->vertex_allocator_config_staging_queue_byte_cap;
+    vertex_allocator_config.upload_queue_byte_cap  = config->vertex_allocator_config_upload_queue_byte_cap;
+    vertex_allocator_config.stage_cap              = config->vertex_allocator_config_stage_cap;
+    vertex_allocator_config.upload_cap             = config->vertex_allocator_config_upload_cap;
 
-    vertex_allocator_config.disk_storage           = cstr_to_string("allocator-files/vertex_allocator_file.bin");
-    vertex_allocator_config.stage_ptr              = gpu->memory.vertex_ptrs[0];
-    vertex_allocator_config.stage                  = gpu->memory.vertex_bufs_stage[0];
-    vertex_allocator_config.upload                 = gpu->memory.vertex_buf_device;
+    vertex_allocator_config.disk_storage           = config->vertex_allocator_config_disk_storage;
+    vertex_allocator_config.stage_ptr              = config->vertex_allocator_config_stage_ptr;
+    vertex_allocator_config.stage                  = config->vertex_allocator_config_stage;
+    vertex_allocator_config.upload                 = config->vertex_allocator_config_upload;
 
     Gpu_Allocator vertex_allocator;
     Gpu_Allocator_Result creation_result = create_allocator(&vertex_allocator_config, &vertex_allocator);
@@ -163,21 +227,21 @@ static Model_Allocators create_model_allocators(const Model_Allocators_Config *c
     // Index allocator
     Gpu_Allocator_Config index_allocator_config = {};
 
-    index_allocator_config.allocation_cap         = 512;
-    index_allocator_config.to_stage_cap           = 64;
-    index_allocator_config.to_upload_cap          = 32;
-    index_allocator_config.stage_bit_granularity  = 256;
-    index_allocator_config.upload_bit_granularity = 256;
+    index_allocator_config.allocation_cap         = config->index_allocator_config_allocation_cap;
+    index_allocator_config.to_stage_cap           = config->index_allocator_config_to_stage_cap;
+    index_allocator_config.to_upload_cap          = config->index_allocator_config_to_upload_cap;
+    index_allocator_config.stage_bit_granularity  = config->index_allocator_config_stage_bit_granularity;
+    index_allocator_config.upload_bit_granularity = config->index_allocator_config_upload_bit_granularity;
 
-    index_allocator_config.staging_queue_byte_cap = INDEX_STAGE_SIZE;
-    index_allocator_config.upload_queue_byte_cap  = INDEX_DEVICE_SIZE;
-    index_allocator_config.stage_cap              = INDEX_STAGE_SIZE;
-    index_allocator_config.upload_cap             = INDEX_DEVICE_SIZE;
+    index_allocator_config.staging_queue_byte_cap = config->index_allocator_config_staging_queue_byte_cap;
+    index_allocator_config.upload_queue_byte_cap  = config->index_allocator_config_upload_queue_byte_cap;
+    index_allocator_config.stage_cap              = config->index_allocator_config_stage_cap;
+    index_allocator_config.upload_cap             = config->index_allocator_config_upload_cap;
 
-    index_allocator_config.disk_storage           = cstr_to_string("allocator-files/index_allocator_file.bin");
-    index_allocator_config.stage_ptr              = gpu->memory.index_ptrs[0];
-    index_allocator_config.stage                  = gpu->memory.index_bufs_stage[0];
-    index_allocator_config.upload                 = gpu->memory.index_buf_device;
+    index_allocator_config.disk_storage           = config->index_allocator_config_disk_storage;
+    index_allocator_config.stage_ptr              = config->index_allocator_config_stage_ptr;
+    index_allocator_config.stage                  = config->index_allocator_config_stage;
+    index_allocator_config.upload                 = config->index_allocator_config_upload;
 
     Gpu_Allocator index_allocator;
     creation_result = create_allocator(&index_allocator_config, &index_allocator);
@@ -186,21 +250,21 @@ static Model_Allocators create_model_allocators(const Model_Allocators_Config *c
     // Tex allocator
     Gpu_Tex_Allocator_Config tex_allocator_config = {};
 
-    tex_allocator_config.allocation_cap         = 512;
-    tex_allocator_config.to_stage_cap           = 64;
-    tex_allocator_config.to_upload_cap          = 32;
-    tex_allocator_config.stage_bit_granularity  = 256 * 4;
-    tex_allocator_config.upload_bit_granularity = 256 * 4;
-    tex_allocator_config.string_buffer_size     = 1024;
+    tex_allocator_config.allocation_cap         = config->tex_allocator_config_allocation_cap;
+    tex_allocator_config.to_stage_cap           = config->tex_allocator_config_to_stage_cap;
+    tex_allocator_config.to_upload_cap          = config->tex_allocator_config_to_upload_cap;
+    tex_allocator_config.stage_bit_granularity  = config->tex_allocator_config_stage_bit_granularity;
+    tex_allocator_config.upload_bit_granularity = config->tex_allocator_config_upload_bit_granularity;
+    tex_allocator_config.string_buffer_size     = config->tex_allocator_config_string_buffer_size;
 
-    tex_allocator_config.staging_queue_byte_cap = TEXTURE_STAGE_SIZE;
-    tex_allocator_config.upload_queue_byte_cap  = TEXTURE_DEVICE_SIZE;
-    tex_allocator_config.stage_cap              = TEXTURE_STAGE_SIZE;
-    tex_allocator_config.upload_cap             = TEXTURE_DEVICE_SIZE;
+    tex_allocator_config.staging_queue_byte_cap = config->tex_allocator_config_staging_queue_byte_cap;
+    tex_allocator_config.upload_queue_byte_cap  = config->tex_allocator_config_upload_queue_byte_cap;
+    tex_allocator_config.stage_cap              = config->tex_allocator_config_stage_cap;
+    tex_allocator_config.upload_cap             = config->tex_allocator_config_upload_cap;
 
-    tex_allocator_config.stage_ptr              = gpu->memory.texture_ptrs[0];
-    tex_allocator_config.stage                  = gpu->memory.texture_bufs_stage[0];
-    tex_allocator_config.upload                 = gpu->memory.texture_mem_device;
+    tex_allocator_config.stage_ptr              = config->tex_allocator_config_stage_ptr;
+    tex_allocator_config.stage                  = config->tex_allocator_config_stage;
+    tex_allocator_config.upload                 = config->tex_allocator_config_upload;
 
     Gpu_Tex_Allocator tex_allocator;
     creation_result = create_tex_allocator(&tex_allocator_config, &tex_allocator);
@@ -210,11 +274,11 @@ static Model_Allocators create_model_allocators(const Model_Allocators_Config *c
         return {};
     }
 
-    Sampler_Allocator    sampler    = create_sampler_allocator(0);
-    Image_View_Allocator image_view = create_image_view_allocator(256);
+    Sampler_Allocator    sampler    = create_sampler_allocator(config->sampler_allocator_cap);
+    Image_View_Allocator image_view = create_image_view_allocator(config->image_view_allocator_cap);
 
-    Descriptor_Allocator descriptor_sampler  = get_descriptor_allocator(DESCRIPTOR_BUFFER_SIZE, gpu->memory.sampler_descriptor_ptr,  gpu->memory.sampler_descriptor_buffer);
-    Descriptor_Allocator descriptor_resource = get_descriptor_allocator(DESCRIPTOR_BUFFER_SIZE, gpu->memory.resource_descriptor_ptr, gpu->memory.resource_descriptor_buffer);
+    Descriptor_Allocator descriptor_sampler  = get_descriptor_allocator(config->descriptor_allocator_cap_sampler,  config->descriptor_allocator_ptr_sampler,  config->descriptor_allocator_buffer_sampler);
+    Descriptor_Allocator descriptor_resource = get_descriptor_allocator(config->descriptor_allocator_cap_resource, config->descriptor_allocator_ptr_resource, config->descriptor_allocator_buffer_resource);
 
     Model_Allocators ret = {
         .index               = index_allocator,
@@ -1395,9 +1459,15 @@ Asset_Draw_Prep_Result load_primitive_allocations(
 
 #if TEST // 500 lines of tests EOF
 static void test_model_from_gltf();
+static void test_load_primitive_allocations();
 
 void test_asset() {
     test_model_from_gltf();
+}
+
+static void test_load_primitive_allocations() {
+    Model_Allocators_Config model_allocators_config = {};
+    Model_Allocators model_allocators = create_model_allocators(&model_allocators_config);
 }
 
 static void test_accessor(Gpu_Allocator *allocator, u8 *buf, char *name, Accessor *accessor0, Accessor *accessor1,
