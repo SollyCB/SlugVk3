@@ -7,7 +7,7 @@
 #include "assert.h"
 
 struct String {
-    u32 len;
+    u64 len;
     const char *str;
 };
 
