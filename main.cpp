@@ -22,16 +22,16 @@ int main() {
     init_gpu();
     Gpu *gpu = get_gpu_instance();
 
-#if TEST
-    run_tests();
-#endif
-
     #if 1
     init_window(gpu, glfw);
     Window *window = get_window_instance();
 
     init_assets();
     Assets *assets = get_assets_instance();
+
+#if TEST
+    run_tests();
+#endif
 
     zero_temp();
 
