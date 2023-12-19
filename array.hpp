@@ -7,6 +7,7 @@
 enum Array_Flag_Bits { // @Note This order must not change, functions rely on the order of these bits
     ARRAY_GROWABLE_BIT = 0x01,
     ARRAY_TEMP_BIT     = 0x02,
+    ARRAY_FROM_PTR_BIT = 0x04,
 };
 typedef u8 Array_Flags;
 
@@ -38,7 +39,7 @@ template<typename T>
 inline static Array<T> new_array_from_ptr(T *ptr, u32 cap) {
     Array<T> array = {};
     array.data  = ptr;
-    array.flags = 0x0;
+    array.flags = ARRAY_FROM_PTR_BIT;
     array.cap   = cap;
     return array;
 }
@@ -63,7 +64,7 @@ inline static Array<T> new_array(u64 cap, bool growable, bool temp) {
 
 template<typename T>
 inline static void free_array(Array<T> *array) {
-    if ((array->flags & ARRAY_TEMP_BIT) == 0)
+    if ((array->flags & (ARRAY_TEMP_BIT | ARRAY_FROM_PTR_BIT)) == 0)
         free_h(array->data);
     *array = {};
 }
@@ -87,6 +88,14 @@ inline static void array_do_resize(Array<T> *array) {
     }
 }
 
+inline static void array_add_if_true(Array<u32> *array, u32 t, bool eval) {
+    if (array->cap <= array->len)
+        array_do_resize(array);
+
+    array->data[array->len] = t;
+    array->len += eval;
+}
+
 inline static void array_add(Array<u32> *array, u32 t) {
     if (array->cap <= array->len)
         array_do_resize(array);
@@ -102,6 +111,15 @@ inline static void array_add(Array<T> *array, T *t) {
 
     array->data[array->len] = *t;
     array->len++;
+}
+
+template<typename T>
+inline static void array_add_if_true(Array<T> *array, T *t, bool eval) {
+    if (array->cap <= array->len)
+        array_do_resize(array);
+
+    array->data[array->len] = *t;
+    array->len += eval;
 }
 
 template<typename T>

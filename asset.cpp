@@ -1117,27 +1117,26 @@ static void load_primitive_resource_keys(u32 count, const Mesh_Primitive *primit
                 add_accessor_vertex(&array_index, &array_vertex, &target->attributes[k].accessor);
         }
 
-        // Materials
-        if (primitives[i].material.flags & MATERIAL_BASE_BIT) {
-            array_add(&array_tex,     primitives[i].material.pbr.base_color_texture.texture_key);
-            array_add(&array_sampler, primitives[i].material.pbr.base_color_texture.sampler_key);
-        }
-        if (primitives[i].material.flags & MATERIAL_PBR_BIT) {
-            array_add(&array_tex,     primitives[i].material.pbr.metallic_roughness_texture.texture_key);
-            array_add(&array_sampler, primitives[i].material.pbr.metallic_roughness_texture.sampler_key);
-        }
-        if (primitives[i].material.flags & MATERIAL_NORMAL_BIT) {
-            array_add(&array_tex,     primitives[i].material.normal.texture.texture_key);
-            array_add(&array_sampler, primitives[i].material.normal.texture.sampler_key);
-        }
-        if (primitives[i].material.flags & MATERIAL_OCCLUSION_BIT) {
-            array_add(&array_tex,     primitives[i].material.occlusion.texture.texture_key);
-            array_add(&array_sampler, primitives[i].material.occlusion.texture.sampler_key);
-        }
-        if (primitives[i].material.flags & MATERIAL_EMISSIVE_BIT) {
-            array_add(&array_tex,     primitives[i].material.emissive.texture.texture_key);
-            array_add(&array_sampler, primitives[i].material.emissive.texture.sampler_key);
-        }
+                                                        /* Materials */
+        // Base Color
+        array_add_if_true(&array_tex,     primitives[i].material.pbr.base_color_texture.texture_key, primitives[i].material.flags & MATERIAL_BASE_BIT);
+        array_add_if_true(&array_sampler, primitives[i].material.pbr.base_color_texture.sampler_key, primitives[i].material.flags & MATERIAL_BASE_BIT);
+
+        // Metallic Roughness
+        array_add_if_true(&array_tex,     primitives[i].material.pbr.metallic_roughness_texture.texture_key, primitives[i].material.flags & MATERIAL_PBR_BIT);
+        array_add_if_true(&array_sampler, primitives[i].material.pbr.metallic_roughness_texture.sampler_key, primitives[i].material.flags & MATERIAL_PBR_BIT);
+
+        // Normal
+        array_add_if_true(&array_tex,     primitives[i].material.normal.texture.texture_key, primitives[i].material.flags & MATERIAL_NORMAL_BIT);
+        array_add_if_true(&array_sampler, primitives[i].material.normal.texture.sampler_key, primitives[i].material.flags & MATERIAL_NORMAL_BIT);
+
+        // Occlusion
+        array_add_if_true(&array_tex,     primitives[i].material.occlusion.texture.texture_key, primitives[i].material.flags & MATERIAL_OCCLUSION_BIT);
+        array_add_if_true(&array_sampler, primitives[i].material.occlusion.texture.sampler_key, primitives[i].material.flags & MATERIAL_OCCLUSION_BIT);
+
+        // Emissive
+        array_add_if_true(&array_tex,     primitives[i].material.emissive.texture.texture_key, primitives[i].material.flags & MATERIAL_EMISSIVE_BIT);
+        array_add_if_true(&array_sampler, primitives[i].material.emissive.texture.sampler_key, primitives[i].material.flags & MATERIAL_EMISSIVE_BIT);
     }
 }
 
