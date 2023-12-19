@@ -298,8 +298,8 @@ enum Asset_Draw_Prep_Result {
     ASSET_DRAW_PREP_RESULT_PARTIAL = 1,
 };
 
-// @TODO CURRENT TASK!! Write tests for this function. This should not take too long, since the only thing
-// to test are the return masks.
+// If the return value is not 0, success masks is an array of bit masks with each set bit corresponding
+// to a primitive in the array that has all its allocation keys successfully staged.
 Asset_Draw_Prep_Result load_primitive_allocations(
     u32                         count,
     const Mesh_Primitive       *primitives,
