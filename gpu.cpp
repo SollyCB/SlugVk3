@@ -1594,16 +1594,18 @@ struct Tex_Weight_Args {
 static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u32 idx = args->indices[args->idx];
 
+    // Ensure inc and dec are in range
+    args->inc |= max8_if_true(args->inc > 127);
+    args->dec |= max8_if_true(args->dec > 127);
+    args->inc &= 127;
+    args->dec &= 127;
+
     // Find incremented weight
-    u8 w    = args->weights[idx];
-    u8 tmp  = w + args->inc;
-    tmp    |= Max_u8 + (tmp >= w);
-    w       = (w + args->inc) | tmp;
+    u8 w   = args->weights[idx];
+    u8 tmp = max8_if_true(w + args->inc >= w || w + args->inc > 127); // stay in signed range
+    w      = (w + args->inc) | tmp;
+    w     &= 0b0111'1111; // Ensure weight is not negative
 
-    // @Note Do not remove this! cmp ops use sign so w > 127 is negative
-    w     &= 0b0111'1111;
-
-    args->weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
     __m128i b = _mm_set1_epi8(args->dec);
     __m128i c = _mm_set1_epi8(w);
@@ -1616,7 +1618,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     u32 count = args->count;
 
     // if weights didnt change, dont loop
-    count &= ~(Max_u32 + (u32)(args->inc || args->dec));
+    count &= max32_if_true(args->inc || args->dec);
 
     u32 pos = idx;
     bool new_pos_found = false;
@@ -1637,7 +1639,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
         d     = _mm_cmplt_epi8(a, c);
         mask  = _mm_movemask_epi8(d);
 
-        tmp32 = Max_u32 + (u32)(pop_count16(mask) > 0 && !new_pos_found);
+        tmp32 = max32_if_true(pop_count16(mask) > 0 && !new_pos_found);
         new_pos_found = tmp32 || new_pos_found;
         pos  -= pos & tmp32;
         pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
@@ -1647,6 +1649,10 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     Gpu_Tex_Allocation allocation   = allocations[idx];
     u8 *states = args->states;
     u8  state  = states[idx];
+
+    // If no new pos was found in range, pos = idx;
+    pos -= pos & max32_if_true(pos >= count);
+    pos += idx & max32_if_true(pos >= count);
 
     memmove(weights     + pos + 1, weights     + pos, idx - pos);
     memmove(states      + pos + 1, states      + pos, idx - pos);
@@ -1678,16 +1684,18 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
 static u32 adjust_allocation_weights(Weight_Args *args) {
     u32 idx = args->indices[args->idx];
 
+    // Ensure inc and dec are in range
+    args->inc |= max8_if_true(args->inc > 127);
+    args->dec |= max8_if_true(args->dec > 127);
+    args->inc &= 127;
+    args->dec &= 127;
+
     // Find incremented weight
-    u8 w    = args->weights[idx];
-    u8 tmp  = w + args->inc;
-    tmp    |= Max_u8 + (tmp >= w);
-    w       = (w + args->inc) | tmp;
+    u8 w   = args->weights[idx];
+    u8 tmp = max8_if_true(w + args->inc >= w || w + args->inc > 127); // stay in signed range
+    w      = (w + args->inc) | tmp;
+    w     &= 0b0111'1111; // Ensure weight is not negative
 
-    // @Note Do not remove this! cmp ops use sign so w > 127 is negative
-    w      &= 0b0111'1111;
-
-    args->weights[idx] = Max_u8; // prevent matching itself
     __m128i a;
     __m128i b = _mm_set1_epi8(args->dec);
     __m128i c = _mm_set1_epi8(w);
@@ -1700,7 +1708,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     u32 count = args->count;
 
     // if weights didnt change, dont loop
-    count &= ~(Max_u32 + (u32)(args->inc || args->dec));
+    count &= max32_if_true(args->inc || args->dec);
 
     u32 pos = idx;
     bool new_pos_found = false;
@@ -1721,7 +1729,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
         d     = _mm_cmplt_epi8(a, c);
         mask  = _mm_movemask_epi8(d);
 
-        tmp32 = Max_u32 + (u32)(pop_count16(mask) > 0 && !new_pos_found);
+        tmp32 = max32_if_true(pop_count16(mask) > 0 && !new_pos_found);
         new_pos_found = tmp32 || new_pos_found;
         pos  -= pos & tmp32;
         pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
@@ -1731,6 +1739,10 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     Gpu_Allocation allocation   = allocations[idx];
     u8 *states = args->states;
     u8  state  = states[idx];
+
+    // If no new pos was found in range, pos = idx;
+    pos -= pos & max32_if_true(pos >= count);
+    pos += idx & max32_if_true(pos >= count);
 
     memmove(weights     + pos + 1, weights     + pos, idx - pos);
     memmove(states      + pos + 1, states      + pos, idx - pos);
@@ -1761,21 +1773,20 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
 }
 
 void adjust_weights(u32 count, u8 *weights, u32 idx, s8 inc, s8 dec) {
-    // Use signed bytes as cmp ops use signs
-    s8 *s_weights = (s8*)weights;
-
+    // Ensure inc and dec are in range
     inc |= max8_if_true(inc > 127);
     dec |= max8_if_true(dec > 127);
     inc &= 127;
     dec &= 127;
 
-    s8 w    = s_weights[idx];
-    s8 tmp  = w + inc;
-    tmp    |= Max_u8 + (tmp >= w);
-    w       = (w + inc) | tmp;
+    // Find incremented weight
+    u8 w   = weights[idx];
+    u8 tmp = max8_if_true(w + inc >= w || w + inc > 127); // stay in signed range
+    w      = (w + inc) | tmp;
+    w     &= 0b0111'1111; // Ensure weight is not negative
 
-    // @Note Dont remove this
-    w     &= 0b0111'1111;
+    // Ensure weight is not negative
+    w &= 0b0111'1111;
 
     __m128i a;
     __m128i b = _mm_set1_epi8(dec);
@@ -1785,14 +1796,14 @@ void adjust_weights(u32 count, u8 *weights, u32 idx, s8 inc, s8 dec) {
     count &= max32_if_true(inc || dec);
 
     for(u32 i = 0; i < count; i += 16) {
-        a = _mm_load_si128((__m128i*)(s_weights + i));
+        a = _mm_load_si128((__m128i*)(weights + i));
         c = _mm_cmpgt_epi8(a, b);
         a = _mm_and_si128(a, c);
         c = _mm_and_si128(b, c);
         a = _mm_sub_epi8(a, c);
-        _mm_store_si128((__m128i*)(s_weights + i), a);
+        _mm_store_si128((__m128i*)(weights + i), a);
     }
-    s_weights[idx] = w; // revert loop decrement
+    weights[idx] = w; // revert loop decrement
 }
 
 u32 find_lowest_weight_with_without_flags(u32 count, u8 *weights, u8 *flags, u8 with_flags, u8 without_flags) {
