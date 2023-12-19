@@ -2290,6 +2290,7 @@ Gpu_Allocator_Result create_allocator(Gpu_Allocator_Config *config, Gpu_Allocato
     Gpu_Allocator ret = {};
     ret.allocation_cap         = config->allocation_cap;
     ret.to_stage_cap           = config->to_stage_cap;
+    ret.to_upload_cap          = config->to_upload_cap;
     ret.staging_queue_byte_cap = config->staging_queue_byte_cap;
     ret.upload_queue_byte_cap  = config->upload_queue_byte_cap;
     ret.allocation_cap         = config->allocation_cap;
@@ -2443,6 +2444,7 @@ Gpu_Allocator_Result create_tex_allocator(Gpu_Tex_Allocator_Config *config, Gpu_
     Gpu_Tex_Allocator ret = {};
     ret.allocation_cap         = config->allocation_cap;
     ret.to_stage_cap           = config->to_stage_cap;
+    ret.to_upload_cap          = config->to_upload_cap;
     ret.staging_queue_byte_cap = config->staging_queue_byte_cap;
     ret.upload_queue_byte_cap  = config->upload_queue_byte_cap;
     ret.allocation_cap         = config->allocation_cap;
