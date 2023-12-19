@@ -525,6 +525,7 @@ static void model_load_gltf_materials(u32 count, const Gltf_Material *gltf_mater
 
     const Gltf_Material *gltf_material = gltf_materials;
 
+    u32 tmp;
     for(u32 i = 0; i < count; ++i) {
         materials[i] = {};
 
@@ -553,27 +554,35 @@ static void model_load_gltf_materials(u32 count, const Gltf_Material *gltf_mater
         materials[i].pbr.metallic_factor  = gltf_material->metallic_factor;
         materials[i].pbr.roughness_factor = gltf_material->roughness_factor;
 
-        materials[i].pbr.base_color_texture    = textures[gltf_material->base_color_texture_index];
-        materials[i].pbr.base_color_tex_coord  = gltf_material->base_color_tex_coord;
-        materials[i].pbr.metallic_roughness_texture   = textures[gltf_material->metallic_roughness_texture_index];
+        // Base Color
+        tmp = gltf_material->base_color_texture_index;
+        materials[i].pbr.base_color_texture   = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_BASE_BIT)];
+        materials[i].pbr.base_color_tex_coord = gltf_material->base_color_tex_coord;
+
+        // Metallic Roughness
+        tmp = gltf_material->metallic_roughness_texture_index;
+        materials[i].pbr.metallic_roughness_texture   = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_PBR_BIT)];
         materials[i].pbr.metallic_roughness_tex_coord = gltf_material->metallic_roughness_tex_coord;
 
         // Normal
-        materials[i].normal.scale     = gltf_material->normal_scale;
-        materials[i].normal.texture   = textures[gltf_material->normal_texture_index];
+        tmp = gltf_material->normal_texture_index;
+        materials[i].normal.texture   = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_NORMAL_BIT)];
         materials[i].normal.tex_coord = gltf_material->normal_tex_coord;
+        materials[i].normal.scale     = gltf_material->normal_scale;
 
         // Occlusion
-        materials[i].occlusion.strength  = gltf_material->occlusion_strength;
-        materials[i].occlusion.texture   = textures[gltf_material->occlusion_texture_index];
+        tmp = gltf_material->occlusion_texture_index;
+        materials[i].occlusion.texture   = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_OCCLUSION_BIT)];
         materials[i].occlusion.tex_coord = gltf_material->occlusion_tex_coord;
+        materials[i].occlusion.strength  = gltf_material->occlusion_strength;
 
         // Emissive
+        tmp = gltf_material->emissive_texture_index;
+        materials[i].emissive.texture   = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_EMISSIVE_BIT)];
+        materials[i].emissive.tex_coord = gltf_material->emissive_tex_coord;
         materials[i].emissive.factor[0] = gltf_material->emissive_factor[0];
         materials[i].emissive.factor[1] = gltf_material->emissive_factor[1];
         materials[i].emissive.factor[2] = gltf_material->emissive_factor[2];
-        materials[i].emissive.texture   = textures[gltf_material->emissive_texture_index];
-        materials[i].emissive.tex_coord = gltf_material->emissive_tex_coord;
 
         gltf_material = (const Gltf_Material*)((u8*)gltf_material + gltf_material->stride);
     }
@@ -951,6 +960,10 @@ Model model_from_gltf(Model_Allocators *model_allocators, const String *model_di
         gltf_sampler = (const Gltf_Sampler*)((u8*)gltf_sampler + gltf_sampler->stride);
     }
 
+    // @Todo Do something with the information that a texture will always/have need a sampler, so I do not need
+    // a sampler count. Right now it is fine because I would pad the sampler count in primitive.key_counts anyway
+    // for simd, so right now it is useful for that. But it is a free 4 bytes that might be useful.
+
     // Point model back at the allocation keys
     Accessor *accessor;
     for(u32 i = 0; i < ret.mesh_count; ++i) {
@@ -961,45 +974,41 @@ Model model_from_gltf(Model_Allocators *model_allocators, const String *model_di
             primitive->indices.allocation_key = allocation_keys[primitive->indices.allocation_key];
             primitive->key_counts.index++;
 
-            // Material
-            if (primitive->material.flags & MATERIAL_BASE_BIT) {
-                primitive->material.pbr.base_color_texture.texture_key         = tex_allocation_keys[primitive->material.pbr.base_color_texture.texture_key];
-                primitive->material.pbr.base_color_texture.sampler_key         = sampler_keys       [primitive->material.pbr.base_color_texture.sampler_key];
+                                                    /* Material */
+            // Base Color
+            primitive->material.pbr.base_color_texture.texture_key = tex_allocation_keys[primitive->material.pbr.base_color_texture.texture_key];
+            primitive->material.pbr.base_color_texture.sampler_key = sampler_keys       [primitive->material.pbr.base_color_texture.sampler_key];
 
-                primitive->key_counts.tex++;
-                primitive->key_counts.sampler++;
-            }
-            if (primitive->material.flags & MATERIAL_PBR_BIT) {
-                primitive->material.pbr.metallic_roughness_texture.texture_key = tex_allocation_keys[primitive->material.pbr.metallic_roughness_texture.texture_key];
-                primitive->material.pbr.metallic_roughness_texture.sampler_key = sampler_keys       [primitive->material.pbr.metallic_roughness_texture.sampler_key];
+            primitive->key_counts.tex     += (primitive->material.flags & MATERIAL_BASE_BIT) > 0;
+            primitive->key_counts.sampler += (primitive->material.flags & MATERIAL_BASE_BIT) > 0;
 
-                primitive->key_counts.tex++;
-                primitive->key_counts.sampler++;
-            }
+            // Metallic Roughness
+            primitive->material.pbr.metallic_roughness_texture.texture_key = tex_allocation_keys[primitive->material.pbr.metallic_roughness_texture.texture_key];
+            primitive->material.pbr.metallic_roughness_texture.sampler_key = sampler_keys       [primitive->material.pbr.metallic_roughness_texture.sampler_key];
 
-            if (primitive->material.flags & MATERIAL_NORMAL_BIT) {
-                primitive->material.normal.texture.texture_key    = tex_allocation_keys[primitive->material.normal.texture.texture_key];
-                primitive->material.normal.texture.sampler_key    = sampler_keys       [primitive->material.normal.texture.sampler_key];
+            primitive->key_counts.tex     += (primitive->material.flags & MATERIAL_PBR_BIT) > 0;
+            primitive->key_counts.sampler += (primitive->material.flags & MATERIAL_PBR_BIT) > 0;
 
-                primitive->key_counts.tex++;
-                primitive->key_counts.sampler++;
-            }
+            // Normal
+            primitive->material.normal.texture.texture_key = tex_allocation_keys[primitive->material.normal.texture.texture_key];
+            primitive->material.normal.texture.sampler_key = sampler_keys       [primitive->material.normal.texture.sampler_key];
 
-            if (primitive->material.flags & MATERIAL_OCCLUSION_BIT) {
-                primitive->material.occlusion.texture.texture_key = tex_allocation_keys[primitive->material.occlusion.texture.texture_key];
-                primitive->material.occlusion.texture.sampler_key = sampler_keys       [primitive->material.occlusion.texture.sampler_key];
+            primitive->key_counts.tex     += (primitive->material.flags & MATERIAL_NORMAL_BIT) > 0;
+            primitive->key_counts.sampler += (primitive->material.flags & MATERIAL_NORMAL_BIT) > 0;
 
-                primitive->key_counts.tex++;
-                primitive->key_counts.sampler++;
-            }
+            // Occlusion
+            primitive->material.occlusion.texture.texture_key = tex_allocation_keys[primitive->material.occlusion.texture.texture_key];
+            primitive->material.occlusion.texture.sampler_key = sampler_keys       [primitive->material.occlusion.texture.sampler_key];
 
-            if (primitive->material.flags & MATERIAL_EMISSIVE_BIT) {
-                primitive->material.emissive.texture.texture_key  = tex_allocation_keys[primitive->material.emissive.texture.texture_key];
-                primitive->material.emissive.texture.sampler_key  = sampler_keys       [primitive->material.emissive.texture.sampler_key];
+            primitive->key_counts.tex     += (primitive->material.flags & MATERIAL_OCCLUSION_BIT) > 0;
+            primitive->key_counts.sampler += (primitive->material.flags & MATERIAL_OCCLUSION_BIT) > 0;
 
-                primitive->key_counts.tex++;
-                primitive->key_counts.sampler++;
-            }
+            // Emissive
+            primitive->material.emissive.texture.texture_key  = tex_allocation_keys[primitive->material.emissive.texture.texture_key];
+            primitive->material.emissive.texture.sampler_key  = sampler_keys       [primitive->material.emissive.texture.sampler_key];
+
+            primitive->key_counts.tex     += (primitive->material.flags & MATERIAL_EMISSIVE_BIT) > 0;
+            primitive->key_counts.sampler += (primitive->material.flags & MATERIAL_EMISSIVE_BIT) > 0;
 
             // Attributes
             for(u32 k = 0; k < primitive->attribute_count; ++k) {
