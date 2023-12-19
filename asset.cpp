@@ -1659,6 +1659,14 @@ static void test_load_primitive_allocations() {
     TEST_EQ("successfully_loaded_primitive_masks[0]", success_masks[0], 0x1 | 0x2 | 0x4 | 0x8, false);
     TEST_EQ("successfully_loaded_primitive_masks[1]", success_masks[1], 0x0, false);
 
+    Gpu_Tex_Allocation *tex_allocation;
+    char buf[127];
+    for(u32 i = 0; i < 128; ++i) {
+        tex_allocation = gpu_get_tex_allocation(&allocators->tex, i % 5);
+        string_format(buf, "get_tex_allocation[%u]", i);
+        TEST_STREQ(buf, tex_allocation->file_name.str, image_names[i % 5].str, false);
+    }
+
     END_TEST_MODULE();
 
     destroy_model_allocators(&g_assets->model_allocators);
