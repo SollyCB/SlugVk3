@@ -1630,17 +1630,13 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
         a = _mm_and_si128(a, d);
         _mm_store_si128((__m128i*)(weights + inc), a);
 
-        // @Note Finding position could be moved into its own loop, where there would be fewer instructions and
-        // fewer iterations. However we would be looping the same data again *and* and having to index into
-        // the data rather than starting from beginning *and* finishing the loop on an unpredictable condition.
-        // Therefore I will do the work in more instructions, and on every iteration to avoid these costs as the
-        // work is so so cheap.
-        //
-
+        // Find new pos (elements are stored high to low by weight,
+        // so looping from 0..count we set pos to the index of the
+        // first weight which is lower).
         d     = _mm_cmplt_epi8(a, c);
         mask  = _mm_movemask_epi8(d);
 
-        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32);
+        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == idx);
         pos  -= pos & tmp32;
         pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
     }
@@ -1716,17 +1712,13 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
         a = _mm_and_si128(a, d);
         _mm_store_si128((__m128i*)(weights + inc), a);
 
-        // @Note Finding position could be moved into its own loop, where there would be fewer instructions and
-        // fewer iterations. However we would be looping the same data again *and* and having to index into
-        // the data rather than starting from beginning *and* finishing the loop on an unpredictable condition.
-        // Therefore I will do the work in more instructions, and on every iteration to avoid these costs as the
-        // work is so so cheap.
-        //
-        // Find new position
+        // Find new pos (elements are stored high to low by weight,
+        // so looping from 0..count we set pos to the index of the
+        // first weight which is lower).
         d     = _mm_cmplt_epi8(a, c);
         mask  = _mm_movemask_epi8(d);
 
-        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == Max_u32);
+        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == idx);
         pos  -= pos & tmp32;
         pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
     }
