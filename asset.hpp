@@ -19,18 +19,18 @@ struct Model_Allocators {
     Descriptor_Allocator descriptor_resource;
 };
 
-constexpr u32 g_assets_keys_array_tex_len        = 256;
-constexpr u32 g_assets_keys_array_index_len      = 256;
-constexpr u32 g_assets_keys_array_vertex_len     = 256;
-constexpr u32 g_assets_keys_array_sampler_len    = 256;
-constexpr u32 g_assets_keys_array_image_view_len = 256;
+constexpr u32 g_assets_keys_array_tex_len        = 1024;
+constexpr u32 g_assets_keys_array_index_len      = 1024;
+constexpr u32 g_assets_keys_array_vertex_len     = 1024;
+constexpr u32 g_assets_keys_array_sampler_len    = 1024;
+constexpr u32 g_assets_keys_array_image_view_len = 1024;
 
 // These are u64 bit masks, so not many are necessary
-constexpr u32 g_assets_result_masks_tex_count        = 8;
-constexpr u32 g_assets_result_masks_index_count      = 8;
-constexpr u32 g_assets_result_masks_vertex_count     = 8;
-constexpr u32 g_assets_result_masks_sampler_count    = 8;
-constexpr u32 g_assets_result_masks_image_view_count = 8;
+constexpr u32 g_assets_result_masks_tex_count        = 16;
+constexpr u32 g_assets_result_masks_index_count      = 16;
+constexpr u32 g_assets_result_masks_vertex_count     = 16;
+constexpr u32 g_assets_result_masks_sampler_count    = 16;
+constexpr u32 g_assets_result_masks_image_view_count = 16;
 
 constexpr u32 g_assets_pipelines_array_len = 256;
 

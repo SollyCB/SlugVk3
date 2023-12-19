@@ -132,12 +132,13 @@ void init_assets() {
     g_assets->keys_sampler       = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_sampler_len  );
     g_assets->keys_image_view    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
 
-    g_assets->results_tex_stage     = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_tex_count   );
     g_assets->results_index_stage   = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_index_count );
     g_assets->results_vertex_stage  = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_vertex_count);
-    g_assets->results_tex_upload    = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_tex_count   );
+    g_assets->results_tex_stage     = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_tex_count   );
+
     g_assets->results_index_upload  = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_index_count );
     g_assets->results_vertex_upload = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_vertex_count);
+    g_assets->results_tex_upload    = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_tex_count   );
 
     g_assets->results_sampler       = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_sampler_len   );
     g_assets->results_image_view    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
@@ -177,22 +178,18 @@ void kill_assets() {
     free_h(g_assets->models);
     destroy_model_allocators(&g_assets->model_allocators);
 
-    // free_h(g_assets->keys_tex   );
-    // println("Free Tex");
     free_h(g_assets->keys_index );
-    println("Free Index");
-    // free_h(g_assets->keys_vertex);
-    // println("Free Vertex");
 
     free_h(g_assets->keys_sampler   );
     free_h(g_assets->keys_image_view);
 
-    free_h(g_assets->results_tex_stage    );
     free_h(g_assets->results_index_stage  );
     free_h(g_assets->results_vertex_stage );
-    free_h(g_assets->results_tex_upload   );
+    free_h(g_assets->results_tex_stage    );
+
     free_h(g_assets->results_index_upload );
     free_h(g_assets->results_vertex_upload);
+    free_h(g_assets->results_tex_upload   );
 
     free_h(g_assets->results_sampler   );
     free_h(g_assets->results_image_view);
@@ -724,8 +721,9 @@ inline static void add_buffer_view_index(u32 idx, u32 *count, u32 *indices, u32 
     u32 mask_idx = idx >> 6;
     u64 mask     = masks[mask_idx];
 
-    bool seen = (mask & (1 << (idx & 63))) > 0;
-    mask      =  mask | (1 << (idx & 63));
+    u64 one = 1;
+    bool seen = (mask & (one << (idx & 63))) > 0;
+    mask      =  mask | (one << (idx & 63));
 
     masks[mask_idx] = mask;
 
@@ -1140,6 +1138,14 @@ static void load_primitive_resource_keys(u32 count, const Mesh_Primitive *primit
     }
 }
 
+inline static bool mask_off_result(u32 idx, u64 *masks, Gpu_Allocator_Result result) {
+    u64 one = 1;
+    u64 check = result == GPU_ALLOCATOR_RESULT_SUCCESS;
+    masks[idx >> 6] &= ~(one << (idx & 63));
+    masks[idx >> 6] |= check << (idx & 63);
+    return check;
+}
+
 // Just copying and pasting the below functions is easier, trust me.
 bool attempt_to_queue_allocations_staging(Gpu_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
                                           bool adjust_weights)
@@ -1149,13 +1155,10 @@ bool attempt_to_queue_allocations_staging(Gpu_Allocator *allocator, u32 count, u
 
     bool check;
     bool ret = true;
+    u64 tmp;
     for(u32 i = 0; i < count; ++i) {
         result = staging_queue_add(allocator, keys[i], adjust_weights);
-
-        // if queueing was successful, bit is set
-        check  = result == GPU_ALLOCATOR_RESULT_SUCCESS;
-        ret    = check && ret;
-        result_masks[i >> 6] |= check << (i & 63);
+        ret = ret && mask_off_result(i, result_masks, result);
     }
 
     return ret;
@@ -1171,11 +1174,7 @@ bool attempt_to_queue_allocations_upload(Gpu_Allocator *allocator, u32 count, u3
     bool ret = true;
     for(u32 i = 0; i < count; ++i) {
         result = upload_queue_add(allocator, keys[i], adjust_weights);
-
-        // if queueing was successful, bit is set
-        check  = result == GPU_ALLOCATOR_RESULT_SUCCESS;
-        ret    = check && ret;
-        result_masks[i >> 6] |= check << (i & 63);
+        ret = ret && mask_off_result(i, result_masks, result);
     }
 
     return ret;
@@ -1191,11 +1190,7 @@ bool attempt_to_queue_tex_allocations_staging(Gpu_Tex_Allocator *allocator, u32 
     bool ret = true;
     for(u32 i = 0; i < count; ++i) {
         result = tex_staging_queue_add(allocator, keys[i], adjust_weights);
-
-        // if queueing was successful, bit is set
-        check  = result == GPU_ALLOCATOR_RESULT_SUCCESS;
-        ret    = check && ret;
-        result_masks[i >> 6] |= check << (i & 63);
+        ret = ret && mask_off_result(i, result_masks, result);
     }
 
     return ret;
@@ -1211,18 +1206,38 @@ bool attempt_to_queue_tex_allocations_upload(Gpu_Tex_Allocator *allocator, u32 c
     bool ret = true;
     for(u32 i = 0; i < count; ++i) {
         result = tex_upload_queue_add(allocator, keys[i], adjust_weights);
-
-        // if queueing was successful, bit is set
-        check  = result == GPU_ALLOCATOR_RESULT_SUCCESS;
-        ret    = check && ret;
-        result_masks[i >> 6] |= check << (i & 63);
+        ret = ret && mask_off_result(i, result_masks, result);
     }
 
     return ret;
 }
 
-inline static bool check_queue_result(u32 key_pos, u64 *results) {
-    return results[key_pos >> 6] & (1 << (key_pos & 63));
+inline static bool check_upload_stage_results_against_req_count(u32 count, u32 bit_pos, u64 stage_masks[2], u64 upload_masks[2]) {
+    u64 one = 1;
+    u64 max = Max_u64;
+
+    // number of results overflowed to the second mask
+    u32 result_overflow = ((bit_pos + count) - 64) & max64_if_true(bit_pos + count > 64);
+
+    u64 overflow_mask;
+    u64 primary_mask;
+
+    // create a mask of the overflow bits
+    overflow_mask   =   stage_masks[1] & upload_masks[1];
+    overflow_mask  &= ~(max << result_overflow);
+    overflow_mask <<=   count - result_overflow; // make room at the beginning for the primary mask bits
+
+    // create a mask of the bits in the first mask
+    primary_mask  =  (stage_masks[0] & upload_masks[0]) >> bit_pos;
+    primary_mask &= ~(max << (count - result_overflow));
+    primary_mask |= overflow_mask;
+
+    // if all allocations of this type (e.g. index) for this primitive were successfully staged and uploaded, the primary
+    // mask should contain a contiguous section of set bits equivalent in length to the number of staged/uploaded allocations.
+    primary_mask = count_trailing_zeros_u64(~primary_mask) & max64_if_true(pop_count64(primary_mask));
+    assert(primary_mask <= count && "Algorithm Mistake: more successful results than possible results");
+
+    return primary_mask == count;
 }
 
 Asset_Draw_Prep_Result load_primitive_allocations(
@@ -1244,6 +1259,11 @@ Asset_Draw_Prep_Result load_primitive_allocations(
     u32         primitive_job_offsets   [g_thread_count];
     u32         primitive_job_sizes     [g_thread_count]; // The number of primitives in a job
     Key_Arrays  primitive_job_key_arrays[g_thread_count];
+
+    u32 *keys_index   = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_tex_len);
+    u32 *keys_vertex  = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_index_len);
+    u32 *keys_tex     = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_vertex_len);
+    u32 *keys_sampler = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_sampler_len);
 
     // Doubles as the total key count for each key type once filled in
     alignas(16) Primitive_Key_Counts accum_offsets = {};
@@ -1269,10 +1289,10 @@ Asset_Draw_Prep_Result load_primitive_allocations(
 
         // @SIMD This could be simd too, but it would be awkward since the pointers are a different
         // size to the offsets...
-        primitive_job_key_arrays[i].index   = g_assets->keys_index   + accum_offsets.index;
-        primitive_job_key_arrays[i].vertex  = g_assets->keys_vertex  + accum_offsets.vertex;
-        primitive_job_key_arrays[i].tex     = g_assets->keys_tex     + accum_offsets.tex;
-        primitive_job_key_arrays[i].sampler = g_assets->keys_sampler + accum_offsets.sampler;
+        primitive_job_key_arrays[i].index   = keys_index   + accum_offsets.index;
+        primitive_job_key_arrays[i].vertex  = keys_vertex  + accum_offsets.vertex;
+        primitive_job_key_arrays[i].tex     = keys_tex     + accum_offsets.tex;
+        primitive_job_key_arrays[i].sampler = keys_sampler + accum_offsets.sampler;
 
         // For every primitive in the job, add its key counts to the to accumulator in order to
         // offset the key arrays.
@@ -1315,17 +1335,18 @@ Asset_Draw_Prep_Result load_primitive_allocations(
     Gpu_Allocator     *vertex_allocator = &g_assets->model_allocators.vertex;
     Gpu_Tex_Allocator *tex_allocator    = &g_assets->model_allocators.tex;
 
-    u64 *results_index_stage   = g_assets->results_index_stage;
-    u64 *results_vertex_stage  = g_assets->results_vertex_stage;
-    u64 *results_tex_stage     = g_assets->results_tex_stage;
-    u64 *results_index_upload  = g_assets->results_index_upload;
-    u64 *results_vertex_upload = g_assets->results_vertex_upload;
-    u64 *results_tex_upload    = g_assets->results_tex_upload;
+    const u32 result_mask_count = 17; // must be large enough to allow out of bounds indexing by one in the below loop.
 
-    u32 *keys_index   = g_assets->keys_index;
-    u32 *keys_vertex  = g_assets->keys_vertex;
-    u32 *keys_tex     = g_assets->keys_tex;
-    u32 *keys_sampler = g_assets->keys_sampler;
+    assert(result_mask_count * 64 > accum_offsets.index  + 1 && "Insufficient Result Count");
+    assert(result_mask_count * 64 > accum_offsets.vertex + 1 && "Insufficient Result Count");
+    assert(result_mask_count * 64 > accum_offsets.tex    + 1 && "Insufficient Result Count");
+
+    u64 results_index_stage  [result_mask_count];
+    u64 results_vertex_stage [result_mask_count];
+    u64 results_tex_stage    [result_mask_count];
+    u64 results_index_upload [result_mask_count];
+    u64 results_vertex_upload[result_mask_count];
+    u64 results_tex_upload   [result_mask_count];
 
     // @Note Not currently acquiring samplers in this phase. Although I could, I think it would
     // be more appropriate to get them at the image view phase. Idk though, maybe I should acquire
@@ -1347,7 +1368,7 @@ Asset_Draw_Prep_Result load_primitive_allocations(
     bool result_upload_tex    = attempt_to_queue_tex_allocations_upload(tex_allocator, accum_offsets.tex,
                                     keys_tex,    results_tex_upload,    adjust_weights);
 
-    // @Note the above final results are unused, but later they can be used to just return the function,
+    // @Note the above bool results are unused, but later they can be used to just return the function,
     // as a true result would mean that all allocations successfully queued, so no need for next step
 
     // Parse upload results to understand which primitives can be drawn and which need to be requeued.
@@ -1357,112 +1378,152 @@ Asset_Draw_Prep_Result load_primitive_allocations(
     // being take up later allocations which also cannot draw because queue space is taken first by earlier
     // primitives.
 
-    u32 key_pos_index  = 0;
-    u32 key_pos_vertex = 0;
-    u32 key_pos_tex    = 0;
+    // Really I could just reuse the result masks here, but this is a bit clearer to follow.
+    u64 success_masks_index [result_mask_count];
+    u64 success_masks_vertex[result_mask_count];
+    u64 success_masks_tex   [result_mask_count];
 
-    u32 *to_remove_keys_index  = (u32*)malloc_t(sizeof(u32) * accum_offsets.index);
-    u32 *to_remove_keys_vertex = (u32*)malloc_t(sizeof(u32) * accum_offsets.vertex);
-    u32 *to_remove_keys_tex    = (u32*)malloc_t(sizeof(u32) * accum_offsets.tex);
+    // Below loop assumes that per primitive, the number of allocations of each type (index, or vertex, or tex)
+    // is less than 64.
 
-    u32 to_remove_key_count_index  = 0;
-    u32 to_remove_key_count_vertex = 0;
-    u32 to_remove_key_count_tex    = 0;
+    const u64 one = 1;
+    u32 result_mask_idx;
+    u32 result_count;
+    u32 result_pos = 0;
+    u64 result64; // a big bool that I can shift by more that 31
 
-    // The below loop fills the above arrays with allocation keys which need to be removed from allocation
-    // queues. It does this in a branchless fashion by adding every key to the arrays, but only incrementing
-    // the length of the array if the key actually needs to be removed. This technically incurs a bunch more
-    // work on every call of this function, but I think that really it is only really one extra 32 bit mov
-    // per key, which seems like a good price to pay for not branching. Especially since we could just
-    // skip all of this work using the above results from the allocator calls. Maybe we want to just do this
-    // anyway, justified by the Carmack email thread on Jon Blow's blog - (http://number-none.com/blow/blog/programming/2014/09/26/carmack-on-inlined-code.html).
-
-    // @Multithreading The below loop with four sub could become four jobs, hence the separate masks.
-
-    const u32 success_mask_count = g_primitive_draw_queue_success_mask_count;
-
-    u64 success_masks_index [success_mask_count] = {};
-    u64 success_masks_vertex[success_mask_count] = {};
-    u64 success_masks_tex   [success_mask_count] = {};
-
-    u32  success_count;
-    u32  req_count;
-    u32  have_count;
-    bool result_stage;
-    bool result_upload;
-    Primitive_Key_Counts key_count;
+    // @Multithreading This looks dumb as I loop keys_counts 3 times, but these loops will become 3 jobs,
+    // and separating out the loops like this makes that easier.
     for(u32 i = 0; i < count; ++i) {
-        key_count     = key_counts[i];
-        req_count     = (key_count.index + key_count.vertex + key_count.tex) * 2; // x2 for stage + upload
-        success_count = 0;
+        result_count    = key_counts[i].index;
+        result_mask_idx = result_pos >> 6;
 
-        // @SIMD I would like to simd the below stuff, such as storing four keys at a time, but to make this
-        // work the keys per primitive would really have to be aligned to a 16 byte boundary which would make
-        // it annoying to take them from the array into the allocator. You can make this work by always taking
-        // the next 32 bits and just padding with some null key, like Max_u32 that the allocator knows about.
-        // This might be fun to do later, but for now I will chill on it.
-        for(u32 j = 0; j < key_count.index; ++j) {
-            result_stage  = (results_index_stage [key_pos_index >> 6] & (1 << (key_pos_index & 63))) > 0;
-            result_upload = (results_index_upload[key_pos_index >> 6] & (1 << (key_pos_index & 63))) > 0;
+        // Idk how to format this...
+        result64 = check_upload_stage_results_against_req_count(result_count, result_pos & 63,
+                                                                results_index_stage  + result_mask_idx,
+                                                                results_index_upload + result_mask_idx);
 
-            success_count += result_stage + result_upload;
+        success_masks_index[i >> 6] &= ~(one << (i & 63));
+        success_masks_index[i >> 6] |= result64 << (i & 63);
 
-            to_remove_keys_index[to_remove_key_count_index] = keys_index[key_pos_index];
-
-            to_remove_key_count_index   +=  result_stage && result_upload;
-            success_masks_index[i >> 6] |= (result_stage && result_upload) << (i & 63);
-
-            key_pos_index++;
-        }
-
-        for(u32 j = 0; j < key_count.vertex; ++j) {
-            result_stage  = (results_vertex_stage [key_pos_vertex >> 6] & (1 << (key_pos_vertex & 63))) > 0;
-            result_upload = (results_vertex_upload[key_pos_vertex >> 6] & (1 << (key_pos_vertex & 63))) > 0;
-
-            success_count += result_stage + result_upload;
-
-            to_remove_keys_vertex[to_remove_key_count_vertex] = keys_vertex[key_pos_vertex];
-
-            to_remove_key_count_vertex   +=  result_stage && result_upload;
-            success_masks_vertex[i >> 6] |= (result_stage && result_upload) << (i & 63);
-
-            key_pos_vertex++;
-        }
-
-        for(u32 j = 0; j < key_count.tex; ++j) {
-            result_stage  = (results_tex_stage [key_pos_tex >> 6] & (1 << (key_pos_tex & 63))) > 0;
-            result_upload = (results_tex_upload[key_pos_tex >> 6] & (1 << (key_pos_tex & 63))) > 0;
-
-            success_count += result_stage + result_upload;
-
-            to_remove_keys_tex[to_remove_key_count_tex] = keys_tex[key_pos_tex];
-
-            to_remove_key_count_tex   +=  result_stage && result_upload;
-            success_masks_tex[i >> 6] |= (result_stage && result_upload) << (i & 63);
-
-            key_pos_tex++;
-        }
-        assert(success_count <= req_count && "How do we have more allocations successful than we have allocations to check... ummm ur bad programmer broski! Fix ur algorithm.");
+        result_pos += result_count;
     }
-    assert(key_pos_index == accum_offsets.index && key_pos_vertex == accum_offsets.vertex && key_pos_tex == accum_offsets.tex && "Did not pass all keys somewhere");
+
+    result_pos = 0;
+    for(u32 i = 0; i < count; ++i) {
+        result_count    = key_counts[i].vertex;
+        result_mask_idx = result_pos >> 6;
+
+        // Idk how to format this...
+        result64 = check_upload_stage_results_against_req_count(result_count, result_pos & 63,
+                                                                results_vertex_stage  + result_mask_idx,
+                                                                results_vertex_upload + result_mask_idx);
+
+        success_masks_vertex[i >> 6] &= ~(one << (i & 63));
+        success_masks_vertex[i >> 6] |= result64 << (i & 63);
+
+        result_pos += result_count;
+    }
+
+    result_pos = 0;
+    for(u32 i = 0; i < count; ++i) {
+        result_count    = key_counts[i].tex;
+        result_mask_idx = result_pos >> 6;
+
+        // Idk how to format this...
+        result64 = check_upload_stage_results_against_req_count(result_count, result_pos & 63,
+                                                                results_tex_stage  + result_mask_idx,
+                                                                results_tex_upload + result_mask_idx);
+
+        success_masks_tex[i >> 6] &= ~(one << (i & 63));
+        success_masks_tex[i >> 6] |= result64 << (i & 63);
+
+        result_pos += result_count;
+    }
+
+    // Collapse allocation results
+    __m128i c;
+    for(u32 i = 0; i < count; i += 2) {
+        a = _mm_load_si128((__m128i*)(success_masks_index  + i));
+        b = _mm_load_si128((__m128i*)(success_masks_vertex + i));
+        c = _mm_load_si128((__m128i*)(success_masks_tex    + i));
+        a = _mm_and_si128(a, b);
+        a = _mm_and_si128(a, c);
+        _mm_store_si128((__m128i*)(success_masks + i), a);
+    }
+
+    // growable == false, temp_array == true
+    Array<u32> to_remove_keys_index  = new_array<u32>(accum_offsets.index,  false, true);
+    Array<u32> to_remove_keys_vertex = new_array<u32>(accum_offsets.vertex, false, true);
+    Array<u32> to_remove_keys_tex    = new_array<u32>(accum_offsets.tex,    false, true);
+
+    // @Multithreading See previous multithreading comment (two loops up)
+    // @SIMD I would like to make this simd, but I cannot see how to do so without using unaligned loads.
+    // Maybe that would still be faster, but since I am not certain of the benefit, I will still to this for now.
+    result_pos = 0;
+    bool tmp_bool;
+    for(u32 i = 0; i < count; ++i) {
+        result_count = key_counts[i].index;
+
+        result64 = success_masks[i >> 6] & (one << (i & 63));
+        result64 = result_count & max64_if_false(result64);
+
+        // If every allocation for this primitive was not successfully loaded, add the key to the 'to_remove'
+        // array if the key was successfully loaded.
+        for(u32 j = result_pos; j < result_pos + result64; ++j) {
+            tmp_bool = (results_index_stage[j >> 6] & results_index_upload[j >> 6]) & (one << (j & 63));
+            array_add_if_true(&to_remove_keys_index, keys_index[j], tmp_bool);
+        }
+
+        result_pos += result_count;
+    }
+
+    result_pos = 0;
+    for(u32 i = 0; i < count; ++i) {
+        result_count = key_counts[i].vertex;
+
+        result64 = success_masks[i >> 6] & (one << (i & 63));
+        result64 = result_count & max64_if_false(result64);
+
+        // If every allocation for this primitive was not successfully loaded, add the key to the 'to_remove'
+        // array if the key was successfully loaded.
+        for(u32 j = result_pos; j < result_pos + result64; ++j) {
+            tmp_bool = (results_vertex_stage[j >> 6] & results_vertex_upload[j >> 6]) & (one << (j & 63));
+            array_add_if_true(&to_remove_keys_vertex, keys_vertex[j], tmp_bool);
+        }
+
+        result_pos += result_count;
+    }
+
+    result_pos = 0;
+    for(u32 i = 0; i < count; ++i) {
+        result_count = key_counts[i].tex;
+
+        result64 = success_masks[i >> 6] & (one << (i & 63));
+        result64 = result_count & max64_if_false(result64);
+
+        // If every allocation for this primitive was not successfully loaded, add the key to the 'to_remove'
+        // array if the key was successfully loaded.
+        for(u32 j = result_pos; j < result_pos + result64; ++j) {
+            tmp_bool = (results_tex_stage[j >> 6] & results_tex_upload[j >> 6]) & (one << (j & 63));
+            array_add_if_true(&to_remove_keys_tex, keys_tex[j], tmp_bool);
+        }
+
+        result_pos += result_count;
+    }
 
     // @Multithreading These will each be a job for the corresponding allocator threads.
 
-    for(u32 i = 0; i < to_remove_key_count_index; ++i) {
-        staging_queue_upload_queue_remove(index_allocator, to_remove_keys_index[i]);
+    for(u32 i = 0; i < to_remove_keys_index.len; ++i) {
+        staging_queue_upload_queue_remove(index_allocator, to_remove_keys_index.data[i]);
     }
 
-    for(u32 i = 0; i < to_remove_key_count_vertex; ++i) {
-        staging_queue_upload_queue_remove(vertex_allocator, to_remove_keys_vertex[i]);
+    for(u32 i = 0; i < to_remove_keys_vertex.len; ++i) {
+        staging_queue_upload_queue_remove(vertex_allocator, to_remove_keys_vertex.data[i]);
     }
 
-    for(u32 i = 0; i < to_remove_key_count_tex; ++i) {
-        tex_staging_queue_upload_queue_remove(tex_allocator, to_remove_keys_tex[i]);
-    }
-
-    // Return which primitives were successfully queued.
-    for(u32 i = 0; i < success_mask_count; ++i) {
-        success_masks[i] = success_masks_index[i] & success_masks_vertex[i] & success_masks_tex[i];
+    for(u32 i = 0; i < to_remove_keys_tex.len; ++i) {
+        tex_staging_queue_upload_queue_remove(tex_allocator, to_remove_keys_tex.data[i]);
     }
 
     if (result_stage_index  && result_stage_vertex  && result_stage_tex &&
@@ -1506,17 +1567,17 @@ static void test_load_primitive_allocations() {
     model_allocators_config.vertex_allocator_config_stage_bit_granularity  = 64;
     model_allocators_config.vertex_allocator_config_upload_bit_granularity = 64;
 
-    model_allocators_config.tex_allocator_config_staging_queue_byte_cap = 1024 * 1024 * 4;
-    model_allocators_config.tex_allocator_config_upload_queue_byte_cap  = 1024 * 1024 * 2;
+    model_allocators_config.tex_allocator_config_staging_queue_byte_cap = 1024 * 1024 * 2;
+    model_allocators_config.tex_allocator_config_upload_queue_byte_cap  = 1024 * 1024 * 1;
     model_allocators_config.tex_allocator_config_stage_bit_granularity  = 64;
     model_allocators_config.tex_allocator_config_upload_bit_granularity = 64;
 
     Model_Allocators reassigned_model_allocators = create_model_allocators(&model_allocators_config);
-    // g_assets->model_allocators = reassigned_model_allocators;
+    g_assets->model_allocators = reassigned_model_allocators;
 
     Model_Allocators *allocators = &g_assets->model_allocators;
 
-    u64 allocation_size = 64;
+    u64 allocation_size = 128;
     u8 *allocation_mem  = malloc_t(allocation_size);
 
     u32 primitive_count = 128;
@@ -1584,16 +1645,20 @@ static void test_load_primitive_allocations() {
 //     bool                        adjust_weights,
 //     u64                        *success_masks)
 
-    u32 mask_count     = align(primitive_count, 64) / 64;
+    u32  mask_count     = align(primitive_count, 64) / 64;
     u64 *success_masks = (u64*)malloc_t(sizeof(u64) * mask_count);
     BEGIN_TEST_MODULE("Load Primitive Allocations", false, false);
 
-    Asset_Draw_Prep_Result draw_prep_result = load_primitive_allocations(primitive_count, primitives, key_counts, true, success_masks);
+    Asset_Draw_Prep_Result draw_prep_result = load_primitive_allocations(primitive_count, primitives, key_counts,
+                                                                         true, success_masks);
     TEST_EQ("NULL", true, true, false);
+
+    println("mask0: %ub", success_masks[0]);
+    println("mask1: %ub", success_masks[1]);
 
     END_TEST_MODULE();
 
-    destroy_model_allocators(&reassigned_model_allocators);
+    destroy_model_allocators(&g_assets->model_allocators);
 
     // Restore the actual model allocators (they were reassigned at function start to simplify testing)
     g_assets->model_allocators = model_allocators_from_assets_initialization;
