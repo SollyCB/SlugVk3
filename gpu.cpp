@@ -1619,6 +1619,7 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
     count &= ~(Max_u32 + (u32)(args->inc || args->dec));
 
     u32 pos = idx;
+    bool new_pos_found = false;
 
     u8 *weights = args->weights;
     for(inc = 0; inc < count; inc += 16) {
@@ -1636,7 +1637,8 @@ static u32 adjust_allocation_weights(Tex_Weight_Args *args) {
         d     = _mm_cmplt_epi8(a, c);
         mask  = _mm_movemask_epi8(d);
 
-        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == idx);
+        tmp32 = Max_u32 + (u32)(pop_count16(mask) > 0 && !new_pos_found);
+        new_pos_found = tmp32 || new_pos_found;
         pos  -= pos & tmp32;
         pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
     }
@@ -1701,6 +1703,7 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
     count &= ~(Max_u32 + (u32)(args->inc || args->dec));
 
     u32 pos = idx;
+    bool new_pos_found = false;
 
     u8 *weights = args->weights;
     for(inc = 0; inc < count; inc += 16) {
@@ -1718,7 +1721,8 @@ static u32 adjust_allocation_weights(Weight_Args *args) {
         d     = _mm_cmplt_epi8(a, c);
         mask  = _mm_movemask_epi8(d);
 
-        tmp32 = 0 - (u32)(pop_count16(mask) > 0 && pos == idx);
+        tmp32 = Max_u32 + (u32)(pop_count16(mask) > 0 && !new_pos_found);
+        new_pos_found = tmp32 || new_pos_found;
         pos  -= pos & tmp32;
         pos  += (count_trailing_zeros_u16(mask) + inc) & tmp32;
     }
