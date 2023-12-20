@@ -919,10 +919,6 @@ inline static u64 descriptor_get_binding_offset(VkDescriptorSetLayout layout, u3
 void rp_forward_shadow(VkImageView present_attachment, VkImageView depth_attachment, VkImageView shadow_attachment,
                        VkRenderPass *renderpass, VkFramebuffer *framebuffer);
 
-enum Pl_Blend_Setting {
-    PL_BLEND_SETTING_NO_BLEND    = 0,
-    PL_BLEND_SETTING_ALPHA_BLEND = 1,
-};
 enum Pl_Config_Flag_Bits {
     PL_CONFIG_CULL_FRONT_BIT            = 0x0001,
     PL_CONFIG_CULL_BACK_BIT             = 0x0002,
@@ -945,35 +941,73 @@ enum Pl_Config_Flag_Bits {
 };
 typedef u32 Pl_Config_Flags;
 
-struct Pl_Primitive_Info {
-    VkPrimitiveTopology  topology;
-    u32                  count;
+struct Pl_Primitive_Info { // 4 + 4 + 8 + 8 = 24 bytes
     u32                 *strides;
     VkFormat            *formats;
+    VkPrimitiveTopology  topology;
+    u32                  count;
+};
+
+struct Pl_Shader_Info {
+    VkShaderModule        module;
+    VkShaderStageFlagBits stage;
 };
 
 struct Pl_Layout {
-    u32 set_count;
-    u32 stage_count;
-    u64                             *set_layout_sizes; // Save from api calls
-    VkDescriptorSetLayout           *set_layouts;
-    VkPipelineShaderStageCreateInfo *stages;
-    VkPipelineLayout                 pl_layout;
+    u32                    set_count;
+    u32                    stage_count;
+    u64                   *set_layout_sizes; // Save from api calls
+    VkDescriptorSetLayout *set_layouts;
+    Pl_Shader_Info        *stages;
+    VkPipelineLayout       pl_layout;
 };
-void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count,
-                              VkPushConstantRange *push_constants, Pl_Layout *layout);
+void pl_get_stages_and_layout(
+    u32                  count,
+    u32                 *shader_indices,
+    u32                  push_constant_count,
+    VkPushConstantRange *push_constants,
+    Pl_Layout           *layout);
 
-struct Pl_Config { // @Todo multisample state settings
-    VkRenderPass       renderpass;
-    u32                subpass;
-
-    Pl_Layout          layout; // 40 bytes
-
-    Pl_Config_Flags    flags;
-    Pl_Blend_Setting   blend_setting; // This could probably just be an on or off flag for now.
-    Pl_Primitive_Info  primitive_info;
+struct Pl_Stencil_Ops {
+    VkStencilOpState front;
+    VkStencilOpState back;
 };
-void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipelines);
+
+constexpr VkPipelineColorBlendAttachmentState PL_BLEND_ATTACHMENT_STATE_NO_BLEND = {
+    .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+};
+
+constexpr VkPipelineColorBlendAttachmentState PL_BLEND_ATTACHMENT_STATE_ALPHA_BLEND = {
+    .blendEnable         = VK_TRUE,
+    .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+    .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+    .colorBlendOp        = VK_BLEND_OP_ADD,
+    .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+    .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+    .alphaBlendOp        = VK_BLEND_OP_ADD,
+    .colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+};
+typedef VkPipelineColorBlendAttachmentState Pl_Blend_Info;
+
+struct Pl_Config {
+    Pl_Config_Flags   flags;
+    u32               subpass;
+    u32               shader_count;
+    u32               blend_count;
+    VkRenderPass      renderpass;
+    Pl_Shader_Info   *shader_infos;
+    Pl_Blend_Info    *blend_infos;
+    Pl_Stencil_Ops   *stencil_ops;
+    VkPipelineLayout  layout;
+};
+
+void pl_create_pipelines(
+    u32                      count,
+    const Pl_Primitive_Info *primitive_infos,
+    const Pl_Config         *configs,
+    VkPipeline              *pipelines);
 
 inline static void pl_destroy_pipelines(u32 count, VkPipeline *pipelines) {
     VkDevice device = get_gpu_instance()->device;

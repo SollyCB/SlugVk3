@@ -4390,27 +4390,30 @@ void pl_store_cache() {
     vkDestroyPipelineCache(device, pl_cache, ALLOCATION_CALLBACKS);
 }
 
+constexpr u32 PL_SHADER_STAGE_BUFFER_SIZE = 4;
+
+struct Pl_Shader_Stage_Buffer { // Idk exactly how many stages there can be, but 4 is fine for now.
+    VkPipelineShaderStageCreateInfo stages[PL_SHADER_STAGE_BUFFER_SIZE];
+};
+
 // Begin graphics pipeline
-static VkPipelineShaderStageCreateInfo* pl_get_shader_stages(u32 count, Shader_Id *ids) {
-    VkPipelineShaderStageCreateInfo *ret =
-        (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
+static void pl_get_shader_stages(u32 count, Pl_Shader_Info *infos,  Pl_Shader_Stage_Buffer *stages) {
+    assert(PL_SHADER_STAGE_BUFFER_SIZE >= count);
 
-    u32 tmp;
-    Shader_Memory *shader_memory = &get_gpu_instance()->shader_memory;
     for(u32 i = 0; i < count; ++i) {
-        tmp    = (u32)ids[i];
-        ret[i] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-
-        ret[i].stage  = shader_memory->shaders[tmp].stage;
-        ret[i].module = shader_memory->shaders[tmp].module;
-        ret[i].pName  = "main";
+        stages->stages[i] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stages->stages[i].stage  = infos[i].stage;
+        stages->stages[i].module = infos[i].module;
+        stages->stages[i].pName  = "main";
     }
-
-    return ret;
 }
 
-void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_count,
-                              VkPushConstantRange *push_constants, Pl_Layout *layout)
+void pl_get_stages_and_layout(
+    u32                  count,
+    u32                 *shader_indices,
+    u32                  push_constant_count,
+    VkPushConstantRange *push_constants,
+    Pl_Layout           *layout)
 {
     // @Speed Fetching gpu on every call might be bad, might want to pass it in as an argument. Idk what the
     // call site for this function will look like yet.
@@ -4425,15 +4428,14 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_
     *layout = {};
 
     layout->stage_count = count;
-    layout->stages =
-        (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * count, 8);
+    layout->stages = (Pl_Shader_Info*)malloc_t(sizeof(Pl_Shader_Info) * count, 8);
 
     // Count layouts
     for(u32 i = 0; i < count; ++i)
         layout->set_count += shaders[i].layout_count;
 
-    layout->set_layout_sizes =                   (u64*)malloc_t(sizeof(u64) * layout->set_count, 8);
-    layout->set_layouts      = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * layout->set_count, 8);
+    layout->set_layout_sizes =                   (u64*)malloc_t(sizeof(u64)                   * layout->set_count);
+    layout->set_layouts      = (VkDescriptorSetLayout*)malloc_t(sizeof(VkDescriptorSetLayout) * layout->set_count);
 
     //
     // @Note I am pretty sure that the order of the set layouts in the pipeline layout does not need to be the
@@ -4472,10 +4474,8 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_
         }
         #endif
 
-        layout->stages[i]        = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
         layout->stages[i].stage  = shader.stage;
         layout->stages[i].module = shader.module;
-        layout->stages[i].pName  = shader_entry_point;
 
         memcpy(layout->set_layouts + tmp_set_count, set_layouts + shader.layout_index,
                sizeof(VkDescriptorSetLayout) * shader.layout_count);
@@ -4499,9 +4499,11 @@ void pl_get_stages_and_layout(u32 count, u32 *shader_indices, u32 push_constant_
         return;
     }
 }
-static void pl_get_vertex_input_and_assembly(Pl_Primitive_Info                      *info,
-                                             VkPipelineVertexInputStateCreateInfo   *ret_input_info,
-                                             VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info)
+
+static void pl_get_vertex_input_and_assembly(
+    const Pl_Primitive_Info                *info,
+    VkPipelineVertexInputStateCreateInfo   *ret_input_info,
+    VkPipelineInputAssemblyStateCreateInfo *ret_assembly_info)
 {
     VkVertexInputBindingDescription *bindings =
         (VkVertexInputBindingDescription*)malloc_t(sizeof(VkVertexInputBindingDescription) * info->count, 8);
@@ -4529,14 +4531,16 @@ static void pl_get_vertex_input_and_assembly(Pl_Primitive_Info                  
    *ret_assembly_info = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     ret_assembly_info->topology = info->topology;
 }
+
 static void pl_get_viewport_and_scissor(VkPipelineViewportStateCreateInfo *ret_info) {
     Settings *settings = get_global_settings();
-    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+   *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     ret_info->viewportCount = 1;
     ret_info->pViewports    = &settings->viewport;
     ret_info->scissorCount  = 1;
     ret_info->pScissors     = &settings->scissor;
 }
+
 static void pl_get_rasterization(Pl_Config_Flags flags, VkPipelineRasterizationStateCreateInfo *ret_info) {
    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     ret_info->lineWidth = 1.0f;
@@ -4557,12 +4561,16 @@ static void pl_get_rasterization(Pl_Config_Flags flags, VkPipelineRasterizationS
     assert((int)PL_CONFIG_CULL_FRONT_BIT == (int)VK_CULL_MODE_FRONT_BIT);
     assert((int)PL_CONFIG_CULL_BACK_BIT  == (int)VK_CULL_MODE_BACK_BIT);
 }
+
 static void pl_get_multisample(VkPipelineMultisampleStateCreateInfo *ret_info) {
     *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ret_info->rasterizationSamples = get_global_settings()->sample_count;
 }
-static void pl_get_depth_stencil(Pl_Config_Flags flags, VkStencilOpState stencil_op_front,
-                                 VkStencilOpState stencil_op_back, VkPipelineDepthStencilStateCreateInfo *ret_info)
+
+static void pl_get_depth_stencil(
+    Pl_Config_Flags                        flags,
+    Pl_Stencil_Ops                        *stencil_ops,
+    VkPipelineDepthStencilStateCreateInfo *ret_info)
 {
     *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
 
@@ -4573,9 +4581,15 @@ static void pl_get_depth_stencil(Pl_Config_Flags flags, VkStencilOpState stencil
     ret_info->depthWriteEnable  = flags & PL_CONFIG_DEPTH_WRITE_ENABLE_BIT;
     ret_info->stencilTestEnable = flags & PL_CONFIG_STENCIL_TEST_ENABLE_BIT;
 
+    if (flags & PL_CONFIG_STENCIL_TEST_ENABLE_BIT) {
+        ret_info->front = stencil_ops->front;
+        ret_info->back  = stencil_ops->back;
+    }
+
     // Clear all flags except those related to compare operations
     flags &= ~(PL_CONFIG_DEPTH_TEST_ENABLE_BIT | PL_CONFIG_DEPTH_WRITE_ENABLE_BIT | PL_CONFIG_STENCIL_TEST_ENABLE_BIT);
 
+    // @Todo Make this branchless
     switch(flags) {
     case PL_CONFIG_DEPTH_COMPARE_EQUAL_BIT:
     {
@@ -4615,35 +4629,18 @@ static void pl_get_depth_stencil(Pl_Config_Flags flags, VkStencilOpState stencil
     default:
         break;
     }
+}
 
-    ret_info->front = stencil_op_front;
-    ret_info->back  = stencil_op_back;
-}
-static void pl_attachment_get_no_blend(VkPipelineColorBlendAttachmentState *ret_blend_function) {
-   *ret_blend_function = {};
-    ret_blend_function->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-}
-static void pl_attachment_get_alpha_blend(VkPipelineColorBlendAttachmentState *ret_blend_function) {
-    *ret_blend_function = {};
-
-    ret_blend_function->colorWriteMask      = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                              VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    ret_blend_function->blendEnable         = VK_TRUE;
-    ret_blend_function->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-    ret_blend_function->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    ret_blend_function->colorBlendOp        = VK_BLEND_OP_ADD;
-    ret_blend_function->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    ret_blend_function->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    ret_blend_function->alphaBlendOp        = VK_BLEND_OP_ADD;
-}
-static void pl_get_color_blend(u32 attachment_count, VkPipelineColorBlendAttachmentState *attachment_blend_states,
-                               VkPipelineColorBlendStateCreateInfo *ret_info)
+static void pl_get_color_blend(
+    u32                                  count,
+    Pl_Blend_Info                       *blends,
+    VkPipelineColorBlendStateCreateInfo *ret_info)
 {
    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    ret_info->attachmentCount = attachment_count;
-    ret_info->pAttachments    = attachment_blend_states;
+    ret_info->attachmentCount = count;
+    ret_info->pAttachments    = blends;
 }
+
 static void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info) {
     Settings *settings = get_global_settings();
    *ret_info = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
@@ -4651,33 +4648,34 @@ static void pl_get_dynamic(VkPipelineDynamicStateCreateInfo *ret_info) {
     ret_info->pDynamicStates    = settings->pl_dynamic_states;
 }
 
-void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipelines) {
-
+void pl_create_pipelines(
+    u32                      count,
+    const Pl_Primitive_Info *primitive_infos,
+    const Pl_Config         *configs,
+    VkPipeline              *ret_pipelines)
+{
     //
     // Could collapse all of the below into a single allocation, and then fill that, but I doubt that
     // there is any difference.
     //
 
-    VkGraphicsPipelineCreateInfo *create_infos =
-        (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * count, 8);
+    Pl_Shader_Stage_Buffer *shader_stages =
+        (Pl_Shader_Stage_Buffer*)malloc_t(sizeof(Pl_Shader_Stage_Buffer) * count);
 
     VkPipelineVertexInputStateCreateInfo *vertex_input_states =
-        (VkPipelineVertexInputStateCreateInfo*)malloc_t(sizeof(VkPipelineVertexInputStateCreateInfo) * count, 8);
+        (VkPipelineVertexInputStateCreateInfo*)malloc_t(sizeof(VkPipelineVertexInputStateCreateInfo) * count);
 
     VkPipelineInputAssemblyStateCreateInfo *input_assembly_states =
-        (VkPipelineInputAssemblyStateCreateInfo*)malloc_t(sizeof(VkPipelineInputAssemblyStateCreateInfo) * count, 8);
+        (VkPipelineInputAssemblyStateCreateInfo*)malloc_t(sizeof(VkPipelineInputAssemblyStateCreateInfo) * count);
 
     VkPipelineRasterizationStateCreateInfo *rasterization_states =
-        (VkPipelineRasterizationStateCreateInfo*)malloc_t(sizeof(VkPipelineRasterizationStateCreateInfo) * count, 8);
+        (VkPipelineRasterizationStateCreateInfo*)malloc_t(sizeof(VkPipelineRasterizationStateCreateInfo) * count);
 
     VkPipelineDepthStencilStateCreateInfo *depth_stencil_states =
-        (VkPipelineDepthStencilStateCreateInfo*)malloc_t(sizeof(VkPipelineDepthStencilStateCreateInfo) * count, 8);
-
-    VkPipelineColorBlendAttachmentState *blend_attachments =
-        (VkPipelineColorBlendAttachmentState*)malloc_t(sizeof(VkPipelineColorBlendAttachmentState) * count, 8);
+        (VkPipelineDepthStencilStateCreateInfo*)malloc_t(sizeof(VkPipelineDepthStencilStateCreateInfo) * count);
 
     VkPipelineColorBlendStateCreateInfo *color_blend_states =
-        (VkPipelineColorBlendStateCreateInfo*)malloc_t(sizeof(VkPipelineColorBlendStateCreateInfo) * count, 8);
+        (VkPipelineColorBlendStateCreateInfo*)malloc_t(sizeof(VkPipelineColorBlendStateCreateInfo) * count);
 
     VkPipelineViewportStateCreateInfo viewport_state;
     pl_get_viewport_and_scissor(&viewport_state);
@@ -4689,51 +4687,44 @@ void pl_create_pipelines(u32 count, Pl_Config *configs, VkPipeline *ret_pipeline
     VkPipelineDynamicStateCreateInfo dyn_state;
     pl_get_dynamic(&dyn_state); // Takes its value from global settings struct (top of gpu.hpp)
 
+    VkGraphicsPipelineCreateInfo *create_infos =
+        (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * count);
+
     for(u32 i = 0; i < count; ++i) {
         create_infos[i] = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
         create_infos[i].flags             = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
-        create_infos[i].stageCount        = configs[i].layout.stage_count;
-        create_infos[i].pStages           = configs[i].layout.stages;
         create_infos[i].pViewportState    = &viewport_state;
         create_infos[i].pMultisampleState = &multisample_state;
         create_infos[i].pDynamicState     = &dyn_state;
 
         create_infos[i].renderPass = configs[i].renderpass;
-        create_infos[i].layout     = configs[i].layout.pl_layout;
+        create_infos[i].layout     = configs[i].layout;
         create_infos[i].subpass    = configs[i].subpass;
 
-        pl_get_vertex_input_and_assembly(&configs[i].primitive_info, &vertex_input_states[i],
+        pl_get_shader_stages(configs[i].shader_count, configs[i].shader_infos, shader_stages);
+
+        create_infos[i].stageCount = configs[i].shader_count;
+        create_infos[i].pStages    = shader_stages[i].stages;
+
+        pl_get_vertex_input_and_assembly(&primitive_infos[i], &vertex_input_states[i],
                                          &input_assembly_states[i]);
+
         create_infos[i].pVertexInputState   = &vertex_input_states[i];
         create_infos[i].pInputAssemblyState = &input_assembly_states[i];
 
         pl_get_rasterization(configs[i].flags, &rasterization_states[i]);
         create_infos[i].pRasterizationState = &rasterization_states[i];
 
-        pl_get_depth_stencil(configs[i].flags, {}, {}, &depth_stencil_states[i]);
+        pl_get_depth_stencil(configs[i].flags, configs[i].stencil_ops, &depth_stencil_states[i]);
         create_infos[i].pDepthStencilState = &depth_stencil_states[i];
 
-        switch(configs[i].blend_setting) {
-        case PL_BLEND_SETTING_ALPHA_BLEND:
-        {
-            pl_attachment_get_alpha_blend(&blend_attachments[i]);
-            pl_get_color_blend(1, &blend_attachments[i], &color_blend_states[i]);
-            break;
-        }
-        case PL_BLEND_SETTING_NO_BLEND:
-        {
-            pl_attachment_get_no_blend(&blend_attachments[i]);
-            pl_get_color_blend(1, &blend_attachments[i], &color_blend_states[i]);
-            break;
-        }
-        default:
-            assert(false && "Invalid Blend Setting");
-        }
+        pl_get_color_blend(configs[i].blend_count, configs[i].blend_infos, &color_blend_states[i]);
+        create_infos[i].pColorBlendState = &color_blend_states[i];
     }
 
     Gpu *gpu              = get_gpu_instance();
     VkDevice device       = gpu->device;
-    VkPipelineCache cache = gpu->pl_cache;
+    VkPipelineCache cache = gpu->pl_cache; // @Todo Check if this is thread safe.
 
     auto check = vkCreateGraphicsPipelines(device, cache, count, create_infos, ALLOCATION_CALLBACKS, ret_pipelines);
     DEBUG_OBJ_CREATION(vkCreateGraphicsPipelines, check);
