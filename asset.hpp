@@ -245,7 +245,7 @@ struct Morph_Target {
     Mesh_Primitive_Attribute *attributes;
 };
 
-struct Primitive_Key_Counts {
+struct Allocation_Key_Counts {
     u32 index;
     u32 vertex;
     u32 tex;
@@ -253,7 +253,7 @@ struct Primitive_Key_Counts {
 };
 
 struct Mesh_Primitive {
-    Primitive_Key_Counts key_counts;
+    Allocation_Key_Counts key_counts;
 
     VkPrimitiveTopology topology;
 
@@ -293,18 +293,42 @@ struct Model_Storage_Info {
 Model_Storage_Info store_model(Model *model); // @Unimplemented
 Model              load_model (String *gltf_file); // @Unimplemented
 
-enum Asset_Draw_Prep_Result {
-    ASSET_DRAW_PREP_RESULT_SUCCESS = 0,
-    ASSET_DRAW_PREP_RESULT_PARTIAL = 1,
+struct Allocation_Key_Arrays { // 48 bytes
+    u32 *index;
+    u32 *vertex;
+    u32 *tex;
+    u32 *sampler;
+
+    alignas(16) Allocation_Key_Counts lens;
+};
+
+// @Todo I am not sure how morph targets fits into the creation of this struct...
+struct Pipeline_Draw_Info {
+    u32         count; // draw_count
+    VkIndexType index_type;
+};
+
+enum Primitive_Load_Result {
+    PRIMITIVE_LOAD_RESULT_SUCCESS = 0,
+    PRIMITIVE_LOAD_RESULT_PARTIAL = 1,
+};
+
+struct Primitive_Draw_Prep_Result { // 112 bytes
+    Primitive_Load_Result  result;
+    u64                   *success_masks;
+    Pipeline_Draw_Info    *primitive_draw_infos;
+    VkPipeline            *pipelines;
+    Allocation_Key_Arrays  failed_keys;
+    Allocation_Key_Arrays  success_keys;
 };
 
 // If the return value is not 0, success masks is an array of bit masks with each set bit corresponding
 // to a primitive in the array that has all its allocation keys successfully staged.
-Asset_Draw_Prep_Result load_primitive_allocations(
-    u32                         count,
-    const Mesh_Primitive       *primitives,
-    const Primitive_Key_Counts *key_counts,
-    bool                        adjust_weights,
-    u64                        *success_masks);
+Primitive_Draw_Prep_Result prepare_to_draw_primitives(
+    u32                          count,
+    const Mesh_Primitive        *primitives,
+    const Allocation_Key_Counts *key_counts,
+    const Pl_Config             *pipeline_configs,
+    bool                         adjust_weights);
 
 #endif // include guard

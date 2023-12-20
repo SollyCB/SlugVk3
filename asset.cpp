@@ -1073,22 +1073,137 @@ inline static void add_accessor_vertex(Array<u32> *array_index, Array<u32> *arra
     }
 }
 
-struct Key_Arrays {
-    u32 *index;
-    u32 *vertex;
-    u32 *tex;
-    u32 *sampler;
+inline static VkFormat get_format_from_accessor_flags(Accessor_Flags flags) {
+    u32 ret;
 
-    alignas(16) Primitive_Key_Counts caps;
-};
+    flags &= ACCESSOR_TYPE_BITS | ACCESSOR_COMPONENT_TYPE_BITS;
 
-static void load_primitive_resource_keys(u32 count, const Mesh_Primitive *primitives, Key_Arrays *arrays) {
+    // I dont know for sure if this is more efficient that a switch statement, but I am pretty sure it is.
+    // For the switch statement you still have to do loads of compare ops, plus the fact that the branch predictor
+    // has not got a fucking chance. The only benefit that you get is the early out. But you do not know when that
+    // early out will come, you may have to compare all the way down which means your early really is not very early.
+    // This way to have to do a shit tonne of adds, subs, ands and compares, but really what is that to modern pc,
+    // compared to a branch prediction failure. In the intel optimisation manual, they recommend stuff like this
+    // over branching, I do not know if this crosses a line, but I expect that it does not. (Plus it was a fun
+    // editor stress test, literally took helix 2 secs for these 50 lines lol).
+
+    ret -= ret                                    & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R8_SINT)    & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT));
+    ret -= ret                                    & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R8_UINT)    & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT));
+    ret -= ret                                    & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R16_SINT)   & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT));
+    ret -= ret                                    & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R16_UINT)   & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT));
+    ret -= ret                                    & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R32_UINT)   & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT));
+    ret -= ret                                    & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R32_SFLOAT) & max32_if_true(flags == (ACCESSOR_TYPE_SCALAR_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT));
+
+    ret -= ret                                       & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R8G8_SINT)     & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT));
+    ret -= ret                                       & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R8G8_UINT)     & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT));
+    ret -= ret                                       & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R16G16_SINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT));
+    ret -= ret                                       & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R16G16_UINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT));
+    ret -= ret                                       & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R32G32_UINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT));
+    ret -= ret                                       & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R32G32_SFLOAT) & max32_if_true(flags == (ACCESSOR_TYPE_VEC2_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT));
+
+    ret -= ret                                          & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R8G8B8_SINT)      & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT));
+    ret -= ret                                          & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R8G8B8_UINT)      & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT));
+    ret -= ret                                          & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R16G16B16_SINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT));
+    ret -= ret                                          & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R16G16B16_UINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT));
+    ret -= ret                                          & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R32G32B32_UINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT));
+    ret -= ret                                          & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R32G32B32_SFLOAT) & max32_if_true(flags == (ACCESSOR_TYPE_VEC3_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT));
+
+    ret -= ret                                             & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R8G8B8A8_SINT)       & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT));
+    ret -= ret                                             & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R8G8B8A8_UINT)       & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT));
+    ret -= ret                                             & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R16G16B16A16_SINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT));
+    ret -= ret                                             & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R16G16B16A16_UINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT));
+    ret -= ret                                             & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R32G32B32A32_UINT)   & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT));
+    ret -= ret                                             & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT));
+    ret += static_cast<u32>(VK_FORMAT_R32G32B32A32_SFLOAT) & max32_if_true(flags == (ACCESSOR_TYPE_VEC4_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT));
+
+    return (VkFormat)ret;
+
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT2_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT);
+
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT3_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT);
+
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_SCHAR_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_UCHAR_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_S16_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_U16_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_U32_BIT);
+    // ret -= ret             & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT);
+    // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT);
+}
+
+static void load_primitive_info(
+    u32                    count,
+    const Mesh_Primitive  *primitives,
+    Allocation_Key_Arrays *arrays,
+    Pl_Primitive_Info     *pl_infos,
+    Pipeline_Draw_Info    *draw_infos)
+{
     Assets *g_assets = get_assets_instance();
 
-    Array<u32> array_index   = new_array_from_ptr(arrays->index,   arrays->caps.index);
-    Array<u32> array_vertex  = new_array_from_ptr(arrays->vertex,  arrays->caps.vertex);
-    Array<u32> array_tex     = new_array_from_ptr(arrays->tex,     arrays->caps.tex);
-    Array<u32> array_sampler = new_array_from_ptr(arrays->sampler, arrays->caps.sampler);
+    Array<u32> array_index   = new_array_from_ptr(arrays->index,   arrays->lens.index);
+    Array<u32> array_vertex  = new_array_from_ptr(arrays->vertex,  arrays->lens.vertex);
+    Array<u32> array_tex     = new_array_from_ptr(arrays->tex,     arrays->lens.tex);
+    Array<u32> array_sampler = new_array_from_ptr(arrays->sampler, arrays->lens.sampler);
+
+    Array<Pl_Primitive_Info>  array_pl_info   = new_array_from_ptr(pl_infos,   count);
+    Array<Pipeline_Draw_Info> array_draw_info = new_array_from_ptr(draw_infos, count);
+
+    // struct Pl_Primitive_Info { // 4 + 4 + 8 + 8 = 24 bytes
+    //     u32                 *strides;
+    //     VkFormat            *formats;
+    //     VkPrimitiveTopology  topology;
+    //     u32                  count;
+    // };
 
     u32 attribute_count;
     u32 target_count;
@@ -1097,11 +1212,25 @@ static void load_primitive_resource_keys(u32 count, const Mesh_Primitive *primit
         // Indices
         add_accessor_index(&array_index, &array_vertex, &primitives[i].indices);
 
+        // index type u16 = 0, u32 = 1.
+        draw_infos[i].index_type = static_cast<VkIndexType>((primitives[i].indices.flags & ACCESSOR_COMPONENT_TYPE_U32_BIT) > 0);
+        draw_infos[i].count      = primitives[i].indices.count;
+
         // Vertex Attributes
         attribute_count = primitives[i].attribute_count;
-        for(u32 j = 0; j < attribute_count; ++j)
+
+        pl_infos[i].count   = attribute_count;
+        pl_infos[i].strides =      (u32*)malloc_t(sizeof(u32)      * attribute_count); // Maybe these should be arrays, idk
+        pl_infos[i].formats = (VkFormat*)malloc_t(sizeof(VkFormat) * attribute_count);
+
+        for(u32 j = 0; j < attribute_count; ++j) {
             add_accessor_vertex(&array_index, &array_vertex, &primitives[i].attributes[j].accessor);
 
+            pl_infos[i].strides[j] = primitives[i].attributes[j].accessor.byte_stride;
+            pl_infos[i].formats[j] = get_format_from_accessor_flags(primitives[i].attributes[j].accessor.flags);
+        }
+
+        // Morph Targets
         target_count = primitives[i].target_count;
         for(u32 j = 0; j < target_count; ++j) {
             target = &primitives[i].targets[j];
@@ -1236,12 +1365,12 @@ inline static bool check_upload_stage_results_against_req_count(u32 count, u32 b
     return primary_mask == count;
 }
 
-Asset_Draw_Prep_Result load_primitive_allocations(
-    u32                         count,
-    const Mesh_Primitive       *primitives,
-    const Primitive_Key_Counts *key_counts,
-    bool                        adjust_weights,
-    u64                        *success_masks)
+Primitive_Draw_Prep_Result prepare_to_draw_primitives(
+    u32                          count,
+    const Mesh_Primitive        *primitives,
+    const Allocation_Key_Counts *key_counts,
+    const Pl_Config             *pipeline_configs,
+    bool                         adjust_weights)
 {
     Assets *g_assets = get_assets_instance();
 
@@ -1254,15 +1383,18 @@ Asset_Draw_Prep_Result load_primitive_allocations(
 
     u32         primitive_job_offsets   [g_thread_count];
     u32         primitive_job_sizes     [g_thread_count]; // The number of primitives in a job
-    Key_Arrays  primitive_job_key_arrays[g_thread_count];
+    Allocation_Key_Arrays  primitive_job_key_arrays[g_thread_count];
 
     u32 *keys_index   = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_tex_len);
     u32 *keys_vertex  = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_index_len);
     u32 *keys_tex     = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_vertex_len);
     u32 *keys_sampler = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_sampler_len);
 
+    Pl_Primitive_Info  *pl_primitive_infos   =  (Pl_Primitive_Info*)malloc_t(sizeof(Pl_Primitive_Info)  * count);
+    Pipeline_Draw_Info *primitive_draw_infos = (Pipeline_Draw_Info*)malloc_t(sizeof(Pipeline_Draw_Info) * count);
+
     // Doubles as the total key count for each key type once filled in
-    alignas(16) Primitive_Key_Counts accum_offsets = {};
+    alignas(16) Allocation_Key_Counts accum_offsets = {};
 
     __m128i  a;
     __m128i  b;
@@ -1309,7 +1441,7 @@ Asset_Draw_Prep_Result load_primitive_allocations(
         // Store the accumulator offsets of the next job as the caps of the current job
         a = _mm_load_si128((__m128i*)(&accum_offsets));
 
-        tmp_addr = (__m128i*)((u8*)(primitive_job_key_arrays + i) + offsetof(Key_Arrays, caps));
+        tmp_addr = (__m128i*)((u8*)(primitive_job_key_arrays + i) + offsetof(Allocation_Key_Arrays, lens));
 
         _mm_store_si128(tmp_addr, a);
     }
@@ -1320,9 +1452,28 @@ Asset_Draw_Prep_Result load_primitive_allocations(
     // the real threaded version, as synchronisation has no effect here, only the range which is written.
 
     for(u32 i = 0; i < g_thread_count; ++i) {
-        load_primitive_resource_keys(primitive_job_sizes[i], primitives + primitive_job_offsets[i],
-                                     &primitive_job_key_arrays[i]);
+        // I do not love this formatting (the non contiguous offsets) but return locations must be last...
+        load_primitive_info(
+            primitive_job_sizes[i],
+            primitives           + primitive_job_offsets[i],
+            &primitive_job_key_arrays[i],
+            pl_primitive_infos   + primitive_job_offsets[i],
+            primitive_draw_infos + primitive_job_offsets[i]);
     }
+
+    // I do not want to fabricate all the stuff required to make the tests successfully compile the pipelines.
+    // It is better to test that with real use case stuff. I can see that it is trying to compile the pipelines
+    // and that is good enough.
+    #if !(TEST)
+    VkPipeline *pipelines = (VkPipeline*)malloc_t(sizeof(VkPipeline) * count);
+    for(u32 i = 0; i < g_thread_count; ++i) {
+        pl_create_pipelines(
+            primitive_job_sizes[i],
+            pl_primitive_infos   + primitive_job_offsets[i],
+            pipeline_configs     + primitive_job_offsets[i],
+            pipelines            + primitive_job_offsets[i]);
+    }
+    #endif
 
     // @Multithreading Wait for threads to return, and signal allocators to queue allocation keys in their
     // respective array. Each allocator queue will be controlled by a thread.
@@ -1437,6 +1588,8 @@ Asset_Draw_Prep_Result load_primitive_allocations(
         result_pos += result_count;
     }
 
+    u64 *success_masks = (u64*)malloc_t(sizeof(u64) * (align(count, 64) / 64));
+
     // Collapse allocation results
     __m128i c;
     u32 success_mask_count = align(count, 64) >> 6;
@@ -1449,10 +1602,23 @@ Asset_Draw_Prep_Result load_primitive_allocations(
         _mm_store_si128((__m128i*)(success_masks + i), a);
     }
 
-    // growable == false, temp_array == true
+    // Below Arrays: growable == false, temp_array == true
+
+    // Keys to remove from queues, as they were successfully queued, but cannot be drawn as other
+    // allocations for the primitive they belong to were not queued.
     Array<u32> to_remove_keys_index  = new_array<u32>(accum_offsets.index,  false, true);
     Array<u32> to_remove_keys_vertex = new_array<u32>(accum_offsets.vertex, false, true);
     Array<u32> to_remove_keys_tex    = new_array<u32>(accum_offsets.tex,    false, true);
+
+    // To reload allocations without having to parse the primitives again.
+    Array<u32> failed_keys_index  = new_array<u32>(accum_offsets.index,  false, true);
+    Array<u32> failed_keys_vertex = new_array<u32>(accum_offsets.vertex, false, true);
+    Array<u32> failed_keys_tex    = new_array<u32>(accum_offsets.tex,    false, true);
+
+    // To call get allocation for upload offsets without having to reparse primitives.
+    Array<u32> success_keys_index  = new_array<u32>(accum_offsets.index,  false, true);
+    Array<u32> success_keys_vertex = new_array<u32>(accum_offsets.vertex, false, true);
+    Array<u32> success_keys_tex    = new_array<u32>(accum_offsets.tex,    false, true);
 
     // @Multithreading See previous multithreading comment (two loops up).
     // @SIMD I would like to make this simd, but I cannot see how to do so without using unaligned loads.
@@ -1463,15 +1629,20 @@ Asset_Draw_Prep_Result load_primitive_allocations(
         result_count = key_counts[i].index;
 
         result64 = success_masks[i >> 6] & (one << (i & 63));
-        result64 = result_count & max64_if_false(result64);
 
-        // If every allocation for this primitive was not successfully loaded, add the key to the 'to_remove'
-        // array if the key was successfully loaded.
-        for(u32 j = result_pos; j < result_pos + result64; ++j) {
+        // Add the keys for the failed primitives to the the corresponding array. If an allocation was successfully
+        // queued, but other required allocations for this primitive were not queued, add its key to 'to_remove'.
+        for(u32 j = result_pos; j < result_pos + result_count; ++j) {
 
             tmp_bool = (results_index_stage[j >> 6] & results_index_upload[j >> 6]) & (one << (j & 63));
 
             array_add_if_true(&to_remove_keys_index, keys_index[j], tmp_bool);
+            array_add(&failed_keys_index, keys_index[j]);
+        }
+
+        // If every allocation for this primitive was successfully loaded, add the key to the 'ready' array.
+        for(u32 j = result_pos; j < result_pos + (result_count & max64_if_true(result64)); ++j) {
+            array_add(&success_keys_index, keys_index[j]);
         }
 
         result_pos += result_count;
@@ -1482,15 +1653,20 @@ Asset_Draw_Prep_Result load_primitive_allocations(
         result_count = key_counts[i].vertex;
 
         result64 = success_masks[i >> 6] & (one << (i & 63));
-        result64 = result_count & max64_if_false(result64);
 
-        // If every allocation for this primitive was not successfully loaded, add the key to the 'to_remove'
-        // array if the key was successfully loaded.
-        for(u32 j = result_pos; j < result_pos + result64; ++j) {
+        // Add the keys for the failed primitives to the the corresponding array. If an allocation was successfully
+        // queued, but other required allocations for this primitive were not queued, add its key to 'to_remove'.
+        for(u32 j = result_pos; j < result_pos + result_count; ++j) {
 
             tmp_bool = (results_vertex_stage[j >> 6] & results_vertex_upload[j >> 6]) & (one << (j & 63));
 
             array_add_if_true(&to_remove_keys_vertex, keys_vertex[j], tmp_bool);
+            array_add(&failed_keys_vertex, keys_vertex[j]);
+        }
+
+        // If every allocation for this primitive was successfully loaded, add the key to the 'ready' array.
+        for(u32 j = result_pos; j < result_pos + (result_count & max64_if_true(result64)); ++j) {
+            array_add(&success_keys_vertex, keys_vertex[j]);
         }
 
         result_pos += result_count;
@@ -1501,15 +1677,20 @@ Asset_Draw_Prep_Result load_primitive_allocations(
         result_count = key_counts[i].tex;
 
         result64 = success_masks[i >> 6] & (one << (i & 63));
-        result64 = result_count & max64_if_false(result64);
 
-        // If every allocation for this primitive was not successfully loaded, add the key to the 'to_remove'
-        // array if the key was successfully loaded.
-        for(u32 j = result_pos; j < result_pos + result64; ++j) {
+        // Add the keys for the failed primitives to the the corresponding array. If an allocation was successfully
+        // queued, but other required allocations for this primitive were not queued, add its key to 'to_remove'.
+        for(u32 j = result_pos; j < result_pos + result_count; ++j) {
 
             tmp_bool = (results_tex_stage[j >> 6] & results_tex_upload[j >> 6]) & (one << (j & 63));
 
             array_add_if_true(&to_remove_keys_tex, keys_tex[j], tmp_bool);
+            array_add(&failed_keys_tex, keys_tex[j]);
+        }
+
+        // If every allocation for this primitive was successfully loaded, add the key to the 'ready' array.
+        for(u32 j = result_pos; j < result_pos + (result_count & max64_if_true(result64)); ++j) {
+            array_add(&success_keys_tex, keys_tex[j]);
         }
 
         result_pos += result_count;
@@ -1529,25 +1710,202 @@ Asset_Draw_Prep_Result load_primitive_allocations(
         tex_staging_queue_upload_queue_remove(tex_allocator, to_remove_keys_tex.data[i]);
     }
 
-    if (result_stage_index  && result_stage_vertex  && result_stage_tex &&
-        result_upload_index && result_upload_vertex && result_upload_tex)
-    {
-        return ASSET_DRAW_PREP_RESULT_SUCCESS;
-    } else {
-        // I guess partial is a little misleading, since it could be the case that nothing was queued.
-        // But that should never happen: the arch around queue submission should only be calling this function
-        // if it is the correct time to do so. So I am happy with PARTIAL.
-        return ASSET_DRAW_PREP_RESULT_PARTIAL;
-    }
+    Primitive_Draw_Prep_Result ret = {};
+
+    ret.success_masks        = success_masks;
+    ret.primitive_draw_infos = primitive_draw_infos;
+
+    ret.failed_keys.index       = failed_keys_index.data;
+    ret.failed_keys.vertex      = failed_keys_vertex.data;
+    ret.failed_keys.tex         = failed_keys_tex.data;
+    ret.failed_keys.lens.index  = failed_keys_index.len;
+    ret.failed_keys.lens.vertex = failed_keys_vertex.len;
+    ret.failed_keys.lens.tex    = failed_keys_tex.len;
+
+    ret.success_keys.index       = success_keys_index.data;
+    ret.success_keys.vertex      = success_keys_vertex.data;
+    ret.success_keys.tex         = success_keys_tex.data;
+    ret.success_keys.lens.index  = success_keys_index.len;
+    ret.success_keys.lens.vertex = success_keys_vertex.len;
+    ret.success_keys.lens.tex    = success_keys_tex.len;
+
+    bool primitive_load_result = result_stage_index  && result_stage_vertex  && result_stage_tex &&
+                                 result_upload_index && result_upload_vertex && result_upload_tex;
+
+    ret.result = static_cast<Primitive_Load_Result>(primitive_load_result == false);
+
+    return ret;
 }
 
-#if TEST // 500 lines of tests EOF
+// A mostly implemented compressed method of pipeline creation. As I would imagine that the vast marjority of
+// pipeline info for each shader will be the same, the below method uses a simple compression system to require
+// less config data. But I sort of realised that it is more of a pain to multithread (it would still be simple)
+// but I more importantly realised that memory is cheap and I just dont need to worry in this case. Just make
+// a couple of configs and broadcast them for each primitive. Memory access pattern becomes more predictable,
+// writing the usage code becomes easier. More memory holding duplicate data, but that does not matter.
+#if 0
+struct Pl_Shader_Info {
+    u32          count;
+    Shader_Info *infos;
+};
+struct Pl_Renderpass_Info {
+    u32          subpass;
+    VkRenderPass renderpass;
+};
+struct Pl_Stencil_Ops {
+    VkStencilOp front;
+    VkStencilOp back;
+};
+struct Pl_Blend_Info {
+    u32 count;
+    VkPipelineColorBlendAttachmentState *blends;
+};
+
+struct Primitive_Pipelines_Config {
+    u32                 unique_shaders_count;
+    u32                 unique_flags_count;
+    u32                 unique_renderpass_count;
+    u32                 unique_layout_count;
+    u32                 unique_stencil_count; // This is really a subset of flags, hence no count. I just wanted it in a more dynamic storage as it is a lot of bytes that are often unnecessary.
+    u32                 unique_blend_count;
+    u32                *shader_counts;
+    u32                *flags_counts;
+    u32                *renderpass_counts;
+    u32                *layout_counts;
+    u32                *blend_counts;
+    Pl_Config_Flags    *flags;
+    Pl_Shader_Info     *shaders;
+    Pl_Renderpass_Info *renderpasses;
+    Pl_Blend_Info      *blends;
+    Pl_Stencil_Ops     *stencil_ops;
+};
+
+void create_primitive_pipelines(
+    u32                         count,
+    Pl_Primitive_Info          *primitive_infos,
+    Primitive_Pipelines_Config *config,
+    VkPipeline                 *pipelines)
+{
+    VkGraphicsPipelineCreateInfo *infos =
+        (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * count);
+
+    VkPipelineShaderStageCreateInfo *shader_stages =
+         (VkPipelineShaderStageCreateInfo*)malloc_t(sizeof(VkPipelineShaderStageCreateInfo) * config->unique_shader_count);
+
+    VkPipelineVertexInputStateCreateInfo *vertex_input =
+        (VkPipelineVertexInputStateCreateInfo*)malloc_t(sizeof(VkPipelineVertexInputStateCreateInfo) * count);
+
+    VkPipelineInputAssemblyStateCreateInfo *input_assembly =
+        (VkPipelineInputAssemblyStateCreateInfo*)malloc_t(sizeof(VkPipelineInputAssemblyStateCreateInfo) * count);
+
+    VkPipelineViewportStateCreateInfo viewport;
+    pl_get_viewport_and_scissor(&viewport);
+
+    VkPipelineRasterizationStateCreateInfo *rasterization =
+        (VkPipelineRasterizationStateCreateInfo*)malloc_t(sizeof(VkPipelineRasterizationStateCreateInfo) * config->unique_flags_count);
+
+    // @Todo Multisampling
+    VkPipelineMultisamplerStageCreateInfo multisample;
+    pl_get_multisample(&multisample);
+
+    VkPipelineDepthStencilStateCreateInfo *depth_stencil =
+        (VkPipelineDepthStencilStateCreateInfo*)malloc_t(sizeof(VkPipelineDepthStencilStateCreateInfo) * config->unique_flags_count);
+
+    VkPipelineColorBlendStateCreateInfo *blend =
+        (VkPipelineColorBlendStateCreateInfo*)malloc_t(sizeof(VkPipelineColorBlendStateCreateInfo) * config->unique_blend_count);
+
+    VkPipelineDynamicStateCreateInfo dyn;
+    pl_get_dynamic(&dyn);
+
+    u32 tmp = 0;
+    for(u32 i = 0; i < config->unique_shaders_count; ++i) {
+        pl_get_shader_stages(config->shaders[i].count, config->shaders[i].shader_infos, shader_stages + tmp);
+
+        tmp += config->shaders[i].count;
+    }
+
+    for(u32 i = 0; i < count; ++i) {
+        pl_get_vertex_input_and_assembly(&primitive_infos[i], &vertex_input[i], &input_assembly[i]);
+    }
+
+    for(u32 i = 0; i < config->unique_flag_count; ++i) {
+        pl_get_rasterization(config->flags[i], &rasterization[i]);
+    }
+
+    tmp = 0;
+    for(u32 i = 0; i < config->unique_flag_count; ++i) {
+        pl_get_depth_stencil(config->flags[i], config->stencil_ops + tmp, depth_stencil[i]);
+
+        // stencil tests being enabled is the criteria to consume an op in the array.
+        tmp += (config->flags[i] & PL_CONFIG_STENCIL_TEST_ENABLE_BIT) > 0;
+    }
+
+    for(u32 i = 0; i < unique_blend_count; ++i) {
+        pl_get_color_blend(&config->blends[i], &blend[i]);
+    }
+
+    VkGraphicsPipelineCreateInfo *pl_create_infos =
+        (VkGraphicsPipelineCreateInfo*)malloc_t(sizeof(VkGraphicsPipelineCreateInfo) * count);
+
+    for(u32 i = 0; i < count; ++i) {
+        pl_create_infos[i].flags               = VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        pl_create_infos[i].pVertexInputState   = &vertex_input[i];
+        pl_create_infos[i].pInputAssemblyState = &input_assembly[i];
+        pl_create_infos[i].pViewportState      = &viewport;
+        pl_create_infos[i].pMultisampleState   = &multisample;
+        pl_create_infos[i].pDynamicState       = &dyn;
+    }
+
+    u32 flags_index      = 0;
+    u32 shader_index     = 0;
+    u32 renderpass_index = 0;
+    u32 layout_index     = 0;
+    u32 blend_index      = 0;
+
+    tmp = 0;
+    for(u32 i = 0; i < config->unique_stage; ++i) {
+        for(u32 j = 0; j < config->shader_counts[i]; ++j) {
+            pl_create_infos[tmp].stageCount = config->shaders[i].count;
+            pl_create_infos[tmp].pStages    = &shader_stages[i];
+            tmp++;
+        }
+    }
+    assert(tmp == count);
+
+    tmp = 0;
+    for(u32 i = 0; i < config->unique_flags_count; ++i) {
+        for(u32 j = 0; j < config->flags_counts[i]; ++j) {
+            pl_create_infos[tmp].pDepthStencilState  = &depth_stencil[i]
+            pl_create_infos[tmp].pRasterizationState = &rasterization[i];
+            tmp++;
+        }
+    }
+}
+#endif
+
+#if TEST // 700 lines of tests EOF
 static void test_model_from_gltf();
 static void test_load_primitive_allocations();
+static void test_get_format_from_accessor_flags();
 
 void test_asset() {
     test_model_from_gltf();
     test_load_primitive_allocations();
+    test_get_format_from_accessor_flags();
+}
+
+
+static void test_get_format_from_accessor_flags() {
+    BEGIN_TEST_MODULE("Accessor Flags to VkFormat", false, false);
+
+    TEST_EQ("scalar u16",   get_format_from_accessor_flags(ACCESSOR_COMPONENT_TYPE_U16_BIT   | ACCESSOR_TYPE_SCALAR_BIT), VK_FORMAT_R16_UINT,            false);
+    TEST_EQ("scalar u32",   get_format_from_accessor_flags(ACCESSOR_COMPONENT_TYPE_U32_BIT   | ACCESSOR_TYPE_SCALAR_BIT), VK_FORMAT_R32_UINT,            false);
+    TEST_EQ("scalar float", get_format_from_accessor_flags(ACCESSOR_COMPONENT_TYPE_FLOAT_BIT | ACCESSOR_TYPE_SCALAR_BIT), VK_FORMAT_R32_SFLOAT,          false);
+    TEST_EQ("vec2 float",   get_format_from_accessor_flags(ACCESSOR_COMPONENT_TYPE_FLOAT_BIT | ACCESSOR_TYPE_VEC2_BIT),   VK_FORMAT_R32G32_SFLOAT,       false);
+    TEST_EQ("vec3 float",   get_format_from_accessor_flags(ACCESSOR_COMPONENT_TYPE_FLOAT_BIT | ACCESSOR_TYPE_VEC3_BIT),   VK_FORMAT_R32G32B32_SFLOAT,    false);
+    TEST_EQ("vec4 float",   get_format_from_accessor_flags(ACCESSOR_COMPONENT_TYPE_FLOAT_BIT | ACCESSOR_TYPE_VEC4_BIT),   VK_FORMAT_R32G32B32A32_SFLOAT, false);
+
+    END_TEST_MODULE();
 }
 
 // @Note This test function *temporarily* reassigns the g_assets model allocators with ones created from a slightly
@@ -1594,7 +1952,7 @@ static void test_load_primitive_allocations() {
         cstr_to_string("test/images/emissive1"),
     };
 
-    Primitive_Key_Counts *key_counts = (Primitive_Key_Counts*)malloc_t(sizeof(Primitive_Key_Counts) * primitive_count);
+    Allocation_Key_Counts *key_counts = (Allocation_Key_Counts*)malloc_t(sizeof(Allocation_Key_Counts) * primitive_count);
 
     u32 tmp = primitive_count;
     String image_name;
@@ -1641,27 +1999,21 @@ static void test_load_primitive_allocations() {
         }
     }
 
-    // Asset_Draw_Prep_Result load_primitive_allocations(
-    //     u32                         count,
-    //     const Mesh_Primitive       *primitives,
-    //     const Primitive_Key_Counts *key_counts,
-    //     bool                        adjust_weights,
-    //     u64                        *success_masks)
+    Pl_Config *pl_configs = (Pl_Config*)malloc_t(sizeof(Pl_Config) * primitive_count);
+    memset(pl_configs, 0, sizeof(Pl_Config) * primitive_count);
 
-    u32  mask_count     = align(primitive_count, 64) / 64;
-    u64 *success_masks = (u64*)malloc_t(sizeof(u64) * mask_count);
-
-    Asset_Draw_Prep_Result draw_prep_result = load_primitive_allocations(primitive_count, primitives, key_counts,
-                                                                         true, success_masks);
+    Primitive_Draw_Prep_Result draw_prep_result = prepare_to_draw_primitives(primitive_count, primitives, key_counts, pl_configs, true);
 
     BEGIN_TEST_MODULE("Load Primitive Allocations", false, false);
 
-    TEST_EQ("successfully_loaded_primitive_masks[0]", success_masks[0], 0x1 | 0x2 | 0x4 | 0x8, false);
-    TEST_EQ("successfully_loaded_primitive_masks[1]", success_masks[1], 0x0, false);
+    TEST_EQ("successfully_loaded_primitive_masks[0]", draw_prep_result.success_masks[0], 0x1 | 0x2 | 0x4 | 0x8, false);
+    TEST_EQ("successfully_loaded_primitive_masks[1]", draw_prep_result.success_masks[1], 0x0, false);
+
+    TEST_EQ("result code is partial", draw_prep_result.result, PRIMITIVE_LOAD_RESULT_PARTIAL, false);
 
     Gpu_Tex_Allocation *tex_allocation;
     char buf[127];
-    for(u32 i = 0; i < 128; ++i) {
+    for(u32 i = 0; i < primitive_count; ++i) {
         tex_allocation = gpu_get_tex_allocation(&allocators->tex, i % 5);
         string_format(buf, "get_tex_allocation[%u]", i);
         TEST_STREQ(buf, tex_allocation->file_name.str, image_names[i % 5].str, false);
