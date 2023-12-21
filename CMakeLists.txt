@@ -106,7 +106,8 @@ endif()
 
 # GLFW
 if(WIN32)
-    target_link_libraries(Slug      PUBLIC "${CMAKE_CURRENT_LIST_DIR}/external/glfw-win64-bin/lib-vc2022/glfw3.lib")
+    # @Todo switch Windows to use dynamic lib as well
+    # target_link_libraries(Slug      PUBLIC "${CMAKE_CURRENT_LIST_DIR}/external/glfw-win64-bin/lib-vc2022/glfw3.lib")
     target_include_directories(Slug PUBLIC "${CMAKE_CURRENT_LIST_DIR}/external/glfw-win64-bin/include")
 else()
     target_link_libraries(Slug      PUBLIC "${CMAKE_CURRENT_LIST_DIR}/external/glfw-shared-linux/build/src/libglfw.so")
