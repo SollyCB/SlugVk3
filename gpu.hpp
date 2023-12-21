@@ -136,8 +136,11 @@ struct Shader_Memory { // @Note This is a terrible name. @Todo Come up with some
 
     const char *entry_point = "main";
 
-    // VkDescriptorPool      *descriptor_pools;
-    // VkDescriptorSet       *descriptor_sets;
+    // For set allocation of materials. We always just allocate per material from the descriptor allocators
+    // a descriptor set layout size equivalent to that required for an array of 5 combined image samplers,
+    // and a descriptor set layout size required for a ubo.
+    u64 material_sampler_array_set_size;
+    u64 material_ubo_set_size;
 };
 struct Gpu_Info {
     VkPhysicalDeviceProperties props;
@@ -829,11 +832,12 @@ Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageV
 void done_with_image_view(Image_View_Allocator *alloc, u64 hash);
 
 struct Uniform_Allocator {
-    u64 cap;
-    u64 used;
-    u8 *mem;
-    VkBuffer buf;
-    u64 alignment;
+    u64              cap;
+    u64              used;
+    u8              *mem;
+    u64              alignment;
+    VkBuffer         buf;
+    VkDeviceAddress  address;
 };
 inline static Uniform_Allocator get_uniform_allocator(u64 size, void *ptr, VkBuffer buf) {
     Gpu *gpu  = get_gpu_instance();
@@ -844,6 +848,11 @@ inline static Uniform_Allocator get_uniform_allocator(u64 size, void *ptr, VkBuf
     ret.mem  = (u8*)ptr;
     ret.buf  = buf;
     ret.alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
+
+    VkBufferDeviceAddressInfo address_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    address_info.buffer = buf;
+
+    ret.address = vkGetBufferDeviceAddress(gpu->device, &address_info);
 
     return ret;
 }
@@ -871,17 +880,33 @@ inline static void uniform_allocator_reset_and_zero(Uniform_Allocator *allocator
     allocator->used = 0;
 }
 
-inline static void vkGetDescriptor(VkDevice device, const VkDescriptorGetInfoEXT* pDescriptorGetInfo,
-                                   u64 dataSize, void* pDescriptor)
+inline static void vkGetDescriptor(
+    VkDevice                      device,
+    const VkDescriptorGetInfoEXT *pDescriptorGetInfo,
+    u64                           dataSize,
+    void                         *pDescriptor)
 {
     auto func = (PFN_vkGetDescriptorEXT)vkGetDeviceProcAddr(device, "vkGetDescriptorEXT");
     return func(device, pDescriptorGetInfo, dataSize, pDescriptor);
 }
-inline static void vkGetDescriptorSetLayoutBindingOffset(VkDevice device, VkDescriptorSetLayout layout,
-                                                       u32 binding, u64 *offset)
+
+inline static void vkGetDescriptorSetLayoutBindingOffset(
+    VkDevice               device,
+    VkDescriptorSetLayout  layout,
+    u32                    binding,
+    u64                   *offset)
 {
     auto func = (PFN_vkGetDescriptorSetLayoutBindingOffsetEXT)vkGetDeviceProcAddr(device, "vkGetDescriptorSetLayoutBindingOffsetEXT");
     return func(device, layout, binding, offset);
+}
+
+inline static void vkGetDescriptorSetLayoutSize(
+    VkDevice               device,
+    VkDescriptorSetLayout  layout,
+    u64                   *pLayoutSizeInBytes)
+{
+    auto func = (PFN_vkGetDescriptorSetLayoutSizeEXT)vkGetDeviceProcAddr(device, "vkGetDescriptorSetLayoutSizeEXT");
+    return func(device, layout, pLayoutSizeInBytes);
 }
 
 struct Descriptor_Allocator {

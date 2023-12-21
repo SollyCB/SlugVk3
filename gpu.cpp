@@ -829,7 +829,7 @@ static void create_uniform_buffers() {
 
     VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     buffer_info.size  = UNIFORM_BUFFER_SIZE;
-    buffer_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    buffer_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
     VkResult check;
     for(u32 i = 0; i < UNIFORM_BUFFER_COUNT; ++i) {
@@ -880,8 +880,12 @@ static void create_uniform_buffers() {
         return;
     }
 
+    VkMemoryAllocateFlagsInfo allocate_flags = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    allocate_flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
     // @Todo Allocation priority, dedicated allocation?
     VkMemoryAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate_info.pNext           = &allocate_flags;
     allocate_info.allocationSize  = align(memory_requirements.size, memory_requirements.alignment) * UNIFORM_BUFFER_COUNT;
     allocate_info.memoryTypeIndex = type_index_final;
 
@@ -1393,6 +1397,44 @@ struct Set_Layout_Info {
 static void gpu_init_shaders() {
     Shader_Memory ret = {};
 
+    // Find layout sizes required for a material.
+    VkDescriptorSetLayoutCreateInfo material_layout_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    material_layout_info.flags         = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+    material_layout_info.bindingCount = 1;
+
+    // Material sampler array default layout
+    VkDescriptorSetLayoutBinding material_sampler_layout_binding = {
+        0,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        5,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+
+    // Material ubo default layout
+    VkDescriptorSetLayoutBinding material_ubo_layout_binding = {
+        0,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        1,
+        VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+
+    Gpu *gpu = get_gpu_instance();
+    VkDevice device = gpu->device;
+
+    material_layout_info.pBindings = &material_sampler_layout_binding;
+    VkDescriptorSetLayout material_sampler_array_layout;
+    VkResult check = vkCreateDescriptorSetLayout(device, &material_layout_info, ALLOCATION_CALLBACKS, &material_sampler_array_layout);
+
+    material_layout_info.pBindings = &material_ubo_layout_binding;
+    VkDescriptorSetLayout material_ubo_layout;
+    check = vkCreateDescriptorSetLayout(device, &material_layout_info, ALLOCATION_CALLBACKS, &material_ubo_layout);
+
+    vkGetDescriptorSetLayoutSize(device, material_sampler_array_layout, &ret.material_sampler_array_set_size);
+    vkGetDescriptorSetLayoutSize(device, material_ubo_layout,           &ret.material_ubo_set_size);
+
+    vkDestroyDescriptorSetLayout(device, material_sampler_array_layout, ALLOCATION_CALLBACKS);
+    vkDestroyDescriptorSetLayout(device, material_ubo_layout,           ALLOCATION_CALLBACKS);
+
     ret.shaders =                (Shader*) malloc_h(sizeof(Shader)                * ret.shader_cap,         8);
     ret.layouts = (VkDescriptorSetLayout*) malloc_h(sizeof(VkDescriptorSetLayout) * ret.descriptor_set_cap, 8);
 
@@ -1404,9 +1446,6 @@ static void gpu_init_shaders() {
 
     const u32 *pcode;
     u64 size;
-
-    Gpu *gpu = get_gpu_instance();
-    VkDevice device = gpu->device;
 
     u32 max_sets = DESCRIPTOR_SET_COUNT;
 
@@ -1430,7 +1469,6 @@ static void gpu_init_shaders() {
     u32 *tmp_set_indices = (u32*)malloc_t(sizeof(u32) * max_sets, 8);
     #endif
 
-    VkResult check;
     bool allocate_set = false;
 
     Shader *pshader;
