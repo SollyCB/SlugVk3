@@ -26,6 +26,7 @@ struct Model_Allocators_Config {
 
     u64 vertex_allocator_config_staging_queue_byte_cap = VERTEX_STAGE_SIZE;
     u64 vertex_allocator_config_upload_queue_byte_cap  = VERTEX_DEVICE_SIZE;
+
     u64 vertex_allocator_config_stage_cap              = VERTEX_STAGE_SIZE;
     u64 vertex_allocator_config_upload_cap             = VERTEX_DEVICE_SIZE;
 
@@ -80,7 +81,10 @@ struct Model_Allocators_Config {
 
     VkBuffer descriptor_allocator_buffer_sampler  = get_gpu_instance()->memory.sampler_descriptor_buffer;
     VkBuffer descriptor_allocator_buffer_resource = get_gpu_instance()->memory.resource_descriptor_buffer;
-}; // @Unused I am just setting some arbitrary size defaults set in gpu.hpp atm.
+
+    void     **uniform_allocator_ptrs    = get_gpu_instance()->memory.uniform_ptrs;
+    VkBuffer  *uniform_allocator_buffers = get_gpu_instance()->memory.uniform_buffers;
+};
 
 static Model_Allocators create_model_allocators(const Model_Allocators_Config *config);
 static void             destroy_model_allocators(Model_Allocators *model_allocators);
@@ -126,35 +130,6 @@ void init_assets() {
 
         g_assets->model_count++;
     }
-    #endif
-
-    bool growable_array = false; // The arrays will be used in separate threads, so we cannot trigger a resize.
-    bool temp_array     = false;
-
-    // @Todo These should all be sub allocated from a single block.
-
-    u32 size = g_assets_keys_array_index_len + g_assets_keys_array_vertex_len + g_assets_keys_array_tex_len;
-    g_assets->keys_index  = (u32*)malloc_h(sizeof(u32) * size);
-    g_assets->keys_vertex = g_assets->keys_index  + g_assets_keys_array_index_len;
-    g_assets->keys_tex    = g_assets->keys_vertex + g_assets_keys_array_vertex_len;
-    // g_assets->keys_index  = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_index_len );
-    // g_assets->keys_vertex = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_vertex_len);
-
-    g_assets->keys_sampler       = (u32*)malloc_h(sizeof(u32) * g_assets_keys_array_sampler_len  );
-    g_assets->keys_image_view    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
-
-    g_assets->results_index_stage   = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_index_count );
-    g_assets->results_vertex_stage  = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_vertex_count);
-    g_assets->results_tex_stage     = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_tex_count   );
-
-    g_assets->results_index_upload  = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_index_count );
-    g_assets->results_vertex_upload = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_vertex_count);
-    g_assets->results_tex_upload    = (u64*)malloc_h(sizeof(u64) * g_assets_result_masks_tex_count   );
-
-    g_assets->results_sampler       = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_sampler_len   );
-    g_assets->results_image_view    = (u64*)malloc_h(sizeof(u64) * g_assets_keys_array_image_view_len);
-
-    g_assets->pipelines = (VkPipeline*)malloc_h(sizeof(VkPipeline) * g_assets_pipelines_array_len);
 
     g_assets->semaphores[0] = create_semaphore();
     g_assets->semaphores[1] = create_semaphore();
@@ -188,24 +163,6 @@ void kill_assets() {
     free_h(g_assets->model_buffer);
     free_h(g_assets->models);
     destroy_model_allocators(&g_assets->model_allocators);
-
-    free_h(g_assets->keys_index );
-
-    free_h(g_assets->keys_sampler   );
-    free_h(g_assets->keys_image_view);
-
-    free_h(g_assets->results_index_stage  );
-    free_h(g_assets->results_vertex_stage );
-    free_h(g_assets->results_tex_stage    );
-
-    free_h(g_assets->results_index_upload );
-    free_h(g_assets->results_vertex_upload);
-    free_h(g_assets->results_tex_upload   );
-
-    free_h(g_assets->results_sampler   );
-    free_h(g_assets->results_image_view);
-
-    free_h(g_assets->pipelines);
 
     destroy_semaphore(g_assets->semaphores[0]);
     destroy_semaphore(g_assets->semaphores[1]);
@@ -292,18 +249,43 @@ static Model_Allocators create_model_allocators(const Model_Allocators_Config *c
     Sampler_Allocator    sampler    = create_sampler_allocator(config->sampler_allocator_cap);
     Image_View_Allocator image_view = create_image_view_allocator(config->image_view_allocator_cap);
 
-    Descriptor_Allocator descriptor_sampler  = get_descriptor_allocator(config->descriptor_allocator_cap_sampler,  config->descriptor_allocator_ptr_sampler,  config->descriptor_allocator_buffer_sampler);
-    Descriptor_Allocator descriptor_resource = get_descriptor_allocator(config->descriptor_allocator_cap_resource, config->descriptor_allocator_ptr_resource, config->descriptor_allocator_buffer_resource);
-
     Model_Allocators ret = {
-        .index               = index_allocator,
-        .vertex              = vertex_allocator,
-        .tex                 = tex_allocator,
-        .sampler             = sampler,
-        .image_view          = image_view,
-        .descriptor_sampler  = descriptor_sampler,
-        .descriptor_resource = descriptor_resource,
+        .index      = index_allocator,
+        .vertex     = vertex_allocator,
+        .tex        = tex_allocator,
+        .sampler    = sampler,
+        .image_view = image_view,
     };
+
+    u32 allocator_count = g_thread_count * g_frame_count;
+
+    // @Todo This takes the lower bound, which ensures no overflow, but wastes some memory. So the
+    // cap should be aligned to the thread count.
+    u64 size_sampler  = config->descriptor_allocator_cap_sampler / allocator_count;
+    u64 size_resource = config->descriptor_allocator_cap_resource / allocator_count;
+
+    u64 ptr_offset_sampler  = 0;
+    u64 ptr_offset_resource = 0;
+    for(u32 i = 0; i < allocator_count; ++i) {
+        ret.descriptor_sampler[i] = get_descriptor_allocator(
+                                        size_sampler,
+                                        (u8*)config->descriptor_allocator_ptr_sampler + ptr_offset_sampler,
+                                        config->descriptor_allocator_buffer_sampler);
+        ret.descriptor_resource[i] = get_descriptor_allocator(
+                                         size_resource,
+                                         (u8*)config->descriptor_allocator_ptr_resource + ptr_offset_resource,
+                                         config->descriptor_allocator_buffer_resource);
+
+        ptr_offset_sampler  += size_sampler;
+        ptr_offset_resource += size_resource;
+    }
+
+    for(u32 i = 0; i < allocator_count; ++i) {
+        ret.uniform[i] = get_uniform_allocator(
+                             UNIFORM_BUFFER_SIZE,
+                             config->uniform_allocator_ptrs[i],
+                             config->uniform_allocator_buffers[i]);
+    }
 
     return ret;
 }
@@ -545,18 +527,18 @@ static void model_load_gltf_materials(u32 count, const Gltf_Material *gltf_mater
 
         // Misc
         materials[i].flags |= MATERIAL_DOUBLE_SIDED_BIT & max32_if_true(gltf_material->double_sided);
-        materials[i].alpha_cutoff = gltf_material->alpha_cutoff;
+        materials[i].ubo.alpha_cutoff = gltf_material->alpha_cutoff;
 
         // Pbr
         materials[i].pbr = {};
 
-        materials[i].pbr.base_color_factor[0] = gltf_material->base_color_factor[0];
-        materials[i].pbr.base_color_factor[1] = gltf_material->base_color_factor[1];
-        materials[i].pbr.base_color_factor[2] = gltf_material->base_color_factor[2];
-        materials[i].pbr.base_color_factor[3] = gltf_material->base_color_factor[3];
+        materials[i].ubo.base_color_factor[0] = gltf_material->base_color_factor[0];
+        materials[i].ubo.base_color_factor[1] = gltf_material->base_color_factor[1];
+        materials[i].ubo.base_color_factor[2] = gltf_material->base_color_factor[2];
+        materials[i].ubo.base_color_factor[3] = gltf_material->base_color_factor[3];
 
-        materials[i].pbr.metallic_factor  = gltf_material->metallic_factor;
-        materials[i].pbr.roughness_factor = gltf_material->roughness_factor;
+        materials[i].ubo.metallic_factor  = gltf_material->metallic_factor;
+        materials[i].ubo.roughness_factor = gltf_material->roughness_factor;
 
         // Base Color
         tmp = gltf_material->base_color_texture_index;
@@ -572,21 +554,21 @@ static void model_load_gltf_materials(u32 count, const Gltf_Material *gltf_mater
         tmp = gltf_material->normal_texture_index;
         materials[i].normal.texture   = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_NORMAL_BIT)];
         materials[i].normal.tex_coord = gltf_material->normal_tex_coord;
-        materials[i].normal.scale     = gltf_material->normal_scale;
+        materials[i].ubo.normal_scale = gltf_material->normal_scale;
 
         // Occlusion
         tmp = gltf_material->occlusion_texture_index;
-        materials[i].occlusion.texture   = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_OCCLUSION_BIT)];
-        materials[i].occlusion.tex_coord = gltf_material->occlusion_tex_coord;
-        materials[i].occlusion.strength  = gltf_material->occlusion_strength;
+        materials[i].occlusion.texture      = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_OCCLUSION_BIT)];
+        materials[i].occlusion.tex_coord    = gltf_material->occlusion_tex_coord;
+        materials[i].ubo.occlusion_strength = gltf_material->occlusion_strength;
 
         // Emissive
         tmp = gltf_material->emissive_texture_index;
         materials[i].emissive.texture   = textures[tmp & max32_if_true(materials[i].flags & MATERIAL_EMISSIVE_BIT)];
         materials[i].emissive.tex_coord = gltf_material->emissive_tex_coord;
-        materials[i].emissive.factor[0] = gltf_material->emissive_factor[0];
-        materials[i].emissive.factor[1] = gltf_material->emissive_factor[1];
-        materials[i].emissive.factor[2] = gltf_material->emissive_factor[2];
+        materials[i].ubo.emissive_factor[0] = gltf_material->emissive_factor[0];
+        materials[i].ubo.emissive_factor[1] = gltf_material->emissive_factor[1];
+        materials[i].ubo.emissive_factor[2] = gltf_material->emissive_factor[2];
 
         gltf_material = (const Gltf_Material*)((u8*)gltf_material + gltf_material->stride);
     }
@@ -1192,12 +1174,22 @@ inline static VkFormat get_format_from_accessor_flags(Accessor_Flags flags) {
     // ret += (u32)vk_format_ & max32_if_true(ACCESSOR_TYPE_MAT4_BIT | ACCESSOR_COMPONENT_TYPE_FLOAT_BIT);
 }
 
+struct Material_Ubo_Allocators {
+    Uniform_Allocator    *uniform;
+    Descriptor_Allocator *descriptor;
+};
+
+// base color factor (array), metallic factor, roughness factor, normal scale,
+// occlusion strength, emissive factor (array), alpha cutoff
+static constexpr u32 MAX_RESOURCE_DESCRIPTOR_COUNT_PER_PRIMITIVE = 7;
+
 static void load_primitive_info(
-    u32                    count,
-    const Mesh_Primitive  *primitives,
-    Allocation_Key_Arrays *arrays,
-    Pl_Primitive_Info     *pl_infos,
-    Pipeline_Draw_Info    *draw_infos)
+    u32                      count,
+    const Mesh_Primitive    *primitives,
+    Allocation_Key_Arrays   *arrays,
+    Pl_Primitive_Info       *pl_infos,
+    Primitive_Draw_Info     *draw_infos,
+    Material_Ubo_Allocators *material_ubo_allocators)
 {
     Assets *g_assets = get_assets_instance();
 
@@ -1206,15 +1198,30 @@ static void load_primitive_info(
     Array<u32> array_tex     = new_array_from_ptr(arrays->tex,     arrays->lens.tex);
     Array<u32> array_sampler = new_array_from_ptr(arrays->sampler, arrays->lens.sampler);
 
-    Array<Pl_Primitive_Info>  array_pl_info   = new_array_from_ptr(pl_infos,   count);
-    Array<Pipeline_Draw_Info> array_draw_info = new_array_from_ptr(draw_infos, count);
+    u32 descriptor_offset_count = count * MAX_RESOURCE_DESCRIPTOR_COUNT_PER_PRIMITIVE;
 
-    // struct Pl_Primitive_Info { // 4 + 4 + 8 + 8 = 24 bytes
-    //     u32                 *strides;
-    //     VkFormat            *formats;
-    //     VkPrimitiveTopology  topology;
-    //     u32                  count;
-    // };
+    Gpu *gpu          = get_gpu_instance();
+    u64  ubo_set_size = gpu->shader_memory.material_ubo_set_size; // Already aligned to descriptor buffer alignment
+    u64  ubo_size     = sizeof(Material_Ubo); // The uniform allocator should be aligning to 16 bytes.
+    assert(ubo_size == 48);
+
+    Descriptor_Allocator  *descriptor_allocator  = material_ubo_allocators->descriptor;
+    Descriptor_Allocation  descriptor_allocation = descriptor_allocate_layout(descriptor_allocator, ubo_set_size * count);
+    Uniform_Allocation     uniform_allocation    = uniform_malloc(material_ubo_allocators->uniform, ubo_size * count);
+
+    // This is pretty lame, this double indirection is pretty dumb 
+    VkDescriptorAddressInfoEXT descriptor_address_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
+    descriptor_address_info.range = ubo_size;
+
+    VkDescriptorDataEXT descriptor_data = {.pUniformBuffer = &descriptor_address_info};
+
+    // @Warn If there is a funny bug, come back here. Easy to make a mistake in this descriptor area.
+    VkDevice device = gpu->device;
+    for(u32 i = 0; i < count; ++i) {
+        descriptor_address_info.address = uniform_allocation.address + (ubo_size * i);
+        descriptor_write_uniform_buffer(device, descriptor_allocator, descriptor_data,
+                                        (u8*)descriptor_allocation.ptr + ubo_set_size);
+    }
 
     u32 attribute_count;
     u32 target_count;
@@ -1252,6 +1259,9 @@ static void load_primitive_info(
         }
 
                                                         /* Materials */
+
+        memcpy(uniform_allocation.ptr + (ubo_size * i), &primitives[i].material.ubo, ubo_size);
+
         // Base Color
         array_add_if_true(&array_tex,     primitives[i].material.pbr.base_color_texture.texture_key, primitives[i].material.flags & MATERIAL_BASE_BIT);
         array_add_if_true(&array_sampler, primitives[i].material.pbr.base_color_texture.sampler_key, primitives[i].material.flags & MATERIAL_BASE_BIT);
@@ -1283,8 +1293,12 @@ inline static bool mask_off_result(u32 idx, u64 *masks, Gpu_Allocator_Result res
 }
 
 // Just copying and pasting the below functions is easier, trust me.
-bool attempt_to_queue_allocations_staging(Gpu_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
-                                          bool adjust_weights)
+bool attempt_to_queue_allocations_staging(
+    Gpu_Allocator *allocator,
+    u32            count,
+    u32           *keys,
+    u64           *result_masks,
+    bool           adjust_weights)
 {
     Gpu_Allocator_Result result = staging_queue_begin(allocator);
     CHECK_GPU_ALLOCATOR_RESULT(result);
@@ -1294,14 +1308,18 @@ bool attempt_to_queue_allocations_staging(Gpu_Allocator *allocator, u32 count, u
     u64 tmp;
     for(u32 i = 0; i < count; ++i) {
         result = staging_queue_add(allocator, keys[i], adjust_weights);
-        ret = mask_off_result(i, result_masks, result) && ret;
+        ret    = mask_off_result(i, result_masks, result) && ret;
     }
 
     return ret;
 }
 
-bool attempt_to_queue_allocations_upload(Gpu_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
-                                          bool adjust_weights)
+bool attempt_to_queue_allocations_upload(
+    Gpu_Allocator *allocator,
+    u32            count,
+    u32           *keys,
+    u64           *result_masks,
+    bool           adjust_weights)
 {
     Gpu_Allocator_Result result = upload_queue_begin(allocator);
     CHECK_GPU_ALLOCATOR_RESULT(result);
@@ -1310,14 +1328,18 @@ bool attempt_to_queue_allocations_upload(Gpu_Allocator *allocator, u32 count, u3
     bool ret = true;
     for(u32 i = 0; i < count; ++i) {
         result = upload_queue_add(allocator, keys[i], adjust_weights);
-        ret = mask_off_result(i, result_masks, result) && ret;
+        ret    = mask_off_result(i, result_masks, result) && ret;
     }
 
     return ret;
 }
 
-bool attempt_to_queue_tex_allocations_staging(Gpu_Tex_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
-                                              bool adjust_weights)
+bool attempt_to_queue_tex_allocations_staging(
+    Gpu_Tex_Allocator *allocator,
+    u32                count,
+    u32               *keys,
+    u64               *result_masks,
+    bool               adjust_weights)
 {
     Gpu_Allocator_Result result = tex_staging_queue_begin(allocator);
     CHECK_GPU_ALLOCATOR_RESULT(result);
@@ -1326,14 +1348,18 @@ bool attempt_to_queue_tex_allocations_staging(Gpu_Tex_Allocator *allocator, u32 
     bool ret = true;
     for(u32 i = 0; i < count; ++i) {
         result = tex_staging_queue_add(allocator, keys[i], adjust_weights);
-        ret = mask_off_result(i, result_masks, result) && ret;
+        ret    = mask_off_result(i, result_masks, result) && ret;
     }
 
     return ret;
 }
 
-bool attempt_to_queue_tex_allocations_upload(Gpu_Tex_Allocator *allocator, u32 count, u32 *keys, u64 *result_masks,
-                                             bool adjust_weights)
+bool attempt_to_queue_tex_allocations_upload(
+    Gpu_Tex_Allocator *allocator,
+    u32                count,
+    u32               *keys,
+    u64               *result_masks,
+    bool               adjust_weights)
 {
     Gpu_Allocator_Result result = tex_upload_queue_begin(allocator);
     CHECK_GPU_ALLOCATOR_RESULT(result);
@@ -1342,7 +1368,7 @@ bool attempt_to_queue_tex_allocations_upload(Gpu_Tex_Allocator *allocator, u32 c
     bool ret = true;
     for(u32 i = 0; i < count; ++i) {
         result = tex_upload_queue_add(allocator, keys[i], adjust_weights);
-        ret = mask_off_result(i, result_masks, result) && ret;
+        ret    = mask_off_result(i, result_masks, result) && ret;
     }
 
     return ret;
@@ -1376,6 +1402,14 @@ inline static bool check_upload_stage_results_against_req_count(u32 count, u32 b
     return primary_mask == count;
 }
 
+/*
+    As per VkSpec:
+        "If image is non-sparse then it must be bound completely and contiguously to a single
+        VkDeviceMemory object"
+
+    So image views and their descriptors can only be acquired after queue upload...
+    @Todo Check out sparse to avoid this burden, it might help idk.
+*/
 Primitive_Draw_Prep_Result prepare_to_draw_primitives(
     u32                          count,
     const Mesh_Primitive        *primitives,
@@ -1392,8 +1426,8 @@ Primitive_Draw_Prep_Result prepare_to_draw_primitives(
     u32 primitive_job_size = count / g_thread_count;
     u32 remainder_job_size = count % g_thread_count;
 
-    u32         primitive_job_offsets   [g_thread_count];
-    u32         primitive_job_sizes     [g_thread_count]; // The number of primitives in a job
+    u32                    primitive_job_offsets   [g_thread_count];
+    u32                    primitive_job_sizes     [g_thread_count]; // The number of primitives in a job
     Allocation_Key_Arrays  primitive_job_key_arrays[g_thread_count];
 
     u32 *keys_index   = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_tex_len);
@@ -1401,8 +1435,9 @@ Primitive_Draw_Prep_Result prepare_to_draw_primitives(
     u32 *keys_tex     = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_vertex_len);
     u32 *keys_sampler = (u32*)malloc_t(sizeof(u32) * g_assets_keys_array_sampler_len);
 
-    Pl_Primitive_Info  *pl_primitive_infos   =  (Pl_Primitive_Info*)malloc_t(sizeof(Pl_Primitive_Info)  * count);
-    Pipeline_Draw_Info *primitive_draw_infos = (Pipeline_Draw_Info*)malloc_t(sizeof(Pipeline_Draw_Info) * count);
+    // @Multithreading I may need to pad these jobs to prevent false sharing idk... @Test
+    Pl_Primitive_Info   *pl_primitive_infos   =   (Pl_Primitive_Info*)malloc_t(sizeof(Pl_Primitive_Info)  * count);
+    Primitive_Draw_Info *primitive_draw_infos = (Primitive_Draw_Info*)malloc_t(sizeof(Primitive_Draw_Info) * count);
 
     // Doubles as the total key count for each key type once filled in
     alignas(16) Allocation_Key_Counts accum_offsets = {};
@@ -1458,18 +1493,25 @@ Primitive_Draw_Prep_Result prepare_to_draw_primitives(
     }
     assert(idx == count && "We should have visited every primitive in the 'accum_offsets' loop");
 
+
     // @Multithreading The below loop simulates multhreading without me having to yet go through the
     // rigmarole of setting it all up completely. This should be behave in the exact same fashion as
     // the real threaded version, as synchronisation has no effect here, only the range which is written.
 
+    Material_Ubo_Allocators material_ubo_allocators[g_thread_count];
+
     for(u32 i = 0; i < g_thread_count; ++i) {
+        material_ubo_allocators[i].uniform    = &g_assets->model_allocators.uniform[i];
+        material_ubo_allocators[i].descriptor = &g_assets->model_allocators.descriptor_resource[i];
+
         // I do not love this formatting (the non contiguous offsets) but return locations must be last...
         load_primitive_info(
             primitive_job_sizes[i],
             primitives           + primitive_job_offsets[i],
-            &primitive_job_key_arrays[i],
+           &primitive_job_key_arrays[i],
             pl_primitive_infos   + primitive_job_offsets[i],
-            primitive_draw_infos + primitive_job_offsets[i]);
+            primitive_draw_infos + primitive_job_offsets[i],
+           &material_ubo_allocators[i]);
     }
 
     // I do not want to fabricate all the stuff required to make the tests successfully compile the pipelines.
@@ -1489,10 +1531,6 @@ Primitive_Draw_Prep_Result prepare_to_draw_primitives(
     // @Multithreading Wait for threads to return, and signal allocators to queue allocation keys in their
     // respective array. Each allocator queue will be controlled by a thread.
 
-    Gpu_Allocator     *index_allocator  = &g_assets->model_allocators.index;
-    Gpu_Allocator     *vertex_allocator = &g_assets->model_allocators.vertex;
-    Gpu_Tex_Allocator *tex_allocator    = &g_assets->model_allocators.tex;
-
     const u32 result_mask_count = 17; // must be large enough to allow out of bounds indexing by one in the below loop.
 
     assert(result_mask_count * 64 > accum_offsets.index  + 1 && "Insufficient Result Count");
@@ -1509,6 +1547,17 @@ Primitive_Draw_Prep_Result prepare_to_draw_primitives(
     // @Note Not currently acquiring samplers in this phase. Although I could, I think it would
     // be more appropriate to get them at the image view phase. Idk though, maybe I should acquire
     // them here just to warm up the cache.
+
+    Gpu_Allocator     *index_allocator    = &g_assets->model_allocators.index;
+    Gpu_Allocator     *vertex_allocator   = &g_assets->model_allocators.vertex;
+    Gpu_Tex_Allocator *tex_allocator      = &g_assets->model_allocators.tex;
+
+    // @Multithreading I want to remiplement the allocators in a fashion closer to how the uniform
+    // and descriptor allocators exist in the model allocators struct: single buffers with multiple
+    // user structs operating at offsets. At some point I can add work stealing to this as well.
+    // But than can some later, I want to operate without sync for as long as possible, and I assume
+    // that you need it for work stealing (threads would need to know where it is safe to take from
+    // I assume).
 
     // Staging Queues
     bool result_stage_index  = attempt_to_queue_allocations_staging(index_allocator, accum_offsets.index,
@@ -1622,16 +1671,20 @@ Primitive_Draw_Prep_Result prepare_to_draw_primitives(
     Array<u32> to_remove_keys_tex    = new_array<u32>(accum_offsets.tex,    false, true);
 
     // To reload allocations without having to parse the primitives again.
-    Array<u32> failed_keys_index  = new_array<u32>(accum_offsets.index,  false, true);
-    Array<u32> failed_keys_vertex = new_array<u32>(accum_offsets.vertex, false, true);
-    Array<u32> failed_keys_tex    = new_array<u32>(accum_offsets.tex,    false, true);
+    Array<u32> failed_keys_index   = new_array<u32>(accum_offsets.index,   false, true);
+    Array<u32> failed_keys_vertex  = new_array<u32>(accum_offsets.vertex,  false, true);
+    Array<u32> failed_keys_tex     = new_array<u32>(accum_offsets.tex,     false, true);
+    Array<u32> failed_keys_sampler = new_array<u32>(accum_offsets.sampler, false, true);
 
     // To call get allocation for upload offsets without having to reparse primitives.
-    Array<u32> success_keys_index  = new_array<u32>(accum_offsets.index,  false, true);
-    Array<u32> success_keys_vertex = new_array<u32>(accum_offsets.vertex, false, true);
-    Array<u32> success_keys_tex    = new_array<u32>(accum_offsets.tex,    false, true);
+    Array<u32> success_keys_index   = new_array<u32>(accum_offsets.index,   false, true);
+    Array<u32> success_keys_vertex  = new_array<u32>(accum_offsets.vertex,  false, true);
+    Array<u32> success_keys_tex     = new_array<u32>(accum_offsets.tex,     false, true);
+    Array<u32> success_keys_sampler = new_array<u32>(accum_offsets.sampler, false, true);
 
     // @Multithreading See previous multithreading comment (two loops up).
+    // @Multithreading @Test False sharing on the jobs below.
+    //
     // @SIMD I would like to make this simd, but I cannot see how to do so without using unaligned loads.
     // Maybe that would still be faster, but since I am not certain of the benefit, I will still to this for now.
     result_pos = 0;
@@ -1696,12 +1749,14 @@ Primitive_Draw_Prep_Result prepare_to_draw_primitives(
             tmp_bool = (results_tex_stage[j >> 6] & results_tex_upload[j >> 6]) & (one << (j & 63));
 
             array_add_if_true(&to_remove_keys_tex, keys_tex[j], tmp_bool);
-            array_add(&failed_keys_tex, keys_tex[j]);
+            array_add(&failed_keys_tex,     keys_tex[j]);
+            array_add(&failed_keys_sampler, keys_sampler[j]);
         }
 
         // If every allocation for this primitive was successfully loaded, add the key to the 'ready' array.
         for(u32 j = result_pos; j < result_pos + (result_count & max64_if_true(result64)); ++j) {
-            array_add(&success_keys_tex, keys_tex[j]);
+            array_add(&success_keys_tex,     keys_tex[j]);
+            array_add(&success_keys_sampler, keys_sampler[j]);
         }
 
         result_pos += result_count;
@@ -1733,12 +1788,14 @@ Primitive_Draw_Prep_Result prepare_to_draw_primitives(
     ret.failed_keys.lens.vertex = failed_keys_vertex.len;
     ret.failed_keys.lens.tex    = failed_keys_tex.len;
 
-    ret.success_keys.index       = success_keys_index.data;
-    ret.success_keys.vertex      = success_keys_vertex.data;
-    ret.success_keys.tex         = success_keys_tex.data;
-    ret.success_keys.lens.index  = success_keys_index.len;
-    ret.success_keys.lens.vertex = success_keys_vertex.len;
-    ret.success_keys.lens.tex    = success_keys_tex.len;
+    ret.success_keys.index        = success_keys_index.data;
+    ret.success_keys.vertex       = success_keys_vertex.data;
+    ret.success_keys.tex          = success_keys_tex.data;
+    ret.success_keys.sampler      = success_keys_sampler.data;
+    ret.success_keys.lens.index   = success_keys_index.len;
+    ret.success_keys.lens.vertex  = success_keys_vertex.len;
+    ret.success_keys.lens.tex     = success_keys_tex.len;
+    ret.success_keys.lens.sampler = success_keys_sampler.len;
 
     bool primitive_load_result = result_stage_index  && result_stage_vertex  && result_stage_tex &&
                                  result_upload_index && result_upload_vertex && result_upload_tex;
@@ -2077,16 +2134,16 @@ static void test_material(Gpu_Tex_Allocator *allocator, char *name, Material *ma
     TEST_EQ(name, material0->flags, material1->flags, false);
 
     for(u32 i = 0; i < 4; ++i) {
-        TEST_FEQ(name, material0->pbr.base_color_factor[i], material1->pbr.base_color_factor[i], false);
+        TEST_FEQ(name, material0->ubo.base_color_factor[i], material1->ubo.base_color_factor[i], false);
     }
     for(u32 i = 0; i < 3; ++i) {
-        TEST_FEQ(name, material0->emissive.factor[i], material1->emissive.factor[i], false);
+        TEST_FEQ(name, material0->ubo.emissive_factor[i], material1->ubo.emissive_factor[i], false);
     }
 
-    TEST_FEQ(name, material0->pbr.metallic_factor,  material1->pbr.metallic_factor,  false);
-    TEST_FEQ(name, material0->pbr.roughness_factor, material1->pbr.roughness_factor, false);
-    TEST_FEQ(name, material0->normal.scale,         material1->normal.scale,         false);
-    TEST_FEQ(name, material0->occlusion.strength,   material1->occlusion.strength,   false);
+    TEST_FEQ(name, material0->ubo.metallic_factor,    material1->ubo.metallic_factor,    false);
+    TEST_FEQ(name, material0->ubo.roughness_factor,   material1->ubo.roughness_factor,   false);
+    TEST_FEQ(name, material0->ubo.normal_scale,       material1->ubo.normal_scale,       false);
+    TEST_FEQ(name, material0->ubo.occlusion_strength, material1->ubo.occlusion_strength, false);
 
     Gpu_Allocator_Result result = tex_staging_queue_begin(allocator);
     TEST_EQ("tex_staging_queue_begin_result", result, GPU_ALLOCATOR_RESULT_SUCCESS, false);
@@ -2441,16 +2498,20 @@ static void test_model_from_gltf() {
                 .metallic_roughness_texture = {.texture_key = 1, .sampler_key = 0},
                 .base_color_tex_coord = 1,
                 .metallic_roughness_tex_coord = 0,
-                .base_color_factor = {0.5,0.5,0.5,1.0},
-                .metallic_factor = 1,
-                .roughness_factor = 1,
             },
             .normal = {
                 .texture = {.texture_key = 2},
                 .tex_coord = 1,
-                .scale = 2,
             },
-            .emissive = {.factor = {0.2, 0.1, 0.0}},
+            .emissive = {},
+            .ubo = {
+                .base_color_factor = {0.5,0.5,0.5,1.0},
+                .metallic_factor = 1,
+                .roughness_factor = 1,
+                .normal_scale = 2,
+                .occlusion_strength = 1,
+                .emissive_factor = {0.2, 0.1, 0.0}
+            },
         },
         {
             .flags = MATERIAL_BASE_BIT      | MATERIAL_PBR_BIT      | MATERIAL_NORMAL_BIT |
@@ -2460,24 +2521,26 @@ static void test_model_from_gltf() {
                 .metallic_roughness_texture = {.texture_key = 6, .sampler_key = 0},
                 .base_color_tex_coord = 0,
                 .metallic_roughness_tex_coord = 1,
-                .base_color_factor = {2.5,4.5,2.5,1.0},
-                .metallic_factor = 5,
-                .roughness_factor = 6,
             },
             .normal = {
                 .texture = {.texture_key = 7, .sampler_key = 0},
                 .tex_coord = 1,
-                .scale = 1,
             },
             .occlusion = {
                 .texture = {.texture_key = 8, .sampler_key = 0},
                 .tex_coord = 1,
-                .strength = 0.679,
             },
             .emissive = {
                 .texture = {.texture_key = 9, .sampler_key = 0},
                 .tex_coord = 0,
-                .factor = {0.2, 0.1, 0.0},
+            },
+            .ubo = {
+                .base_color_factor = {2.5,4.5,2.5,1.0},
+                .metallic_factor = 5,
+                .roughness_factor = 6,
+                .normal_scale = 1,
+                .occlusion_strength = 0.679,
+                .emissive_factor = {0.2, 0.1, 0.0},
             },
         },
     };

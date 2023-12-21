@@ -9,14 +9,22 @@
 void test_asset();
 #endif
 
+// @Todo I need to reimplement the allocators in a way that is more condusive to threading. Should be
+// trivial as all the logic is the same, just need to create them from offsets into single buffers
+// and device memory. I will do that soon. But it is fine for now. Would need to change how allocations
+// are stored though. As I would want allocations to not be tied to one allocator. Maybe I should just
+// largely reimplement them and just keep the bit mask memory idea, as that is really the only usable
+// thing from those. And instead use a system of last used out, as opposed to a weighting, as I would
+// like to avoid sorting this time...
 struct Model_Allocators {
     Gpu_Allocator        index;
     Gpu_Allocator        vertex;
     Gpu_Tex_Allocator    tex;
     Sampler_Allocator    sampler;
     Image_View_Allocator image_view;
-    Descriptor_Allocator descriptor_sampler;
-    Descriptor_Allocator descriptor_resource;
+    Descriptor_Allocator descriptor_sampler [g_thread_count * g_frame_count];
+    Descriptor_Allocator descriptor_resource[g_thread_count * g_frame_count];
+    Uniform_Allocator    uniform            [g_thread_count * g_frame_count];
 };
 
 constexpr u32 g_assets_keys_array_tex_len        = 1024;
@@ -24,17 +32,6 @@ constexpr u32 g_assets_keys_array_index_len      = 1024;
 constexpr u32 g_assets_keys_array_vertex_len     = 1024;
 constexpr u32 g_assets_keys_array_sampler_len    = 1024;
 constexpr u32 g_assets_keys_array_image_view_len = 1024;
-
-// These are u64 bit masks, so not many are necessary
-constexpr u32 g_assets_result_masks_tex_count        = 16;
-constexpr u32 g_assets_result_masks_index_count      = 16;
-constexpr u32 g_assets_result_masks_vertex_count     = 16;
-constexpr u32 g_assets_result_masks_sampler_count    = 16;
-constexpr u32 g_assets_result_masks_image_view_count = 16;
-
-constexpr u32 g_assets_pipelines_array_len = 256;
-
-constexpr u32 g_primitive_draw_queue_success_mask_count = 8;
 
 constexpr u32 g_model_buffer_size                 = 1024 * 1024;
 constexpr u32 g_model_buffer_allocation_alignment = 16;
@@ -48,37 +45,7 @@ struct Assets {
     u32    model_count;
     Model *models;
 
-    u32 pos_keys_tex;
-    u32 pos_keys_index;
-    u32 pos_keys_vertex;
-    u32 pos_keys_sampler;
-    u32 pos_keys_image_view;
-
-    // Read by allocators
-    u32* keys_index;
-    u32* keys_vertex;
-    u32* keys_tex;
-
-    // @Note Will need to add another descriptor array here for uniform buffers? I dont think so.
-    u32* keys_sampler;
-    u64* keys_image_view;
-
-    // Written by allocators - Individual bits are used (64 bools basically)
-    u64* results_index_stage;
-    u64* results_vertex_stage;
-    u64* results_tex_stage;
-    u64* results_index_upload;
-    u64* results_vertex_upload;
-    u64* results_tex_upload;
-    u64* results_sampler;
-    u64* results_image_view;
-
-    u32 pos_pipelines;
-    VkPipeline* pipelines;
-
-    // fonts, etc.
-
-    // Gpu transfer resources
+    // Gpu transfer resources - @Note I have completely forgotten what these are here for...
     VkCommandPool   cmd_pools  [2];
     VkCommandBuffer cmd_buffers[2];
     VkSemaphore     semaphores [2];
@@ -103,55 +70,60 @@ struct Texture {
     u32 sampler_key;
 };
 
-struct Pbr_Metallic_Roughness { // 48 bytes
+struct Pbr_Metallic_Roughness {
     Texture base_color_texture;
     Texture metallic_roughness_texture;
     u32     base_color_tex_coord;
     u32     metallic_roughness_tex_coord;
-    float   base_color_factor[4] = {1,1,1,1};
-    float   metallic_factor      = 1;
-    float   roughness_factor     = 1;
 };
 
-struct Normal_Texture { // 20 bytes
+struct Normal_Texture {
     Texture texture;
     u32     tex_coord;
-    float   scale = 1;
 };
 
-struct Occlusion_Texture { // 20 bytes
+struct Occlusion_Texture {
     Texture texture;
     u32     tex_coord;
-    float   strength = 1;
 };
 
-struct Emissive_Texture { // 28 bytes
+struct Emissive_Texture {
     Texture texture;
     u32     tex_coord;
-    float   factor[3] = {0,0,0};
 };
 
 enum Material_Flag_Bits {
-    MATERIAL_BASE_BIT                = 0x0001,
-    MATERIAL_PBR_BIT                 = 0x0002, // This is a little misleading: I want it to mean just 'is there a metallic roughness texture?', but the pbr object in gltf includes the base.
-    MATERIAL_NORMAL_BIT              = 0x0004,
-    MATERIAL_OCCLUSION_BIT           = 0x0008,
-    MATERIAL_EMISSIVE_BIT            = 0x0010,
-    MATERIAL_OPAQUE_BIT              = 0x0020,
-    MATERIAL_MASK_BIT                = 0x0040,
-    MATERIAL_BLEND_BIT               = 0x0080,
-    MATERIAL_DOUBLE_SIDED_BIT        = 0x0100,
+    MATERIAL_BASE_BIT         = 0x0001,
+    MATERIAL_PBR_BIT          = 0x0002, // This is a little misleading: I want it to mean just 'is there a metallic roughness texture?', but the pbr object in gltf includes the base.
+    MATERIAL_NORMAL_BIT       = 0x0004,
+    MATERIAL_OCCLUSION_BIT    = 0x0008,
+    MATERIAL_EMISSIVE_BIT     = 0x0010,
+    MATERIAL_OPAQUE_BIT       = 0x0020,
+    MATERIAL_MASK_BIT         = 0x0040,
+    MATERIAL_BLEND_BIT        = 0x0080,
+    MATERIAL_DOUBLE_SIDED_BIT = 0x0100,
 };
 typedef u32 Material_Flags;
 
-struct Material { // 124 bytes
+struct Material_Ubo {
+    float base_color_factor[4]; // vec4
+    float metallic_factor;
+    float roughness_factor;
+    float normal_scale;
+    float occlusion_strength;
+    float emissive_factor[3]; // vec3
+    float alpha_cutoff;
+};
+
+struct Material {
     Material_Flags         flags;
-    float                  alpha_cutoff = 0.5;
 
     Pbr_Metallic_Roughness pbr;
     Normal_Texture         normal;
     Occlusion_Texture      occlusion;
     Emissive_Texture       emissive;
+
+    alignas(16) Material_Ubo ubo;
 };
 
 enum Accessor_Component_Type {
@@ -299,24 +271,24 @@ struct Allocation_Key_Arrays { // 48 bytes
     u32 *tex;
     u32 *sampler;
 
-    alignas(16) Allocation_Key_Counts lens;
+    alignas(16) Allocation_Key_Counts lens; // Align 16 SIMD store.
 };
 
-// @Todo I am not sure how morph targets fits into the creation of this struct...
-struct Pipeline_Draw_Info {
-    u32         count; // draw_count
-    VkIndexType index_type;
+struct Primitive_Draw_Info { // 16 bytes
+    u32          count; // draw_count
+    VkIndexType  index_type;
 };
 
 enum Primitive_Load_Result {
-    PRIMITIVE_LOAD_RESULT_SUCCESS = 0,
-    PRIMITIVE_LOAD_RESULT_PARTIAL = 1,
+    PRIMITIVE_LOAD_RESULT_SUCCESS                       = 0,
+    PRIMITIVE_LOAD_RESULT_PARTIAL                       = 1,
+    PRIMITIVE_LOAD_RESULT_FAILED_TO_ACQUIRE_DESCRIPTORS = 2,
 };
 
-struct Primitive_Draw_Prep_Result { // 112 bytes
+struct Primitive_Draw_Prep_Result { // 112 bytes @OutdatedComment
     Primitive_Load_Result  result;
     u64                   *success_masks;
-    Pipeline_Draw_Info    *primitive_draw_infos;
+    Primitive_Draw_Info   *primitive_draw_infos;
     VkPipeline            *pipelines;
     Allocation_Key_Arrays  failed_keys;
     Allocation_Key_Arrays  success_keys;
