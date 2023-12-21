@@ -826,8 +826,12 @@ struct Image_View_Allocator {
 Image_View_Allocator create_image_view_allocator (u32 cap);
 void                 destroy_image_view_allocator(Image_View_Allocator *alloc);
 
-Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageViewCreateInfo *view_info,
-                                           VkImageView *ret_image_view, u64 *ret_view_hash, bool adjust_weights);
+Image_View_Allocator_Result get_image_view(
+    Image_View_Allocator  *alloc,
+    VkImageViewCreateInfo *view_info,
+    VkImageView           *ret_image_view,
+    u64                   *ret_view_hash,
+    bool                   adjust_weights);
 
 void done_with_image_view(Image_View_Allocator *alloc, u64 hash);
 
@@ -835,7 +839,6 @@ struct Uniform_Allocator {
     u64              cap;
     u64              used;
     u8              *mem;
-    u64              alignment;
     VkBuffer         buf;
     VkDeviceAddress  address;
 };
@@ -847,7 +850,6 @@ inline static Uniform_Allocator get_uniform_allocator(u64 size, void *ptr, VkBuf
     ret.used = 0;
     ret.mem  = (u8*)ptr;
     ret.buf  = buf;
-    ret.alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
 
     VkBufferDeviceAddressInfo address_info = {VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     address_info.buffer = buf;
@@ -856,11 +858,19 @@ inline static Uniform_Allocator get_uniform_allocator(u64 size, void *ptr, VkBuf
 
     return ret;
 }
-inline static u8* uniform_malloc(Uniform_Allocator *allocator, u64 size) {
-    // pad to alignment
-    allocator->used = align(allocator->used, allocator->alignment);
 
-    u8 *ret = allocator->mem + allocator->used;
+struct Uniform_Allocation {
+    u8              *ptr;
+    VkDeviceAddress  address;
+};
+
+inline static Uniform_Allocation uniform_malloc(Uniform_Allocator *allocator, u64 size) {
+    // pad to alignment
+    allocator->used = align(allocator->used, 16);
+
+    Uniform_Allocation ret = {};
+    ret.ptr     = allocator->mem     + allocator->used;
+    ret.address = allocator->address + allocator->used;
 
     allocator->used += size;
 
@@ -922,10 +932,44 @@ struct Descriptor_Allocator {
 // Does not need to be freed
 Descriptor_Allocator get_descriptor_allocator(u64 size, void *mem, VkBuffer buf);
 
-u8*  descriptor_allocate_layout             (Descriptor_Allocator *alloc, u64 size, u64 *offset);
-void descriptor_write_uniform_buffer        (Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem);
-void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem);
-void descriptor_write_input_attachment      (Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem);
+struct Descriptor_Allocation {
+    void         *ptr;
+    VkDeviceSize  offset;
+};
+
+inline static u64 descriptor_get_layout_size(Descriptor_Allocator *alloc, u64 size) {
+    return align(size, alloc->info.descriptorBufferOffsetAlignment);
+}
+
+inline static Descriptor_Allocation descriptor_allocate_layout(Descriptor_Allocator *alloc, u64 size) {
+    Descriptor_Allocation ret;
+    ret.ptr    = (u8*)alloc->mem + alloc->used;
+    ret.offset = alloc->used;
+
+    size         = align(size, alloc->info.descriptorBufferOffsetAlignment);
+    alloc->used += size;
+
+    assert(alloc->used <= alloc->cap && "Descriptor Allocator Overflow");
+    return ret;
+}
+
+void descriptor_write_uniform_buffer(
+    VkDevice              device,
+    Descriptor_Allocator *alloc,
+    VkDescriptorDataEXT   datas,
+    u8                   *mem);
+
+void descriptor_write_combined_image_sampler(
+    VkDevice              device,
+    Descriptor_Allocator *alloc,
+    VkDescriptorDataEXT   datas,
+    u8                   *mem);
+
+void descriptor_write_input_attachment(
+    VkDevice              device,
+    Descriptor_Allocator *alloc,
+    VkDescriptorDataEXT   datas,
+    u8                   *mem);
 
 inline static void descriptor_allocator_reset(Descriptor_Allocator *allocator) {
     allocator->used = 0;

@@ -1209,18 +1209,18 @@ void allocate_memory() {
         return;
     }
 
-    u8 *sampler_ptr;
+    void *sampler_ptr;
 
-    void *tmp = (void*)sampler_ptr; // Such a dumb work around. This or cast in create_allocator call...
-    vkMapMemory(device, descriptor_buffer_memory, 0, VK_WHOLE_SIZE, 0x0, &tmp);
+    check = vkMapMemory(device, descriptor_buffer_memory, 0, VK_WHOLE_SIZE, 0x0, &sampler_ptr);
+    DEBUG_OBJ_CREATION(vkMapMemory, check);
 
-    u8 *resource_ptr = sampler_ptr + sampler_size;
+    void *resource_ptr = (u8*)sampler_ptr + sampler_size;
 
     gpu->memory.sampler_descriptor_buffer  = sampler_descriptor_buffer;
     gpu->memory.resource_descriptor_buffer = resource_descriptor_buffer;
     gpu->memory.descriptor_buffer_memory   = descriptor_buffer_memory;
-    gpu->memory.sampler_descriptor_ptr     = sampler_ptr;
-    gpu->memory.resource_descriptor_ptr    = resource_ptr;
+    gpu->memory.sampler_descriptor_ptr     = (u8*)sampler_ptr;
+    gpu->memory.resource_descriptor_ptr    = (u8*)resource_ptr;
 }
 void free_memory() {
     Gpu *gpu = get_gpu_instance();
@@ -1303,16 +1303,6 @@ Descriptor_Allocator get_descriptor_allocator(u64 size, void *mem, VkBuffer buf)
     return ret;
 }
 
-u8* descriptor_allocate_layout(Descriptor_Allocator *alloc, u64 size, u64 *offset) {
-    u8 *ret      = (u8*)alloc->mem + alloc->used;
-    *offset      = alloc->used;
-    size         = align(size, alloc->info.descriptorBufferOffsetAlignment);
-    alloc->used += size;
-
-    assert(alloc->used <= alloc->cap && "Descriptor Allocator Overflow");
-    return ret;
-}
-
 void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 count,
                                              VkDescriptorDataEXT *datas, u8 *mem)
 {
@@ -1364,19 +1354,20 @@ void descriptor_write_combined_image_sampler(Descriptor_Allocator *alloc, u32 co
     }
 }
 
-void descriptor_write_uniform_buffer(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
-    VkDevice device = get_gpu_instance()->device;
-
+void descriptor_write_uniform_buffer(
+    VkDevice              device,
+    Descriptor_Allocator *alloc,
+    VkDescriptorDataEXT   data,
+    u8                   *mem)
+{
     VkDescriptorGetInfoEXT get_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT};
-    get_info.type                   =  VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    get_info.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    get_info.data = data;
 
-    u64 ubo_size = alloc->info.uniformBufferDescriptorSize;
-    for(u32 i = 0; i < count; ++i) {
-        get_info.data = datas[i];
-        vkGetDescriptor(device, &get_info, ubo_size, mem + (i * ubo_size));
-    }
+    vkGetDescriptor(device, &get_info, alloc->info.uniformBufferDescriptorSize, mem);
 }
 
+// @Unimplemented This needs updating to look like uniform buffer
 void descriptor_write_input_attachment(Descriptor_Allocator *alloc, u32 count, VkDescriptorDataEXT *datas, u8 *mem) {
     VkDevice device = get_gpu_instance()->device;
 
@@ -1431,6 +1422,17 @@ static void gpu_init_shaders() {
 
     vkGetDescriptorSetLayoutSize(device, material_sampler_array_layout, &ret.material_sampler_array_set_size);
     vkGetDescriptorSetLayoutSize(device, material_ubo_layout,           &ret.material_ubo_set_size);
+
+    VkPhysicalDeviceDescriptorBufferPropertiesEXT descriptor_buffer_properties;
+    descriptor_buffer_properties = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_PROPERTIES_EXT};
+
+    VkPhysicalDeviceProperties2 physical_device_properties2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    physical_device_properties2.pNext = &descriptor_buffer_properties;
+
+    vkGetPhysicalDeviceProperties2(gpu->phys_device, &physical_device_properties2);
+
+    ret.material_sampler_array_set_size = align(ret.material_sampler_array_set_size, descriptor_buffer_properties.descriptorBufferOffsetAlignment);
+    ret.material_ubo_set_size           = align(ret.material_ubo_set_size,           descriptor_buffer_properties.descriptorBufferOffsetAlignment);
 
     vkDestroyDescriptorSetLayout(device, material_sampler_array_layout, ALLOCATION_CALLBACKS);
     vkDestroyDescriptorSetLayout(device, material_ubo_layout,           ALLOCATION_CALLBACKS);
@@ -4228,10 +4230,14 @@ void destroy_image_view_allocator(Image_View_Allocator *alloc) {
 /*
    Image View Allocator Implementation is basically identical sampler allocator: a hashmap and some weights
 */
-Image_View_Allocator_Result get_image_view(Image_View_Allocator *alloc, VkImageViewCreateInfo *image_view_info,
-                                           VkImageView *ret_view, u64 *ret_hash, bool do_weight_adjustment)
+Image_View_Allocator_Result get_image_view(
+    Image_View_Allocator  *alloc,
+    VkImageViewCreateInfo *image_view_info,
+    VkImageView           *ret_view,
+    u64                   *ret_hash,
+    bool                   do_weight_adjustment)
 {
-    u64 hash               = hash_bytes(image_view_info, sizeof(VkImageViewCreateInfo));
+    u64         hash      = hash_bytes(image_view_info, sizeof(VkImageViewCreateInfo));
     Image_View *image_view = alloc->map.find_hash(hash);
 
     VkImageView ret;
