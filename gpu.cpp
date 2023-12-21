@@ -698,7 +698,7 @@ static void discrete_gpu_get_memory_type(
             }
         }
 }
-void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
+static void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
     VkResult check;
     VkMemoryRequirements mem_req;
     VkMemoryDedicatedAllocateInfo dedicate_info   = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
@@ -785,8 +785,8 @@ void create_attachments(Gpu *gpu, VkDevice device, u32 device_mem_type) {
         vkBindImageMemory(device, gpu->memory.shadow_attachments[i], gpu->memory.shadow_mem[i], 0);
     }
 }
-void create_buffers(Gpu *gpu, u32 mem_type, u32 count, VkBuffer *bufs, VkDeviceMemory *mems, void **ptrs, u64 size,
-                    VkBufferUsageFlags usage, float priority, bool map) {
+static void create_buffers(Gpu *gpu, u32 mem_type, u32 count, VkBuffer *bufs, VkDeviceMemory *mems, void **ptrs, u64 size,
+                           VkBufferUsageFlags usage, float priority, bool map) {
 
     VkResult check;
     VkBufferCreateInfo buf_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -821,7 +821,86 @@ void create_buffers(Gpu *gpu, u32 mem_type, u32 count, VkBuffer *bufs, VkDeviceM
             vkMapMemory(gpu->device, mems[i], 0, VK_WHOLE_SIZE, 0x0, &ptrs[i]);
     }
 }
-void create_mem(Gpu *gpu, u32 mem_type, u32 count, u64 size, VkDeviceMemory *mem, float priority) {
+
+static void create_uniform_buffers() {
+    Gpu              *gpu             = get_gpu_instance();
+    VkDevice          device          = gpu->device;
+    VkPhysicalDevice  physical_device = gpu->phys_device;
+
+    VkBufferCreateInfo buffer_info = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buffer_info.size  = UNIFORM_BUFFER_SIZE;
+    buffer_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+
+    VkResult check;
+    for(u32 i = 0; i < UNIFORM_BUFFER_COUNT; ++i) {
+        check = vkCreateBuffer(device, &buffer_info, ALLOCATION_CALLBACKS, &gpu->memory.uniform_buffers[i]);
+        DEBUG_OBJ_CREATION(vkCreateBuffer, check);
+    }
+
+    VkMemoryRequirements memory_requirements;
+    vkGetBufferMemoryRequirements(device, gpu->memory.uniform_buffers[0], &memory_requirements);
+
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+    
+    u32 type_index_vcl = Max_u32;
+    u32 type_index_vc  = Max_u32;
+    u64 largest_heap_vcl = 0;
+    u64 largest_heap_vc  = 0;
+    for(u32 i = 0; i < memory_properties.memoryTypeCount; ++i) {
+        if ((memory_requirements.memoryTypeBits & (1 << i)) == 0)
+            continue;
+
+        if ((memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)  &&
+            (memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) &&
+            (memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+        {
+            if (memory_properties.memoryHeaps[memory_properties.memoryTypes[i].heapIndex].size > largest_heap_vcl) {
+                type_index_vcl   = i;
+                largest_heap_vcl = memory_properties.memoryHeaps[memory_properties.memoryTypes[i].heapIndex].size;
+            }
+        }
+        else if ((memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)  &&
+                 (memory_properties.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT))
+        {
+            if (memory_properties.memoryHeaps[memory_properties.memoryTypes[i].heapIndex].size > largest_heap_vc) {
+                type_index_vc   = i;
+                largest_heap_vc = memory_properties.memoryHeaps[memory_properties.memoryTypes[i].heapIndex].size;
+            }
+        }
+    }
+
+    u32 type_index_final;
+    if (type_index_vcl != Max_u32) {
+        type_index_final = type_index_vcl;
+    } else if (type_index_vc != Max_u32) {
+        type_index_final = type_index_vc;
+    } else {
+        println("ERROR: Failed to find uniform buffer heap index");
+        return;
+    }
+
+    // @Todo Allocation priority, dedicated allocation?
+    VkMemoryAllocateInfo allocate_info = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate_info.allocationSize  = align(memory_requirements.size, memory_requirements.alignment) * UNIFORM_BUFFER_COUNT;
+    allocate_info.memoryTypeIndex = type_index_final;
+
+    check = vkAllocateMemory(device, &allocate_info, ALLOCATION_CALLBACKS, &gpu->memory.uniform_memory);
+    DEBUG_OBJ_CREATION(vkAllocateMemory, check);
+
+    vkMapMemory(device,gpu->memory.uniform_memory, 0, VK_WHOLE_SIZE, 0x0, &gpu->memory.uniform_ptrs[0]);
+
+    u64 memory_offset = 0;
+    for(u32 i = 0; i < UNIFORM_BUFFER_COUNT; ++i) {
+        vkBindBufferMemory(device, gpu->memory.uniform_buffers[i], gpu->memory.uniform_memory, memory_offset);
+
+        gpu->memory.uniform_ptrs[i] = (u8*)gpu->memory.uniform_ptrs[0] + memory_offset;
+
+        memory_offset += align(memory_requirements.size, memory_requirements.alignment);
+    }
+}
+
+static void create_mem(Gpu *gpu, u32 mem_type, u32 count, u64 size, VkDeviceMemory *mem, float priority) {
     VkMemoryDedicatedAllocateInfo dedicate_info = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
 
     VkMemoryPriorityAllocateInfoEXT priority_info = {VK_STRUCTURE_TYPE_MEMORY_PRIORITY_ALLOCATE_INFO_EXT};
@@ -874,16 +953,6 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
         VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
         0.4,
         true);
-    create_buffers(gpu,
-        device_mem_type,
-        UNIFORM_BUFFER_COUNT,
-        gpu->memory.uniform_bufs,
-        gpu->memory.uniform_mem,
-        gpu->memory.uniform_ptrs,
-        UNIFORM_BUFFER_SIZE,
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        0,
-        true);
 
     // Other Buffers
     create_buffers(gpu,
@@ -897,6 +966,8 @@ void setup_memory_integrated(u32 device_mem_type, u32 host_mem_type) {
         0,
         true);
     create_mem(gpu, device_mem_type, 1, TEXTURE_DEVICE_SIZE, &gpu->memory.texture_mem_device, 0.6);
+
+    create_uniform_buffers();
 }
 void setup_memory_discrete(u32 device_mem_type, u32 host_mem_type, u32 both_mem_type) {
     Gpu *gpu = get_gpu_instance();
@@ -959,16 +1030,7 @@ void setup_memory_discrete(u32 device_mem_type, u32 host_mem_type, u32 both_mem_
         false);
 
     // Shared heaps
-    create_buffers(gpu,
-        both_mem_type,
-        UNIFORM_BUFFER_COUNT,
-        gpu->memory.uniform_bufs,
-        gpu->memory.uniform_mem,
-        gpu->memory.uniform_ptrs,
-        UNIFORM_BUFFER_SIZE,
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        0,
-        true);
+    create_uniform_buffers();
 
     // Device Mem
     create_mem(gpu, device_mem_type, 1, TEXTURE_DEVICE_SIZE, &gpu->memory.texture_mem_device, 0.6);
@@ -1198,10 +1260,10 @@ void free_memory() {
     vkFreeMemory(device, gpu->memory.texture_mem_device, ALLOCATION_CALLBACKS);
 
     // Uniform mem
-    for(u32 i= 0; i < UNIFORM_BUFFER_COUNT; ++i) {
-        vkDestroyBuffer(device, gpu->memory.uniform_bufs[i], ALLOCATION_CALLBACKS);
-        vkFreeMemory(device, gpu->memory.uniform_mem[i], ALLOCATION_CALLBACKS);
+    for(u32 i= 0; i < UNIFORM_BUFFER_COUNT; ++i){
+        vkDestroyBuffer(device, gpu->memory.uniform_buffers[i], ALLOCATION_CALLBACKS);
     }
+    vkFreeMemory(device, gpu->memory.uniform_memory, ALLOCATION_CALLBACKS);
 
     // Descriptor
     vkDestroyBuffer(device, gpu->memory.sampler_descriptor_buffer, ALLOCATION_CALLBACKS);

@@ -42,13 +42,13 @@ static constexpr u32 COLOR_ATTACHMENT_COUNT  = 1; // @Unused Idk when I will do 
 static constexpr u32 VERTEX_STAGE_COUNT      = 1;
 static constexpr u32 INDEX_STAGE_COUNT       = 1;
 static constexpr u32 TEXTURE_STAGE_COUNT     = 1;
-static constexpr u32 UNIFORM_BUFFER_COUNT    = 2;
+static constexpr u32 UNIFORM_BUFFER_COUNT    = g_frame_count * g_thread_count;
 
 // Host memory sizes - large enough to not get a warning about allocation size being too small
 static constexpr u64 VERTEX_STAGE_SIZE       = 1048576;
 static constexpr u64 INDEX_STAGE_SIZE        = 1048576;
 static constexpr u64 TEXTURE_STAGE_SIZE      = 1048576 * 8;
-static constexpr u64 UNIFORM_BUFFER_SIZE     = 1048576;
+static constexpr u64 UNIFORM_BUFFER_SIZE     = 1048576 / (g_frame_count * g_thread_count);
 
 static constexpr u64 VERTEX_DEVICE_SIZE    = 1048576;
 static constexpr u64 INDEX_DEVICE_SIZE     = 1048576;
@@ -92,8 +92,8 @@ struct Gpu_Memory {
     VkBuffer       texture_bufs_stage   [TEXTURE_STAGE_COUNT];
     VkDeviceMemory texture_mem_device;
 
-    VkDeviceMemory uniform_mem          [UNIFORM_BUFFER_COUNT];
-    VkBuffer       uniform_bufs         [UNIFORM_BUFFER_COUNT];
+    VkDeviceMemory uniform_memory;
+    VkBuffer       uniform_buffers      [UNIFORM_BUFFER_COUNT];
 
     void *vertex_ptrs                   [VERTEX_STAGE_COUNT];
     void *index_ptrs                    [INDEX_STAGE_COUNT];
@@ -833,24 +833,23 @@ struct Uniform_Allocator {
     u64 used;
     u8 *mem;
     VkBuffer buf;
+    u64 alignment;
 };
-inline static Uniform_Allocator create_uniform_allocator(u32 gpu_mem_index, u64 offset, u64 size) {
-    assert(size < UNIFORM_BUFFER_SIZE - offset && "Size too big");
-    assert(offset % 256 == 0 && "Offset must have minimum alignment");
-
-    Gpu_Memory *gpu_mem = &get_gpu_instance()->memory;
+inline static Uniform_Allocator get_uniform_allocator(u64 size, void *ptr, VkBuffer buf) {
+    Gpu *gpu  = get_gpu_instance();
 
     Uniform_Allocator ret;
     ret.cap  = size;
     ret.used = 0;
-    ret.mem  = (u8*)gpu_mem->uniform_ptrs[gpu_mem_index] + offset;
-    ret.buf  = gpu_mem->uniform_bufs[gpu_mem_index];
+    ret.mem  = (u8*)ptr;
+    ret.buf  = buf;
+    ret.alignment = gpu->info.props.limits.optimalBufferCopyOffsetAlignment;
 
     return ret;
 }
 inline static u8* uniform_malloc(Uniform_Allocator *allocator, u64 size) {
     // pad to alignment
-    allocator->used = align(allocator->used, 256);
+    allocator->used = align(allocator->used, allocator->alignment);
 
     u8 *ret = allocator->mem + allocator->used;
 
