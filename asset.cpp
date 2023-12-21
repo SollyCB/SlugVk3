@@ -103,11 +103,22 @@ void init_assets() {
     println("Loading %u models; model buffer size %u", g_model_count, g_model_buffer_size);
     #endif
 
-    #if 1
+    // Defaults must be the first allocations.
+    String default_texture_name = cstr_to_string("models/default/default_texture.png");
+    u32    default_texture_key; // Must be zero.
+
+    Gpu_Allocator_Result allocator_result = tex_add_texture(&allocs->tex, &default_texture_name, &default_texture_key);
+    assert(default_texture_key == 0);
+
     u64 tmp_size;
     for(u32 i = 0; i < g_model_count; ++i) {
-        g_assets->models[i] = model_from_gltf(allocs, &g_model_dir_names[i], &g_model_file_names[i],
-                                              model_buffer_size_available, g_assets->model_buffer, &tmp_size);
+        g_assets->models[i] = model_from_gltf(
+                                   allocs,
+                                  &g_model_dir_names[i],
+                                  &g_model_file_names[i],
+                                   model_buffer_size_available,
+                                   g_assets->model_buffer,
+                                  &tmp_size);
 
         model_buffer_size_used      += tmp_size;
         model_buffer_size_available -= model_buffer_size_used;
